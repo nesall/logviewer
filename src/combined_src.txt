@@ -1,0 +1,3077 @@
+## File: src/core/channel.cpp
+
+#include "core/channel.h"
+
+#include <utility>
+
+namespace core {
+
+  Channel::Channel(std::string name, std::string unit)
+    : name_(std::move(name)), unit_(std::move(unit)) {}
+
+} // namespace core
+
+
+## File: src/core/channel.h
+
+#pragma once
+
+#include <string>
+#include <vector>
+
+namespace core {
+
+  // A single named data series from a log, aligned 1:1 by row index with
+  // every other Channel in the same LogSession.
+  class Channel {
+  public:
+    Channel() = default;
+    Channel(std::string name, std::string unit);
+
+    const std::string &name() const { return name_; }
+    const std::string &unit() const { return unit_; }
+
+    const std::vector<double> &values() const { return values_; }
+    std::vector<double> &values() { return values_; }
+
+    // False if any sample was a token we couldn't parse as a number or a
+    // recognized boolean-ish value (Yes/No, On/Off, High/Low,
+    // Active/Inactive). Non-numeric channels are still stored (bad samples
+    // become NaN) but the UI should treat them as suspect / hide by
+    // default rather than plot them as-is.
+    bool isNumeric() const { return isNumeric_; }
+    void setIsNumeric(bool value) { isNumeric_ = value; }
+
+    // True if every parsed sample in this channel came from a recognized
+    // boolean-ish token (never a genuine numeric token). Distinct from
+    // isNumeric(): a boolean channel IS numeric (stored as 1.0/0.0), but
+    // this flags it as semantically digital/status rather than
+    // continuous -- e.g. for StatusPanel's auto-detected default set.
+    bool isBoolean() const { return isBoolean_; }
+    void setIsBoolean(bool value) { isBoolean_ = value; }
+
+  private:
+    std::string name_;
+    std::string unit_;
+    std::vector<double> values_;
+    bool isNumeric_ = true;
+    bool isBoolean_ = false;
+  };
+
+} // namespace core
+
+
+## File: src/core/logsession.cpp
+
+#include "core/logsession.h"
+
+#include <utility>
+
+namespace core {
+
+  void LogSession::addChannel(Channel channel) {
+    channels_.push_back(std::move(channel));
+  }
+
+  const Channel *LogSession::findChannel(const std::string &name) const {
+    for (const auto &channel : channels_) {
+      if (channel.name() == name) {
+        return &channel;
+      }
+    }
+    return nullptr;
+  }
+
+  const std::vector<double> *LogSession::timeSec() const {
+    if (!timeChannelIndex_.has_value() || *timeChannelIndex_ >= channels_.size()) {
+      return nullptr;
+    }
+    return &channels_[*timeChannelIndex_].values();
+  }
+
+} // namespace core
+
+
+## File: src/core/logsession.h
+
+#pragma once
+
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "core/channel.h"
+
+namespace core {
+
+  // All channels parsed from one log file, plus a bit of file metadata.
+  // Every Channel's values() vector is the same length (rowCount()), aligned
+  // by row index -- row i across all channels is one sample instant.
+  class LogSession {
+  public:
+    void addChannel(Channel channel);
+
+    size_t rowCount() const { return rowCount_; }
+    void setRowCount(size_t rowCount) { rowCount_ = rowCount; }
+
+    const std::vector<Channel> &channels() const { return channels_; }
+    std::vector<Channel> &channels() { return channels_; }
+
+    // Returns nullptr if no channel with this exact name exists.
+    const Channel *findChannel(const std::string &name) const;
+
+    // Convenience accessor for the parsed/corrected time channel, if the
+    // parser identified one (e.g. the "Time" column in an MSL file).
+    const std::vector<double> *timeSec() const;
+    void setTimeChannelIndex(std::optional<size_t> index) { timeChannelIndex_ = index; }
+
+    const std::string &sourcePath() const { return sourcePath_; }
+    void setSourcePath(std::string path) { sourcePath_ = std::move(path); }
+
+    const std::string &formatInfo() const { return formatInfo_; }
+    void setFormatInfo(std::string info) { formatInfo_ = std::move(info); }
+
+    const std::string &captureDate() const { return captureDate_; }
+    void setCaptureDate(std::string date) { captureDate_ = std::move(date); }
+
+  private:
+    std::vector<Channel> channels_;
+    size_t rowCount_ = 0;
+    std::optional<size_t> timeChannelIndex_;
+
+    std::string sourcePath_;
+    std::string formatInfo_;
+    std::string captureDate_;
+  };
+
+} // namespace core
+
+
+## File: src/core/table2d.cpp
+
+#include "core/table2d.h"
+
+#include <algorithm>
+#include <utility>
+
+namespace core {
+
+  Table2D::Table2D(std::vector<double> xBreakpoints, std::vector<double> yBreakpoints)
+    : xBreakpoints_(std::move(xBreakpoints)), yBreakpoints_(std::move(yBreakpoints)) {
+    ensureValuesSized_();
+  }
+
+  void Table2D::setXBreakpoints(std::vector<double> breakpoints) {
+    xBreakpoints_ = std::move(breakpoints);
+    ensureValuesSized_();
+  }
+
+  void Table2D::setYBreakpoints(std::vector<double> breakpoints) {
+    yBreakpoints_ = std::move(breakpoints);
+    ensureValuesSized_();
+  }
+
+  void Table2D::ensureValuesSized_() {
+    values_.resize(yBreakpoints_.size());
+    for (auto &row : values_) {
+      row.resize(xBreakpoints_.size(), 0.0);
+    }
+  }
+
+  double Table2D::value(size_t row, size_t col) const {
+    if (row >= values_.size() || col >= values_[row].size()) {
+      return 0.0;
+    }
+    return values_[row][col];
+  }
+
+  void Table2D::setValue(size_t row, size_t col, double newValue) {
+    if (row >= values_.size() || col >= values_[row].size()) {
+      return;
+    }
+    values_[row][col] = newValue;
+  }
+
+  void Table2D::locate_(const std::vector<double> &breakpoints, double queryValue, size_t &lowIndex,
+    double &frac) {
+    if (breakpoints.empty()) {
+      lowIndex = 0;
+      frac = 0.0;
+      return;
+    }
+    if (breakpoints.size() == 1 || queryValue <= breakpoints.front()) {
+      lowIndex = 0;
+      frac = 0.0;
+      return;
+    }
+    if (queryValue >= breakpoints.back()) {
+      lowIndex = breakpoints.size() - 2;
+      frac = 1.0;
+      return;
+    }
+
+    // First breakpoint strictly greater than queryValue.
+    auto it = std::upper_bound(breakpoints.begin(), breakpoints.end(), queryValue);
+    size_t highIndex = static_cast<size_t>(it - breakpoints.begin());
+    lowIndex = highIndex - 1;
+
+    double lowValue = breakpoints[lowIndex];
+    double highValue = breakpoints[highIndex];
+    double span = highValue - lowValue;
+    frac = (span > 1e-12) ? (queryValue - lowValue) / span : 0.0;
+  }
+
+  double Table2D::sample(double x, double y) const {
+    if (xBreakpoints_.empty() || yBreakpoints_.empty()) {
+      return 0.0;
+    }
+
+    size_t colLow = 0;
+    double fracX = 0.0;
+    locate_(xBreakpoints_, x, colLow, fracX);
+    size_t colHigh = std::min(colLow + 1, xBreakpoints_.size() - 1);
+
+    size_t rowLow = 0;
+    double fracY = 0.0;
+    locate_(yBreakpoints_, y, rowLow, fracY);
+    size_t rowHigh = std::min(rowLow + 1, yBreakpoints_.size() - 1);
+
+    double v00 = value(rowLow, colLow);
+    double v01 = value(rowLow, colHigh);
+    double v10 = value(rowHigh, colLow);
+    double v11 = value(rowHigh, colHigh);
+
+    double top = v00 + (v01 - v00) * fracX;
+    double bottom = v10 + (v11 - v10) * fracX;
+    return top + (bottom - top) * fracY;
+  }
+
+  Table2D Table2D::resampledTo(const std::vector<double> &newXBreakpoints,
+    const std::vector<double> &newYBreakpoints) const {
+    Table2D result(newXBreakpoints, newYBreakpoints);
+    for (size_t row = 0; row < newYBreakpoints.size(); ++row) {
+      for (size_t col = 0; col < newXBreakpoints.size(); ++col) {
+        result.setValue(row, col, sample(newXBreakpoints[col], newYBreakpoints[row]));
+      }
+    }
+    return result;
+  }
+
+  std::vector<double> generateEvenBreakpoints(double minValue, double maxValue, size_t count) {
+    std::vector<double> breakpoints;
+    if (count == 0) {
+      return breakpoints;
+    }
+    breakpoints.resize(count);
+    if (count == 1) {
+      breakpoints[0] = minValue;
+      return breakpoints;
+    }
+    const double step = (maxValue - minValue) / static_cast<double>(count - 1);
+    for (size_t i = 0; i < count; ++i) {
+      breakpoints[i] = minValue + step * static_cast<double>(i);
+    }
+    return breakpoints;
+  }
+
+} // namespace core
+
+
+## File: src/core/table2d.h
+
+#pragma once
+
+#include <cstddef>
+#include <vector>
+
+namespace core {
+
+  // A 2D lookup table with arbitrary (not necessarily evenly-spaced) axis
+  // breakpoints -- matches how real ECU tables (VE, target AFR, etc.) are
+  // defined. Values are row-major: value(row, col), where rows correspond
+  // to yBreakpoints() (load/MAP axis) and columns to xBreakpoints() (RPM
+  // axis) -- matching TunerStudio's table orientation, so a resampled
+  // clipboard export lines up with a pasted TunerStudio grid without any
+  // transposition.
+  class Table2D {
+  public:
+    Table2D() = default;
+    Table2D(std::vector<double> xBreakpoints, std::vector<double> yBreakpoints);
+
+    void setXBreakpoints(std::vector<double> breakpoints);
+    void setYBreakpoints(std::vector<double> breakpoints);
+    const std::vector<double> &xBreakpoints() const { return xBreakpoints_; }
+    const std::vector<double> &yBreakpoints() const { return yBreakpoints_; }
+
+    size_t columnCount() const { return xBreakpoints_.size(); }
+    size_t rowCount() const { return yBreakpoints_.size(); }
+
+    double value(size_t row, size_t col) const;
+    void setValue(size_t row, size_t col, double newValue);
+
+    // Bilinear-interpolated lookup at an arbitrary (x, y) point. Outside
+    // the table's breakpoint range, the result clamps to the nearest edge
+    // value rather than extrapolating -- matches how ECU tables actually
+    // behave physically.
+    double sample(double x, double y) const;
+
+    // Builds a new table on the given breakpoints, resampling this
+    // table's values onto them via sample(). Used both for "load channel
+    // resolution is independent of the real VE table axes" and for
+    // producing the final clipboard export sized to match a real tune.
+    Table2D resampledTo(const std::vector<double> &newXBreakpoints,
+      const std::vector<double> &newYBreakpoints) const;
+
+  private:
+    void ensureValuesSized_();
+    // Finds the breakpoint segment containing `queryValue`: lowIndex is
+    // the index of the breakpoint at or before it, frac in [0,1] is the
+    // fractional position within that segment. Clamps at the edges.
+    static void locate_(const std::vector<double> &breakpoints, double queryValue,
+      size_t &lowIndex, double &frac);
+
+    std::vector<double> xBreakpoints_;
+    std::vector<double> yBreakpoints_;
+    std::vector<std::vector<double>> values_; // values_[row][col]
+  };
+
+  // Convenience generator for a default evenly-spaced axis (a reasonable
+  // seed to start from -- the table editor lets the user override any/all
+  // of these to match their real tune's breakpoints).
+  std::vector<double> generateEvenBreakpoints(double minValue, double maxValue, size_t count);
+
+} // namespace core
+
+
+## File: src/engine/decimator.cpp
+
+
+
+
+## File: src/engine/decimator.h
+
+
+
+
+## File: src/engine/ve_analyzer.cpp
+
+#include "engine/ve_analyzer.h"
+#include <cmath>
+#include <limits>
+
+namespace engine {
+
+  core::Table2D VeAnalyzer::computeCorrectedVe(
+    const core::LogSession &session,
+    const core::Table2D &currentVe,
+    const core::Table2D &targetAfr,
+    const VeAnalysisConfig &config)
+  {
+    core::Table2D correctedVe = currentVe;
+
+    const core::Channel *rpmCh = session.findChannel(config.rpmChannel);
+    const core::Channel *loadCh = session.findChannel(config.loadChannel);
+    const core::Channel *afrCh = session.findChannel(config.afrChannel);
+
+    if (!rpmCh || !loadCh || !afrCh) {
+      return correctedVe; // Missing required channels
+    }
+
+    const size_t rows = currentVe.rowCount();
+    const size_t cols = currentVe.columnCount();
+
+    std::vector<std::vector<double>> sumAfr(rows, std::vector<double>(cols, 0.0));
+    std::vector<std::vector<size_t>> countAfr(rows, std::vector<size_t>(cols, 0));
+
+    const size_t numSamples = session.rowCount();
+
+    // 1. Binning phase
+    for (size_t i = 0; i < numSamples; ++i) {
+      double rpm = rpmCh->values()[i];
+      double load = loadCh->values()[i];
+      double afr = afrCh->values()[i];
+
+      if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
+
+      // Find nearest cell (Simple Nearest-Neighbor approach)
+      size_t bestR = 0, bestC = 0;
+      double minDist = std::numeric_limits<double>::max();
+
+      for (size_t r = 0; r < rows; ++r) {
+        for (size_t c = 0; c < cols; ++c) {
+          // Normalize to prevent RPM magnitude from dominating MAP magnitude
+          double dRpm = (rpm - currentVe.xBreakpoints()[c]) / 1000.0;
+          double dLoad = (load - currentVe.yBreakpoints()[r]) / 10.0;
+          double dist = (dRpm * dRpm) + (dLoad * dLoad);
+
+          if (dist < minDist) {
+            minDist = dist;
+            bestR = r;
+            bestC = c;
+          }
+        }
+      }
+
+      sumAfr[bestR][bestC] += afr;
+      countAfr[bestR][bestC]++;
+    }
+
+    // 2. Correction phase
+    for (size_t r = 0; r < rows; ++r) {
+      for (size_t c = 0; c < cols; ++c) {
+        if (countAfr[r][c] >= config.minSamplesPerBin) {
+          double avgObservedAfr = sumAfr[r][c] / static_cast<double>(countAfr[r][c]);
+
+          // Sample the target AFR table at this cell's coordinates
+          double rpmBp = currentVe.xBreakpoints()[c];
+          double loadBp = currentVe.yBreakpoints()[r];
+          double tgtAfr = targetAfr.sample(rpmBp, loadBp);
+
+          if (tgtAfr > 0.0) {
+            double oldVe = currentVe.value(r, c);
+            double newVe = oldVe * (avgObservedAfr / tgtAfr);
+            correctedVe.setValue(r, c, newVe);
+          }
+        }
+      }
+    }
+
+    return correctedVe;
+  }
+
+} // namespace engine
+
+
+## File: src/engine/ve_analyzer.h
+
+#pragma once
+
+#include <string>
+#include <vector>
+#include "core/logsession.h"
+#include "core/table2d.h"
+
+namespace engine {
+
+  struct VeAnalysisConfig {
+    std::string rpmChannel = "RPM";
+    std::string loadChannel = "MAP";
+    std::string afrChannel = "AFR";
+    size_t minSamplesPerBin = 10;
+
+    // Future expansion for transient filtering
+    // double minCoolantTemp = 160.0;
+    // double maxTpsDot = 50.0; 
+  };
+
+  class VeAnalyzer {
+  public:
+    // Returns a new Table2D with corrected VE values where sample counts meet the threshold.
+    // Unchanged cells retain their original VE values.
+    static core::Table2D computeCorrectedVe(
+      const core::LogSession &session,
+      const core::Table2D &currentVe,
+      const core::Table2D &targetAfr,
+      const VeAnalysisConfig &config);
+  };
+
+} // namespace engine
+
+
+## File: src/io/logparser.h
+
+#pragma once
+
+#include <string>
+
+#include "core/logsession.h"
+
+namespace io {
+
+  // Interface for a log file parser. Each format's quirks stay entirely
+  // inside its own implementation; callers just get a populated LogSession
+  // or an error string. Lets us add other ECU/log formats later without
+  // touching core or ui.
+  class LogParser {
+  public:
+    virtual ~LogParser() = default;
+
+    // Returns true and populates outSession on success. Returns false and
+    // populates errorOut on failure.
+    virtual bool parse(const std::string &path, core::LogSession &outSession, std::string &errorOut) = 0;
+  };
+
+} // namespace io
+
+
+## File: src/io/megasquirtcsvparser.cpp
+
+#include "io/megasquirtcsvparser.h"
+
+#include <cmath>
+#include <cstdlib>
+#include <fstream>
+#include <limits>
+#include <utility>
+
+namespace io {
+
+  namespace {
+
+    std::vector<std::string> splitTabDelimited(const std::string &line) {
+      std::vector<std::string> tokens;
+      size_t start = 0;
+      while (true) {
+        size_t tabPos = line.find('\t', start);
+        if (tabPos == std::string::npos) {
+          tokens.push_back(line.substr(start));
+          break;
+        }
+        tokens.push_back(line.substr(start, tabPos - start));
+        start = tabPos + 1;
+      }
+      return tokens;
+    }
+
+    bool parseNumericToken(const std::string &token, double &outValue) {
+      if (token.empty()) {
+        return false;
+      }
+      char *end = nullptr;
+      outValue = std::strtod(token.c_str(), &end);
+      return end != token.c_str() && *end == '\0';
+    }
+
+    bool tryParseBooleanToken(std::string token, double &outValue) {
+      for (char &c : token) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      }
+      if (token == "yes" || token == "on" || token == "high" || token == "active" ||
+        token == "true") {
+        outValue = 1.0;
+        return true;
+      }
+      if (token == "no" || token == "off" || token == "low" || token == "inactive" ||
+        token == "false") {
+        outValue = 0.0;
+        return true;
+      }
+      return false;
+    }
+
+    // Observed MSL quirk: the first data row's "Time" value is sometimes an
+    // unreliable placeholder (e.g. 0.000) while every following row continues
+    // a consistent, much larger-magnitude trend. Detect a first-gap that's
+    // wildly out of line with the established row spacing and reconstruct row
+    // 0 from row 1's trend instead of trusting it literally.
+    void fixFirstRowTimeAnomaly(std::vector<double> &timeValues) {
+      if (timeValues.size() < 3) {
+        return;
+      }
+      double delta01 = std::fabs(timeValues[1] - timeValues[0]);
+      double delta12 = std::fabs(timeValues[2] - timeValues[1]);
+      if (delta12 < 1e-9) {
+        return;
+      }
+      if (delta01 > delta12 * 10.0) {
+        timeValues[0] = timeValues[1] - delta12;
+      }
+    }
+
+  } // namespace
+
+  bool MegasquirtCsvParser::parse(const std::string &path, core::LogSession &outSession,
+    std::string &errorOut) {
+    std::ifstream file(path);
+    if (!file.is_open()) {
+      errorOut = "Could not open file: " + path;
+      return false;
+    }
+
+    std::string line;
+    std::string formatInfo;
+    std::string captureDate;
+    std::vector<std::string> headerTokens;
+    bool foundHeader = false;
+
+    // Scan defensively for the header row rather than hardcoding line
+    // numbers, in case a future TunerStudio version adds/removes a
+    // metadata line.
+    while (std::getline(file, line)) {
+      if (line.empty()) {
+        continue;
+      }
+      if (line.front() == '"') {
+        std::string content = line;
+        if (content.size() >= 2 && content.back() == '"') {
+          content = content.substr(1, content.size() - 2);
+        }
+        if (content.rfind("Capture Date:", 0) == 0) {
+          captureDate = content;
+        } else if (formatInfo.empty()) {
+          formatInfo = content;
+        }
+        continue;
+      }
+      if (line == "#") {
+        continue;
+      }
+      headerTokens = splitTabDelimited(line);
+      foundHeader = true;
+      break;
+    }
+
+    if (!foundHeader || headerTokens.empty()) {
+      errorOut = "Could not find header row in: " + path;
+      return false;
+    }
+
+    if (!std::getline(file, line)) {
+      errorOut = "File ended after header row (missing units row): " + path;
+      return false;
+    }
+    std::vector<std::string> unitTokens = splitTabDelimited(line);
+
+    const size_t columnCount = headerTokens.size();
+
+    std::vector<core::Channel> channels;
+    channels.reserve(columnCount);
+    for (size_t i = 0; i < columnCount; ++i) {
+      std::string unit = (i < unitTokens.size()) ? unitTokens[i] : std::string();
+      channels.emplace_back(headerTokens[i], unit);
+    }
+
+    size_t rowCount = 0;
+    std::vector<bool> sawNumericToken(columnCount, false);
+    std::vector<bool> sawBooleanToken(columnCount, false);
+
+    while (std::getline(file, line)) {
+      if (line.empty()) {
+        continue;
+      }
+      std::vector<std::string> tokens = splitTabDelimited(line);
+
+      if (tokens.size() != columnCount) {
+        // Not a real data row -- e.g. a "MARK <label>" annotation line
+        // TunerStudio inserts when the user hits a mark key during
+        // capture. Skip it rather than let a mismatched token corrupt
+        // column alignment / flip a channel to non-numeric.
+        continue;
+      }
+
+      for (size_t i = 0; i < columnCount; ++i) {
+        double value = std::numeric_limits<double>::quiet_NaN();
+        if (i < tokens.size()) {
+          const std::string &token = tokens[i];
+          double parsed = 0.0;
+          if (parseNumericToken(token, parsed)) {
+            value = parsed;
+            sawNumericToken[i] = true;
+          } else if (tryParseBooleanToken(token, parsed)) {
+            value = parsed;
+            sawBooleanToken[i] = true;
+          } else if (!token.empty()) {
+            channels[i].setIsNumeric(false);
+          }
+        }
+        channels[i].values().push_back(value);
+      }
+      ++rowCount;
+    }
+
+    int timeChannelIndex = -1;
+    for (size_t i = 0; i < channels.size(); ++i) {
+      channels[i].setIsBoolean(sawBooleanToken[i] && !sawNumericToken[i]);
+      if (channels[i].name() == "Time") {
+        timeChannelIndex = static_cast<int>(i);
+      }
+    }
+    if (timeChannelIndex >= 0) {
+      fixFirstRowTimeAnomaly(channels[static_cast<size_t>(timeChannelIndex)].values());
+    }
+
+    outSession = core::LogSession();
+    outSession.setSourcePath(path);
+    outSession.setFormatInfo(formatInfo);
+    outSession.setCaptureDate(captureDate);
+    outSession.setRowCount(rowCount);
+    for (auto &channel : channels) {
+      outSession.addChannel(std::move(channel));
+    }
+    if (timeChannelIndex >= 0) {
+      outSession.setTimeChannelIndex(static_cast<size_t>(timeChannelIndex));
+    }
+
+    return true;
+  }
+
+} // namespace io
+
+
+## File: src/io/megasquirtcsvparser.h
+
+#pragma once
+
+#include "io/logparser.h"
+
+namespace io {
+
+  // Parses TunerStudio/MegaLogViewer .msl exports: tab-delimited, two quoted
+  // metadata lines, a lone "#" line, a header row, a units row, then data
+  // rows. This is specifically the CSV-like export MLVHD produces from a
+  // captured .mlg session -- NOT the .mlg binary DataLogger format, and NOT
+  // the raw MS3 ECU log format (both out of scope for now).
+  class MegasquirtCsvParser : public LogParser {
+  public:
+    bool parse(const std::string &path, core::LogSession &outSession, std::string &errorOut) override;
+  };
+
+} // namespace io
+
+
+## File: src/main.cpp
+
+#include <cstdio>
+
+#include <GLFW/glfw3.h>
+
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
+#include "implot.h"
+
+#include "ui/app.h"
+
+namespace {
+
+  void GlfwErrorCallback(int error, const char *description) {
+    std::fprintf(stderr, "GLFW error %d: %s\n", error, description);
+  }
+
+} // namespace
+
+int main() {
+  glfwSetErrorCallback(GlfwErrorCallback);
+  if (!glfwInit()) {
+    return 1;
+  }
+
+  const char *glsl_version = "#version 130";
+  glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+  glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+
+  GLFWwindow *window = glfwCreateWindow(1280, 800, "logviewer", nullptr, nullptr);
+  if (window == nullptr) {
+    glfwTerminate();
+    return 1;
+  }
+
+  glfwMakeContextCurrent(window);
+  glfwSwapInterval(1); // vsync
+
+  IMGUI_CHECKVERSION();
+  ImGui::CreateContext();
+  ImPlot::CreateContext();
+
+  ImGuiIO &io = ImGui::GetIO();
+  io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+
+  ImGui::StyleColorsDark();
+
+  ImGui_ImplGlfw_InitForOpenGL(window, true);
+  ImGui_ImplOpenGL3_Init(glsl_version);
+
+  ui::App app(window);
+
+  while (!glfwWindowShouldClose(window)) {
+    glfwPollEvents();
+
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+
+    app.render();
+
+    ImGui::Render();
+    int display_w = 0;
+    int display_h = 0;
+    glfwGetFramebufferSize(window, &display_w, &display_h);
+    glViewport(0, 0, display_w, display_h);
+    glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+    glfwSwapBuffers(window);
+  }
+
+  ImGui_ImplOpenGL3_Shutdown();
+  ImGui_ImplGlfw_Shutdown();
+  ImPlot::DestroyContext();
+  ImGui::DestroyContext();
+
+  glfwDestroyWindow(window);
+  glfwTerminate();
+
+  return 0;
+}
+
+
+## File: src/ui/app.cpp
+
+#include "ui/app.h"
+
+#include <algorithm>
+#include <cctype>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+
+#include "3rdparty/nlohmann/json.hpp"
+#include "3rdparty/portable-file-dialogs.h"
+#include "core/table2d.h"
+#include "imgui.h"
+#include <GLFW/glfw3.h>
+
+#include "ui/scatterpanel.h"
+#include "ui/statuspanel.h"
+#include "ui/tableeditorpanel.h"
+#include "ui/timeseriespanel.h"
+
+namespace ui {
+
+  namespace {
+
+    std::string currentDateStamp() {
+      using namespace std::chrono;
+      const auto today = floor<days>(system_clock::now());
+      const year_month_day ymd{ today };
+      char buf[16];
+      std::snprintf(buf, sizeof(buf), "%04d%02d%02d", static_cast<int>(ymd.year()),
+        static_cast<unsigned>(ymd.month()), static_cast<unsigned>(ymd.day()));
+      return buf;
+    }
+
+    std::string fileNameOnly(const std::string &path) {
+      size_t pos = path.find_last_of("/\\");
+      return (pos == std::string::npos) ? path : path.substr(pos + 1);
+    }
+
+    std::string fileNameWithoutExtension(const std::string &path) {
+      std::string name = fileNameOnly(path);
+      size_t dot = name.find_last_of('.');
+      return (dot == std::string::npos) ? name : name.substr(0, dot);
+    }
+
+    // Single spot to change once a real app name is picked.
+    constexpr const char *kAppBaseTitle = "logviewer";
+
+    // Stored next to the executable for now -- simplest thing that works for
+    // a dev-testing tool. Move to a proper per-user config directory
+    // (%AppData% / ~/.config) if this ever ships beyond your own machine.
+    const char *kSettingsFilePath = "logviewer_settings.json";
+
+  } // namespace
+
+  App::App(GLFWwindow *window) : window_(window)
+  {
+    loadSettings_();
+    updateWindowTitle_();
+
+
+    // Two starter panels; setSession() rebinds them to real data once a
+    // file is loaded. More can be added at runtime via Panels menu.
+    //addTimeSeriesPanel({ "RPM" });
+    //addTimeSeriesPanel({ "MAP" });
+  }
+
+  App::~App() = default;
+
+  // ---------------------------------------------------------------------
+  // File dialogs (non-blocking -- see the comment on pollPendingDialogs_
+  // in app.h for why this matters)
+  // ---------------------------------------------------------------------
+
+  void App::beginOpenLogDialog()
+  {
+    if (pendingOpenLogDialog_) {
+      return; // one is already open
+    }
+    pendingOpenLogDialog_ = std::make_unique<pfd::open_file>(
+      "Open Log File", ".",
+      std::vector<std::string>{"MegaSquirt Log Files (*.msl)", "*.msl", "All Files", "*"});
+  }
+
+  void App::beginSaveWorkspaceDialog()
+  {
+    if (pendingSaveWorkspaceDialog_) {
+      return;
+    }
+    pendingSaveWorkspaceDialog_ = std::make_unique<pfd::save_file>(
+      "Save Workspace", "workspace-" + currentDateStamp() + ".json",
+      std::vector<std::string>{"Log Viewer Workspace (*.json)", "*.json", "All Files", "*"});
+  }
+
+  void App::beginLoadWorkspaceDialog()
+  {
+    if (pendingLoadWorkspaceDialog_) {
+      return;
+    }
+    pendingLoadWorkspaceDialog_ = std::make_unique<pfd::open_file>(
+      "Load Workspace", ".",
+      std::vector<std::string>{"Log Viewer Workspace (*.json)", "*.json", "All Files", "*"});
+  }
+
+  void App::pollPendingDialogs()
+  {
+    if (pendingOpenLogDialog_ && pendingOpenLogDialog_->ready(0)) {
+      auto selection = pendingOpenLogDialog_->result();
+      pendingOpenLogDialog_.reset();
+      if (!selection.empty()) {
+        loadLogFile_(selection.front());
+      }
+    }
+
+    if (pendingSaveWorkspaceDialog_ && pendingSaveWorkspaceDialog_->ready(0)) {
+      std::string path = pendingSaveWorkspaceDialog_->result();
+      pendingSaveWorkspaceDialog_.reset();
+      if (!path.empty()) {
+        saveWorkspaceFile_(path);
+      }
+    }
+
+    if (pendingLoadWorkspaceDialog_ && pendingLoadWorkspaceDialog_->ready(0)) {
+      auto selection = pendingLoadWorkspaceDialog_->result();
+      pendingLoadWorkspaceDialog_.reset();
+      if (!selection.empty()) {
+        loadWorkspaceFile_(selection.front());
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Log loading
+  // ---------------------------------------------------------------------
+
+  void App::loadLogFile_(const std::string &path)
+  {
+    core::LogSession newSession;
+    std::string error;
+    if (!parser_.parse(path, newSession, error)) {
+      loadErrorMessage_ = error;
+      showLoadErrorPopup_ = true;
+      return;
+    }
+
+    session_ = std::move(newSession);
+    refreshPanelsFromSession();
+  }
+
+  // ---------------------------------------------------------------------
+  // Workspace save/load
+  // ---------------------------------------------------------------------
+
+  void App::saveWorkspaceFile_(const std::string &path) {
+    nlohmann::json root;
+    root["logFilePath"] = session_.sourcePath();
+
+    nlohmann::json panelsJson = nlohmann::json::array();
+    for (const auto &panel : panels_) {
+      panelsJson.push_back({ {"type", panel->panelTypeId()}, {"state", panel->saveState()} });
+    }
+    root["panels"] = panelsJson;
+
+    // Capture ImGui docking / window positions. Restoring this depends on
+    // each panel's window ID (its "###title" suffix) matching between
+    // save and load -- title is restored via PlotPanel::loadState().
+    size_t iniSize = 0;
+    const char *iniData = ImGui::SaveIniSettingsToMemory(&iniSize);
+    if (iniData != nullptr && iniSize > 0) {
+      root["imguiLayout"] = std::string(iniData, iniSize);
+    }
+
+    std::ofstream file(path);
+    if (!file.is_open()) {
+      loadErrorMessage_ = "Could not write workspace file: " + path;
+      showLoadErrorPopup_ = true;
+      return;
+    }
+    file << root.dump(2);
+    currentWorkspacePath_ = path;
+    updateWindowTitle_();
+    addRecentWorkspace_(path);
+  }
+
+  void App::loadWorkspaceFile_(const std::string &path) {
+    std::ifstream file(path);
+    if (!file.is_open()) {
+      loadErrorMessage_ = "Could not open workspace file: " + path;
+      showLoadErrorPopup_ = true;
+      return;
+    }
+
+    nlohmann::json root;
+    try {
+      file >> root;
+    } catch (const std::exception &e) {
+      loadErrorMessage_ = std::string("Invalid workspace file: ") + e.what();
+      showLoadErrorPopup_ = true;
+      return;
+    }
+
+    addRecentWorkspace_(path);
+    currentWorkspacePath_ = path;
+    updateWindowTitle_();
+    panels_.clear();
+
+    if (root.contains("logFilePath") && root["logFilePath"].is_string()) {
+      std::string logPath = root["logFilePath"].get<std::string>();
+      if (!logPath.empty()) {
+        loadLogFile_(logPath); // shows its own error popup on failure
+      }
+    }
+
+    if (root.contains("panels") && root["panels"].is_array()) {
+      for (const auto &panelJson : root["panels"]) {
+        if (!panelJson.contains("type") || !panelJson["type"].is_string()) {
+          continue;
+        }
+        std::string type = panelJson["type"].get<std::string>();
+        nlohmann::json state = panelJson.contains("state") ? panelJson["state"] : nlohmann::json::object();
+        PlotPanel *panel = nullptr;
+        if (type == "TimeSeries") {
+          panel = addTimeSeriesPanel({ "RPM" });
+        } else if (type == "Scatter") {
+          panel = addScatterPanel("RPM", "AFR");
+        } else if (type == "Status") {
+          panel = addStatusPanel();
+        } else if (type == "TargetAfrTable") {
+          panel = addTableEditorPanel("TargetAfrTable", "Target AFR");
+        } else if (type == "VeTable") {
+          panel = addTableEditorPanel("VeTable", "VE Table (Current)");
+        }
+        if (panel != nullptr) {
+          panel->loadState(state);
+        }
+      }
+    }
+
+    // Restore ImGui docking / window layout -- must come after the panels
+    // above are (re)created, since it applies by matching each window's
+    // "###panelId" ID against what's in the ini blob.
+    if (root.contains("imguiLayout") && root["imguiLayout"].is_string()) {
+      std::string iniData = root["imguiLayout"].get<std::string>();
+      ImGui::LoadIniSettingsFromMemory(iniData.c_str(), iniData.size());
+    }
+  }
+
+  void App::addRecentWorkspace_(const std::string &path) {
+    // Move to front if already present, rather than allowing duplicates.
+    recentWorkspacePaths_.erase(
+      std::remove(recentWorkspacePaths_.begin(), recentWorkspacePaths_.end(), path),
+      recentWorkspacePaths_.end());
+    recentWorkspacePaths_.insert(recentWorkspacePaths_.begin(), path);
+    if (recentWorkspacePaths_.size() > kMaxRecentWorkspaces) {
+      recentWorkspacePaths_.resize(kMaxRecentWorkspaces);
+    }
+    saveSettings_();
+  }
+
+  void App::loadSettings_() {
+    std::ifstream file(kSettingsFilePath);
+    if (!file.is_open()) {
+      return; // no settings file yet -- fine, just start empty
+    }
+
+    nlohmann::json root;
+    try {
+      file >> root;
+    } catch (const std::exception &) {
+      return; // corrupt/unreadable -- just start fresh rather than error out
+    }
+
+    if (root.contains("recentWorkspaces") && root["recentWorkspaces"].is_array()) {
+      for (const auto &entry : root["recentWorkspaces"]) {
+        if (entry.is_string()) {
+          recentWorkspacePaths_.push_back(entry.get<std::string>());
+        }
+      }
+      if (recentWorkspacePaths_.size() > kMaxRecentWorkspaces) {
+        recentWorkspacePaths_.resize(kMaxRecentWorkspaces);
+      }
+    }
+  }
+
+  void App::saveSettings_() const {
+    nlohmann::json root;
+    root["recentWorkspaces"] = recentWorkspacePaths_;
+
+    std::ofstream file(kSettingsFilePath);
+    if (file.is_open()) {
+      file << root.dump(2);
+    }
+    // Best-effort -- not worth an error popup if this fails to write.
+  }
+
+  void App::updateWindowTitle_() {
+    if (window_ == nullptr) {
+      return;
+    }
+    std::string title = kAppBaseTitle;
+    if (!currentWorkspacePath_.empty()) {
+      title += " - " + fileNameWithoutExtension(currentWorkspacePath_);
+    }
+    glfwSetWindowTitle(window_, title.c_str());
+  }
+
+  // ---------------------------------------------------------------------
+  // Panel management
+  // ---------------------------------------------------------------------
+
+  void App::refreshPanelsFromSession()
+  {
+    for (auto &panel : panels_) {
+      panel->setSession(&session_);
+    }
+  }
+
+  void App::bumpNextPanelIdPastLoadedTitles()
+  {
+    for (const auto &panel : panels_) {
+      const std::string &t = panel->title();
+      size_t i = t.size();
+      while (i > 0 && std::isdigit(static_cast<unsigned char>(t[i - 1]))) {
+        --i;
+      }
+      if (i < t.size()) {
+        int trailingNumber = std::atoi(t.c_str() + i);
+        nextPanelId_ = (std::max)(nextPanelId_, trailingNumber + 1);
+      }
+    }
+  }
+
+  PlotPanel *App::addTimeSeriesPanel(const std::vector<std::string> &initialChannelNames)
+  {
+    std::string panelId = "Time Series " + std::to_string(nextPanelId_++);
+    auto panel = std::make_unique<TimeSeriesPanel>(panelId, initialChannelNames);
+    panel->setSession(&session_);
+    panels_.push_back(std::move(panel));
+    return panels_.back().get();
+  }
+
+  PlotPanel *App::addScatterPanel(const std::string &initialXChannel, const std::string &initialYChannel)
+  {
+    std::string panelId = "Scatter " + std::to_string(nextPanelId_++);
+    auto panel = std::make_unique<ScatterPanel>(panelId, initialXChannel, initialYChannel);
+    panel->setSession(&session_);
+    panels_.push_back(std::move(panel));
+    return panels_.back().get();
+  }
+
+  PlotPanel *App::addStatusPanel()
+  {
+    std::string panelId = "Status " + std::to_string(nextPanelId_++);
+    auto panel = std::make_unique<StatusPanel>(panelId);
+    panel->setSession(&session_);
+    panels_.push_back(std::move(panel));
+    return panels_.back().get();
+  }
+
+  PlotPanel *App::addTableEditorPanel(const std::string &panelTypeIdValue, const std::string &displayName)
+  {
+    std::string panelId = displayName + " " + std::to_string(nextPanelId_++);
+    // 16x16 default (common MS3 table size) -- fully editable afterward.
+    core::Table2D defaultTable(core::generateEvenBreakpoints(500, 7000, 16),
+      core::generateEvenBreakpoints(20, 100, 16));
+    auto panel = std::make_unique<TableEditorPanel>(panelId, panelTypeIdValue, displayName,
+      std::move(defaultTable));
+    panels_.push_back(std::move(panel));
+    return panels_.back().get();
+  }
+
+  // ---------------------------------------------------------------------
+  // Rendering
+  // ---------------------------------------------------------------------
+
+  void App::renderMenuBar()
+  {
+    if (ImGui::BeginMenuBar()) {
+      if (ImGui::BeginMenu("File")) {
+        if (ImGui::MenuItem("Open Log...")) {
+          beginOpenLogDialog();
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Save Workspace...")) {
+          beginSaveWorkspaceDialog();
+        }
+        if (ImGui::MenuItem("Load Workspace...")) {
+          beginLoadWorkspaceDialog();
+        }
+        if (ImGui::BeginMenu("Recent Workspaces", !recentWorkspacePaths_.empty())) {
+          for (size_t i = 0; i < recentWorkspacePaths_.size(); ++i) {
+            const std::string &path = recentWorkspacePaths_[i];
+            std::string label = fileNameOnly(path) + "###recent" + std::to_string(i);
+            if (ImGui::MenuItem(label.c_str())) {
+              pendingRecentWorkspaceLoad_ = path;
+            }
+            if (ImGui::IsItemHovered()) {
+              ImGui::SetTooltip("%s", path.c_str());
+            }
+          }
+          ImGui::EndMenu();
+        }
+        ImGui::Separator();
+        ImGui::MenuItem("Exit", nullptr, false, false);
+        ImGui::EndMenu();
+      }
+      if (ImGui::BeginMenu("View")) {
+        ImGui::MenuItem("ImGui Demo", nullptr, &showDemoWindow_);
+        ImGui::EndMenu();
+      }
+      if (ImGui::BeginMenu("Panels")) {
+        if (ImGui::MenuItem("Add Time Series Panel")) {
+          addTimeSeriesPanel({ "RPM" });
+        }
+        if (ImGui::MenuItem("Add Scatter Panel")) {
+          addScatterPanel("RPM", "AFR");
+        }
+        if (ImGui::MenuItem("Add Status Panel")) {
+          addStatusPanel();
+        }
+        if (ImGui::MenuItem("Add Target AFR Table")) {
+          addTableEditorPanel("TargetAfrTable", "Target AFR");
+        }
+        if (ImGui::MenuItem("Add VE Table (Current)")) {
+          addTableEditorPanel("VeTable", "VE Table (Current)");
+        }
+        ImGui::EndMenu();
+      }
+      ImGui::EndMenuBar();
+    }
+  }
+
+  void App::renderDockspace() {
+    ImGuiWindowFlags hostFlags =
+      ImGuiWindowFlags_NoDocking |
+      ImGuiWindowFlags_NoTitleBar |
+      ImGuiWindowFlags_NoCollapse |
+      ImGuiWindowFlags_NoResize |
+      ImGuiWindowFlags_NoMove |
+      ImGuiWindowFlags_NoBringToFrontOnFocus |
+      ImGuiWindowFlags_NoNavFocus |
+      ImGuiWindowFlags_MenuBar;
+
+    const ImGuiViewport *viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::SetNextWindowViewport(viewport->ID);
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+
+    ImGui::Begin("DockSpaceHost", nullptr, hostFlags);
+    ImGui::PopStyleVar(3);
+
+    renderMenuBar();
+
+    ImGuiID dockspaceId = ImGui::GetID("MainDockSpace");
+    ImGui::DockSpace(dockspaceId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
+
+    ImGui::End();
+  }
+
+  void App::renderLoadErrorPopup()
+  {
+    if (showLoadErrorPopup_) {
+      ImGui::OpenPopup("Load Error");
+      showLoadErrorPopup_ = false;
+    }
+
+    if (ImGui::BeginPopupModal("Load Error", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::TextWrapped("%s", loadErrorMessage_.c_str());
+      if (ImGui::Button("OK", ImVec2(120, 0))) {
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
+    }
+  }
+
+  void App::render()
+  {
+    pollPendingDialogs();
+
+    renderDockspace();
+
+    if (!pendingRecentWorkspaceLoad_.empty()) {
+      std::string path = std::move(pendingRecentWorkspaceLoad_);
+      pendingRecentWorkspaceLoad_.clear();
+      loadWorkspaceFile_(path);
+    }
+
+    renderLoadErrorPopup();
+
+    for (auto &panel : panels_) {
+      panel->render(cursor_);
+    }
+
+    panels_.erase(
+      std::remove_if(panels_.begin(), panels_.end(),
+        [](const std::unique_ptr<PlotPanel> &panel) { return panel->wantsClose(); }),
+      panels_.end());
+
+    if (showDemoWindow_) {
+      ImGui::ShowDemoWindow(&showDemoWindow_);
+    }
+
+    firstFrame_ = false;
+  }
+
+} // namespace ui
+
+
+## File: src/ui/app.h
+
+#pragma once
+
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "core/logsession.h"
+#include "io/megasquirtcsvparser.h"
+#include "ui/plotpanel.h"
+
+struct GLFWwindow;
+
+namespace pfd {
+  class open_file;
+  class save_file;
+} // namespace pfd
+
+namespace ui {
+
+  // Owns the main window's per-frame UI: dockspace + panels.
+  // Does not own the GLFW/OpenGL/ImGui lifecycle -- that's main.cpp's job,
+  // but it does hold the GLFWwindow* to update the title bar.
+  class App {
+  public:
+    explicit App(GLFWwindow *window);
+    ~App();
+
+    // Called once per frame, between ImGui::NewFrame() and ImGui::Render().
+    void render();
+
+  private:
+    void renderDockspace();
+    void renderMenuBar();
+    void renderLoadErrorPopup();
+
+    // File dialogs are non-blocking: opening one just creates it, and
+    // pollPendingDialogs_() checks each frame whether the user has
+    // finished with it yet. Never call pfd's blocking .result() directly
+    // from a menu click handler -- that freezes the render loop (and the
+    // whole app) for as long as the native dialog is open, which is a
+    // known source of crashes/hangs with ImGui's immediate-mode loop.
+    void pollPendingDialogs();
+    void beginOpenLogDialog();
+    void beginSaveWorkspaceDialog();
+    void beginLoadWorkspaceDialog();
+
+    void loadLogFile_(const std::string &path);
+    void saveWorkspaceFile_(const std::string &path);
+    void loadWorkspaceFile_(const std::string &path);
+    void addRecentWorkspace_(const std::string &path);
+    void loadSettings_();
+    void saveSettings_() const;
+    void updateWindowTitle_();
+
+    void refreshPanelsFromSession();
+    PlotPanel *addTimeSeriesPanel(const std::vector<std::string> &initialChannelNames);
+    PlotPanel *addScatterPanel(const std::string &initialXChannel, const std::string &initialYChannel);
+    PlotPanel *addStatusPanel();
+    PlotPanel *addTableEditorPanel(const std::string &panelTypeIdValue, const std::string &displayName);
+    // After a workspace load restores each panel's title() via loadState(),
+    // bump nextPanelId_ past any trailing number found in those titles --
+    // otherwise a panel added later via the Panels menu could reuse an ID
+    // (and thus an ImGui window ID) that a reloaded panel already has.
+    void bumpNextPanelIdPastLoadedTitles();
+
+    bool showDemoWindow_ = false;
+    bool firstFrame_ = true;
+
+    GLFWwindow *window_ = nullptr;
+    std::string currentWorkspacePath_; // empty until a workspace is saved/loaded
+
+    PlotCursor cursor_;
+    std::vector<std::unique_ptr<PlotPanel>> panels_;
+    int nextPanelId_ = 1;
+
+    io::MegasquirtCsvParser parser_;
+    core::LogSession session_;
+
+    bool showLoadErrorPopup_ = false;
+    std::string loadErrorMessage_;
+
+    std::unique_ptr<pfd::open_file> pendingOpenLogDialog_;
+    std::unique_ptr<pfd::save_file> pendingSaveWorkspaceDialog_;
+    std::unique_ptr<pfd::open_file> pendingLoadWorkspaceDialog_;
+
+    // Most-recent-first, capped at kMaxRecentWorkspaces. In-memory only
+    // for now -- resets on app restart. Say the word if you'd rather this
+    // persist across restarts (small addition: read/write a tiny settings
+    // file alongside the executable).
+    static constexpr size_t kMaxRecentWorkspaces = 5;
+    std::vector<std::string> recentWorkspacePaths_;
+
+    // Set when a "Recent Workspaces" menu item is clicked, consumed right
+    // after the menu finishes rendering. Loading immediately from inside
+    // the menu's loop would mutate recentWorkspacePaths_ (via
+    // addRecentWorkspace_) while we're still iterating over it.
+    std::string pendingRecentWorkspaceLoad_;
+  };
+
+} // namespace ui
+
+
+## File: src/ui/plotpanel.cpp
+
+#include "ui/plotpanel.h"
+
+#include <utility>
+
+#include "3rdparty/nlohmann/json.hpp"
+
+namespace ui {
+
+  PlotPanel::PlotPanel(std::string title)
+    : title_(std::move(title)) {}
+
+  nlohmann::json PlotPanel::saveState() const {
+    return nlohmann::json{ {"title", title_} };
+  }
+
+  void PlotPanel::loadState(const nlohmann::json & state) {
+    if (state.contains("title") && state["title"].is_string()) {
+      title_ = state["title"].get<std::string>();
+    }
+  }
+
+} // namespace ui
+
+
+## File: src/ui/plotpanel.h
+
+#pragma once
+
+#include <string>
+
+#include "3rdparty/nlohmann/json_fwd.hpp"
+
+namespace core {
+  class LogSession;
+} // namespace core
+
+namespace ui {
+
+  // Shared time cursor, synced across all panels. Panels write to it when
+  // hovered, and read it to draw a marker even when a different panel is
+  // being hovered.
+  struct PlotCursor {
+    double timeSec = 0.0;
+    bool active = false;
+  };
+
+  // Base interface for a single dockable plot/data panel.
+  class PlotPanel {
+  public:
+    explicit PlotPanel(std::string title);
+    virtual ~PlotPanel() = default;
+
+    // Renders the panel's ImGui window and contents for this frame.
+    virtual void render(PlotCursor &cursor) = 0;
+
+    // True once the user has closed this panel (e.g. via the window's
+    // close button). App removes panels that return true after render().
+    // Default false for panel types that don't support closing.
+    virtual bool wantsClose() const { return false; }
+
+    // Called by App after a log loads (or reloads). Default no-op for
+    // panel types that don't bind to session data directly.
+    virtual void setSession(const core::LogSession * /*session*/) {}
+
+    // Stable type tag used in saved workspace files to know which
+    // concrete panel type to reconstruct on load. Keep existing values
+    // stable across versions -- renaming breaks old workspace files.
+    virtual std::string panelTypeId() const = 0;
+
+    // Panel-specific selection state (which channel(s) are chosen, etc.)
+    // for workspace save/load. Defaults to "nothing to save" for panel
+    // types that don't need it.
+    virtual nlohmann::json saveState() const;
+    virtual void loadState(const nlohmann::json &state);
+
+    const std::string &title() const { return title_; }
+
+  private:
+    std::string title_;
+  };
+
+} // namespace ui
+
+
+## File: src/ui/scatterpanel.cpp
+
+#include "ui/scatterpanel.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <utility>
+
+#include "3rdparty/nlohmann/json.hpp"
+#include "imgui.h"
+#include "implot.h"
+
+namespace ui {
+
+  ScatterPanel::ScatterPanel(std::string title, std::string initialXChannel,
+    std::string initialYChannel)
+    : PlotPanel(std::move(title)),
+    selectedXChannel_(std::move(initialXChannel)),
+    selectedYChannel_(std::move(initialYChannel))
+  {
+    generatePlaceholderData();
+  }
+
+  void ScatterPanel::generatePlaceholderData()
+  {
+    constexpr int kSampleCount = 500;
+    placeholderXValues_.resize(kSampleCount);
+    placeholderYValues_.resize(kSampleCount);
+
+    for (int i = 0; i < kSampleCount; ++i) {
+      double t = static_cast<double>(i) / (kSampleCount - 1) * 60.0;
+      placeholderXValues_[i] = 2500.0 + 1500.0 * std::sin(t * 0.3) + 200.0 * std::sin(t * 2.7);
+      placeholderYValues_[i] = 50.0 + 30.0 * std::sin(t * 0.25 + 1.0);
+    }
+  }
+
+  void ScatterPanel::setSession(const core::LogSession *session)
+  {
+    session_ = session;
+    rebindChannels();
+  }
+
+  void ScatterPanel::rebindChannels()
+  {
+    cachedTimeSec_ = nullptr;
+    cachedXValues_ = nullptr;
+    cachedYValues_ = nullptr;
+    cachedXUnit_.clear();
+    cachedYUnit_.clear();
+
+    if (session_ == nullptr) {
+      rebuildColorData();
+      return;
+    }
+
+    const core::Channel *xChannel = session_->findChannel(selectedXChannel_);
+    const core::Channel *yChannel = session_->findChannel(selectedYChannel_);
+    const std::vector<double> *timeSec = session_->timeSec();
+
+    if (xChannel == nullptr || yChannel == nullptr || timeSec == nullptr || timeSec->empty()) {
+      rebuildColorData();
+      return;
+    }
+    if (xChannel->values().size() != timeSec->size() ||
+      yChannel->values().size() != timeSec->size()) {
+      rebuildColorData();
+      return;
+    }
+
+    cachedTimeSec_ = timeSec;
+    cachedXValues_ = &xChannel->values();
+    cachedYValues_ = &yChannel->values();
+    cachedXUnit_ = xChannel->unit();
+    cachedYUnit_ = yChannel->unit();
+
+    rebuildColorData();
+  }
+
+  nlohmann::json ScatterPanel::saveState() const
+  {
+    nlohmann::json j = PlotPanel::saveState();
+    j["xChannel"] = selectedXChannel_;
+    j["yChannel"] = selectedYChannel_;
+    j["colorChannel"] = selectedColorChannel_;
+    return j;
+  }
+
+  void ScatterPanel::loadState(const nlohmann::json &state)
+  {
+    PlotPanel::loadState(state);
+    bool changed = false;
+    if (state.contains("xChannel") && state["xChannel"].is_string()) {
+      selectedXChannel_ = state["xChannel"].get<std::string>();
+      changed = true;
+    }
+    if (state.contains("yChannel") && state["yChannel"].is_string()) {
+      selectedYChannel_ = state["yChannel"].get<std::string>();
+      changed = true;
+    }
+    if (state.contains("colorChannel") && state["colorChannel"].is_string()) {
+      selectedColorChannel_ = state["colorChannel"].get<std::string>();
+    }
+    if (changed) {
+      rebindChannels(); // also rebuilds color data
+    } else {
+      rebuildColorData();
+    }
+  }
+
+  void ScatterPanel::rebuildColorData()
+  {
+    cachedPointColors_.clear();
+
+    if (selectedColorChannel_.empty() || session_ == nullptr || cachedXValues_ == nullptr) {
+      return; // "None" selected, or no base data to color yet
+    }
+
+    const core::Channel *colorChannel = session_->findChannel(selectedColorChannel_);
+    if (colorChannel == nullptr || colorChannel->values().size() != cachedXValues_->size()) {
+      return; // channel missing or misaligned -- fall back to flat color
+    }
+
+    const std::vector<double> &colorValues = colorChannel->values();
+
+    colorChannelMin_ = colorValues.front();
+    colorChannelMax_ = colorValues.front();
+    for (double v : colorValues) {
+      if (v < colorChannelMin_) colorChannelMin_ = v;
+      if (v > colorChannelMax_) colorChannelMax_ = v;
+    }
+
+    const double range = colorChannelMax_ - colorChannelMin_;
+    cachedPointColors_.resize(colorValues.size());
+    for (size_t i = 0; i < colorValues.size(); ++i) {
+      float t = (range > 1e-9) ? static_cast<float>((colorValues[i] - colorChannelMin_) / range)
+        : 0.5f;
+      ImVec4 color = ImPlot::SampleColormap(t, ImPlotColormap_Viridis);
+      cachedPointColors_[i] = ImGui::ColorConvertFloat4ToU32(color);
+    }
+  }
+
+  void ScatterPanel::render(PlotCursor &cursor)
+  {
+    std::string windowLabel = selectedXChannel_ + " vs " + selectedYChannel_;
+    if (!selectedColorChannel_.empty()) {
+      windowLabel += " vs " + selectedColorChannel_;
+    }
+    windowLabel += "###" + title();
+    ImGui::Begin(windowLabel.c_str(), &open_);
+
+    const bool haveSession = (session_ != nullptr && !session_->channels().empty());
+
+    if (haveSession) {
+      if (ImGui::BeginCombo("X Channel", selectedXChannel_.c_str())) {
+        for (const auto &channel : session_->channels()) {
+          bool isSelected = (channel.name() == selectedXChannel_);
+          if (ImGui::Selectable(channel.name().c_str(), isSelected)) {
+            selectedXChannel_ = channel.name();
+            rebindChannels();
+          }
+          if (isSelected) {
+            ImGui::SetItemDefaultFocus();
+          }
+        }
+        ImGui::EndCombo();
+      }
+      if (ImGui::BeginCombo("Y Channel", selectedYChannel_.c_str())) {
+        for (const auto &channel : session_->channels()) {
+          bool isSelected = (channel.name() == selectedYChannel_);
+          if (ImGui::Selectable(channel.name().c_str(), isSelected)) {
+            selectedYChannel_ = channel.name();
+            rebindChannels();
+          }
+          if (isSelected) {
+            ImGui::SetItemDefaultFocus();
+          }
+        }
+        ImGui::EndCombo();
+      }
+      {
+        const char *colorComboLabel =
+          selectedColorChannel_.empty() ? "None" : selectedColorChannel_.c_str();
+        if (ImGui::BeginCombo("Color Channel", colorComboLabel)) {
+          bool noneSelected = selectedColorChannel_.empty();
+          if (ImGui::Selectable("None", noneSelected)) {
+            selectedColorChannel_.clear();
+            rebuildColorData();
+          }
+          if (noneSelected) {
+            ImGui::SetItemDefaultFocus();
+          }
+          for (const auto &channel : session_->channels()) {
+            bool isSelected = (channel.name() == selectedColorChannel_);
+            if (ImGui::Selectable(channel.name().c_str(), isSelected)) {
+              selectedColorChannel_ = channel.name();
+              rebuildColorData();
+            }
+            if (isSelected) {
+              ImGui::SetItemDefaultFocus();
+            }
+          }
+          ImGui::EndCombo();
+        }
+      }
+    } else {
+      ImGui::TextDisabled("No log loaded yet.");
+    }
+
+    const bool haveRealData = (cachedXValues_ != nullptr && cachedYValues_ != nullptr);
+    const std::vector<double> &xValues = haveRealData ? *cachedXValues_ : placeholderXValues_;
+    const std::vector<double> &yValues = haveRealData ? *cachedYValues_ : placeholderYValues_;
+
+    if (haveSession && !haveRealData) {
+      ImGui::TextDisabled("One or both channels not found in this log.");
+    }
+
+    std::string xAxisLabel = selectedXChannel_;
+    if (!cachedXUnit_.empty()) {
+      xAxisLabel += " (" + cachedXUnit_ + ")";
+    }
+    std::string yAxisLabel = selectedYChannel_;
+    if (!cachedYUnit_.empty()) {
+      yAxisLabel += " (" + cachedYUnit_ + ")";
+    }
+
+    const bool haveColorData =
+      !cachedPointColors_.empty() && cachedPointColors_.size() == xValues.size();
+
+    if (haveColorData) {
+      ImPlot::PushColormap(ImPlotColormap_Viridis);
+      ImPlot::ColormapScale(selectedColorChannel_.c_str(), colorChannelMin_, colorChannelMax_,
+        ImVec2(80, -1));
+      ImGui::SameLine();
+    }
+
+    if (ImPlot::BeginPlot("##Scatter", ImVec2(-1, -1))) {
+      ImPlot::SetupAxes(xAxisLabel.c_str(), yAxisLabel.c_str());
+
+      if (haveColorData) {
+        ImPlotSpec spec;
+        spec.MarkerFillColors = cachedPointColors_.data();
+        ImPlot::PlotScatter("Samples", xValues.data(), yValues.data(),
+          static_cast<int>(xValues.size()), spec);
+      } else {
+        ImPlot::PlotScatter("Samples", xValues.data(), yValues.data(),
+          static_cast<int>(xValues.size()));
+      }
+
+      // Highlight the sample nearest the shared cursor time -- only
+      // meaningful with real, time-aligned data.
+      if (haveRealData && cursor.active && cachedTimeSec_ != nullptr && !cachedTimeSec_->empty()) {
+        auto it = std::lower_bound(cachedTimeSec_->begin(), cachedTimeSec_->end(), cursor.timeSec);
+        size_t index = static_cast<size_t>(it - cachedTimeSec_->begin());
+        if (index >= cachedTimeSec_->size()) {
+          index = cachedTimeSec_->size() - 1;
+        } else if (index > 0) {
+          double distNext = std::fabs((*cachedTimeSec_)[index] - cursor.timeSec);
+          double distPrev = std::fabs((*cachedTimeSec_)[index - 1] - cursor.timeSec);
+          if (distPrev < distNext) {
+            index -= 1;
+          }
+        }
+
+        double highlightX = xValues[index];
+        double highlightY = yValues[index];
+        ImPlotSpec cursorSpec;
+        cursorSpec.Marker = ImPlotMarker_Circle;
+        cursorSpec.MarkerSize = 8.0f;
+        cursorSpec.MarkerFillColor = ImVec4(1.0f, 1.0f, 0.0f, 1.0f);
+        cursorSpec.LineWeight = 2.0f;
+        ImPlot::PlotScatter("Cursor", &highlightX, &highlightY, 1, cursorSpec);
+      }
+
+      ImPlot::EndPlot();
+    }
+
+    if (haveColorData) {
+      ImPlot::PopColormap();
+    }
+
+    ImGui::End();
+  }
+
+} // namespace ui
+
+
+## File: src/ui/scatterpanel.h
+
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+#include "core/logsession.h"
+#include "ui/plotpanel.h"
+
+namespace ui {
+
+  // Scatter plot of one channel against another (e.g. RPM vs AFR), with
+  // channel-picker dropdowns for X, Y, and an optional Color (Z) channel --
+  // e.g. RPM x MAP colored by EGT. Reads but does not write the shared
+  // PlotCursor: when the cursor is active, highlights the sample nearest
+  // that time, so you can see where in the scatter the engine was operating
+  // at that moment in the log.
+  class ScatterPanel : public PlotPanel {
+  public:
+    ScatterPanel(std::string title, std::string initialXChannel, std::string initialYChannel);
+
+    void render(PlotCursor &cursor) override;
+    bool wantsClose() const override { return !open_; }
+
+    void setSession(const core::LogSession *session) override;
+
+    std::string panelTypeId() const override { return "Scatter"; }
+    nlohmann::json saveState() const override;
+    void loadState(const nlohmann::json &state) override;
+
+  private:
+    void generatePlaceholderData();
+    void rebindChannels();
+    void rebuildColorData();
+
+    std::string selectedXChannel_;
+    std::string selectedYChannel_;
+    std::string selectedColorChannel_; // empty = "None" (flat color)
+    const core::LogSession *session_ = nullptr;
+    bool open_ = true;
+
+    const std::vector<double> *cachedTimeSec_ = nullptr;
+    const std::vector<double> *cachedXValues_ = nullptr;
+    const std::vector<double> *cachedYValues_ = nullptr;
+    std::string cachedXUnit_;
+    std::string cachedYUnit_;
+
+    // Only populated when selectedColorChannel_ is non-empty and found.
+    std::vector<uint32_t> cachedPointColors_;
+    double colorChannelMin_ = 0.0;
+    double colorChannelMax_ = 0.0;
+
+    std::vector<double> placeholderXValues_;
+    std::vector<double> placeholderYValues_;
+  };
+
+} // namespace ui
+
+
+## File: src/ui/statuspanel.cpp
+
+#include "ui/statuspanel.h"
+
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstdio>
+#include <utility>
+
+#include "3rdparty/nlohmann/json.hpp"
+#include "imgui.h"
+
+namespace ui {
+
+  namespace {
+
+    std::string toLower(const std::string &s) {
+      std::string result = s;
+      for (char &c : result) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      }
+      return result;
+    }
+
+    // Truncates text with a trailing "..." so it fits within maxWidth pixels
+    // at the current font, rather than letting ImGui silently clip it.
+    std::string truncateToWidth(const std::string &text, float maxWidth) {
+      if (ImGui::CalcTextSize(text.c_str()).x <= maxWidth) {
+        return text;
+      }
+      const char *kEllipsis = "...";
+      const float ellipsisWidth = ImGui::CalcTextSize(kEllipsis).x;
+      for (size_t len = text.size(); len > 0; --len) {
+        std::string candidate = text.substr(0, len);
+        if (ImGui::CalcTextSize(candidate.c_str()).x + ellipsisWidth <= maxWidth) {
+          return candidate + kEllipsis;
+        }
+      }
+      return kEllipsis;
+    }
+
+  } // namespace
+
+  StatusPanel::StatusPanel(std::string title) : PlotPanel(std::move(title)) {}
+
+  void StatusPanel::setSession(const core::LogSession *session) {
+    session_ = session;
+    // Deliberately not clearing visibilityOverrides_ here -- user choices
+    // persist across reloads by channel name (see class comment).
+  }
+
+  bool StatusPanel::isVisible_(const core::Channel &channel) const {
+    auto it = visibilityOverrides_.find(channel.name());
+    if (it != visibilityOverrides_.end()) {
+      return it->second;
+    }
+    return channel.isBoolean();
+  }
+
+  void StatusPanel::setVisible_(const std::string &channelName, bool visible) {
+    visibilityOverrides_[channelName] = visible;
+  }
+
+  nlohmann::json StatusPanel::saveState() const {
+    auto overrides = PlotPanel::saveState();
+    for (const auto &[name, visible] : visibilityOverrides_) {
+      overrides[name] = visible;
+    }
+    return nlohmann::json{ {"visibilityOverrides", overrides} };
+  }
+
+  void StatusPanel::loadState(const nlohmann::json &state) {
+    PlotPanel::loadState(state);
+    if (!state.contains("visibilityOverrides")) {
+      return;
+    }
+    const auto &overrides = state["visibilityOverrides"];
+    if (!overrides.is_object()) {
+      return;
+    }
+    for (auto it = overrides.begin(); it != overrides.end(); ++it) {
+      if (it.value().is_boolean()) {
+        visibilityOverrides_[it.key()] = it.value().get<bool>();
+      }
+    }
+  }
+
+  size_t StatusPanel::nearestIndex_(const std::vector<double> &timeSec, double queryTime) const {
+    auto it = std::lower_bound(timeSec.begin(), timeSec.end(), queryTime);
+    size_t index = static_cast<size_t>(it - timeSec.begin());
+    if (index >= timeSec.size()) {
+      index = timeSec.size() - 1;
+    } else if (index > 0) {
+      double distNext = std::fabs(timeSec[index] - queryTime);
+      double distPrev = std::fabs(timeSec[index - 1] - queryTime);
+      if (distPrev < distNext) {
+        index -= 1;
+      }
+    }
+    return index;
+  }
+
+  void StatusPanel::renderChannelPickerPopup_() {
+    if (ImGui::Button("Channels...")) {
+      ImGui::OpenPopup("StatusPanelChannelsPopup");
+    }
+
+    if (ImGui::BeginPopup("StatusPanelChannelsPopup")) {
+      if (session_ == nullptr || session_->channels().empty()) {
+        ImGui::TextDisabled("No log loaded yet.");
+        ImGui::EndPopup();
+        return;
+      }
+
+      if (ImGui::Button("Select All")) {
+        for (const auto &channel : session_->channels()) {
+          setVisible_(channel.name(), true);
+        }
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Unselect All")) {
+        for (const auto &channel : session_->channels()) {
+          setVisible_(channel.name(), false);
+        }
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Status Channels Only")) {
+        for (const auto &channel : session_->channels()) {
+          setVisible_(channel.name(), channel.isBoolean());
+        }
+      }
+
+      ImGui::InputTextWithHint("##Filter", "Filter channels...", filterText_.data(),
+        filterText_.capacity() + 1,
+        ImGuiInputTextFlags_CallbackResize,
+        [](ImGuiInputTextCallbackData *data) -> int {
+          auto *str = static_cast<std::string *>(data->UserData);
+          str->resize(static_cast<size_t>(data->BufTextLen));
+          data->Buf = str->data();
+          return 0;
+        },
+        &filterText_);
+
+      ImGui::BeginChild("StatusPanelChannelList", ImVec2(320, 360), ImGuiChildFlags_Borders);
+      const std::string filterLower = toLower(filterText_);
+      for (const auto &channel : session_->channels()) {
+        if (!filterLower.empty() && toLower(channel.name()).find(filterLower) == std::string::npos) {
+          continue;
+        }
+        bool visible = isVisible_(channel);
+        if (ImGui::Checkbox(channel.name().c_str(), &visible)) {
+          setVisible_(channel.name(), visible);
+        }
+      }
+      ImGui::EndChild();
+
+      ImGui::EndPopup();
+    }
+  }
+
+  void StatusPanel::renderCellGrid_(const PlotCursor &cursor) {
+    if (session_ == nullptr || session_->channels().empty()) {
+      ImGui::TextDisabled("No log loaded yet.");
+      return;
+    }
+
+    const std::vector<double> *timeSec = session_->timeSec();
+
+    constexpr float kCellWidth = 150.0f;
+    constexpr float kCellHeight = 40.0f;
+    const float availWidth = ImGui::GetContentRegionAvail().x;
+    const int columns = std::max(1, static_cast<int>(availWidth / kCellWidth));
+
+    int col = 0;
+    for (const auto &channel : session_->channels()) {
+      if (!isVisible_(channel)) {
+        continue;
+      }
+
+      bool haveValue = false;
+      double value = 0.0;
+      if (timeSec != nullptr && !timeSec->empty() && channel.values().size() == timeSec->size()) {
+        size_t index = cursor.active ? nearestIndex_(*timeSec, cursor.timeSec) : timeSec->size() - 1;
+        value = channel.values()[index];
+        haveValue = true;
+      }
+
+      const bool active = haveValue && channel.isBoolean() && value >= 0.5;
+      ImVec4 color;
+      if (!haveValue) {
+        color = ImVec4(0.25f, 0.25f, 0.25f, 1.0f); // no data
+      } else if (channel.isBoolean()) {
+        color = active ? ImVec4(0.20f, 0.65f, 0.25f, 1.0f) : ImVec4(0.35f, 0.35f, 0.35f, 1.0f);
+      } else {
+        color = ImVec4(0.25f, 0.35f, 0.55f, 1.0f); // neutral -- value shown as text instead
+      }
+
+      std::string label = channel.name();
+      if (haveValue && !channel.isBoolean()) {
+        char valueText[32];
+        std::snprintf(valueText, sizeof(valueText), "%.1f", value);
+        label += ": ";
+        label += valueText;
+      }
+
+      ImGui::PushStyleColor(ImGuiCol_Button, color);
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, color);
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive, color);
+      const ImVec2 cellSize(kCellWidth - 8.0f, kCellHeight);
+      std::string displayLabel = truncateToWidth(label, cellSize.x - 16.0f);
+      ImGui::Button(displayLabel.c_str(), cellSize);
+      ImGui::PopStyleColor(3);
+
+      if (ImGui::IsItemHovered()) {
+        if (!channel.unit().empty()) {
+          ImGui::SetTooltip("%s %s", label.c_str(), channel.unit().c_str());
+        } else {
+          ImGui::SetTooltip("%s", label.c_str());
+        }
+      }
+
+      ++col;
+      if (col < columns) {
+        ImGui::SameLine();
+      } else {
+        col = 0;
+      }
+    }
+  }
+
+  void StatusPanel::render(PlotCursor &cursor) {
+    std::string windowLabel = "Status###" + title();
+    ImGui::Begin(windowLabel.c_str(), &open_);
+
+    renderChannelPickerPopup_();
+    ImGui::Separator();
+    renderCellGrid_(cursor);
+
+    ImGui::End();
+  }
+
+} // namespace ui
+
+
+## File: src/ui/statuspanel.h
+
+#pragma once
+
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#include "core/logsession.h"
+#include "ui/plotpanel.h"
+
+namespace ui {
+
+  // Grid of LED-style cells showing digital/status channel values at the
+  // shared cursor's time position (e.g. "status: RPM Sync", "port:A0
+  // Injector A"), similar to MLVHD/TunerStudio's status display.
+  //
+  // Defaults to auto-detected boolean channels (Channel::isBoolean()), but
+  // any channel can be added/removed via the "Channels..." picker popup --
+  // visibility is tracked per channel name and persists across session
+  // reloads (a channel missing from a newly loaded log just doesn't render).
+  class StatusPanel : public PlotPanel {
+  public:
+    explicit StatusPanel(std::string title);
+
+    void render(PlotCursor &cursor) override;
+    bool wantsClose() const override { return !open_; }
+
+    void setSession(const core::LogSession *session) override;
+
+    std::string panelTypeId() const override { return "Status"; }
+    nlohmann::json saveState() const override;
+    void loadState(const nlohmann::json &state) override;
+
+  private:
+    void renderChannelPickerPopup_();
+    void renderCellGrid_(const PlotCursor &cursor);
+    bool isVisible_(const core::Channel &channel) const;
+    void setVisible_(const std::string &channelName, bool visible);
+    size_t nearestIndex_(const std::vector<double> &timeSec, double queryTime) const;
+
+    const core::LogSession *session_ = nullptr;
+    bool open_ = true;
+
+    // Explicit per-channel overrides. A channel not present here falls
+    // back to Channel::isBoolean() as its default visibility -- this is
+    // what makes auto-detected boolean channels show up by default with
+    // no seeding step needed.
+    std::unordered_map<std::string, bool> visibilityOverrides_;
+
+    std::string filterText_;
+  };
+
+} // namespace ui
+
+
+## File: src/ui/tableeditorpanel.cpp
+
+#include "ui/tableeditorpanel.h"
+
+#include <cstdio>
+#include <utility>
+
+#include "3rdparty/nlohmann/json.hpp"
+#include "imgui.h"
+
+namespace ui {
+
+  TableEditorPanel::TableEditorPanel(std::string title, std::string panelTypeIdValue,
+    std::string displayName, core::Table2D initialTable, int xDecimalPlaces, int yDecimalPlaces)
+    : PlotPanel(std::move(title))
+    , panelTypeIdValue_(std::move(panelTypeIdValue))
+    , displayName_(std::move(displayName))
+    , table_(std::move(initialTable))
+    , xDecimalPlaces_(xDecimalPlaces)
+    , yDecimalPlaces_(yDecimalPlaces)
+  {
+  }
+
+  std::string TableEditorPanel::formatValue(double value, int decimalPlaces)
+  {
+    if (decimalPlaces < 0) decimalPlaces = 0;
+    if (decimalPlaces == 0) {
+      return std::to_string(static_cast<int>(value));
+    }
+    char buffer[64];
+    std::snprintf(buffer, sizeof(buffer), "%.*f", decimalPlaces, value);
+    return std::string(buffer);
+  }
+
+  bool TableEditorPanel::renderAxisEditorPopup(const char *title)
+  {
+    ImGui::Text("Number of bins");
+
+    int remapBinCount = static_cast<int>(axisEditorValues_.size());
+    int oldCount = remapBinCount;
+
+    ImGui::InputInt("##bin_count", &remapBinCount, 1, 10);
+
+    if (remapBinCount < 0)
+      remapBinCount = 0;
+
+    if (remapBinCount != oldCount) {
+      axisEditorValues_.resize(remapBinCount, 0.0);
+    }
+
+    ImGui::Separator();
+
+    ImGui::BeginChild("BinValues", ImVec2(250, 300), true);
+
+    // Determine decimal places based on which axis is being edited
+    int decimalPlaces = (editingAxis_ == AxisEditing::X) ? xDecimalPlaces_ : yDecimalPlaces_;
+    std::string format = "%." + std::to_string(decimalPlaces) + "f";
+
+    for (int i = 0; i < static_cast<int>(axisEditorValues_.size()); ++i) {
+      ImGui::PushID(i);
+
+      std::string label = "Bin " + std::to_string(i + 1);
+      ImGui::InputDouble(label.c_str(), &axisEditorValues_[i], 0.0, 0.0, format.c_str());
+
+      ImGui::PopID();
+    }
+
+    ImGui::EndChild();
+
+
+    if (ImGui::Button("Space evenly")) {
+      if (axisEditorValues_.size() >= 2) {
+        double first = axisEditorValues_.front();
+        double last = axisEditorValues_.back();
+
+        double step = (last - first) / (axisEditorValues_.size() - 1);
+
+        for (size_t i = 1; i + 1 < axisEditorValues_.size(); ++i)
+          axisEditorValues_[i] = first + step * i;
+      }
+    }
+
+    ImGui::Separator();
+
+    // Hint text
+    if (axisEditorValues_.size() >= 2 &&
+      axisEditorValues_.front() == 0.0 &&
+      axisEditorValues_.back() == 0.0) {
+      ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.0f), "Enter first and last values before spacing.");
+    }
+
+    bool accepted = false;
+    if (ImGui::Button("OK")) {
+      ImGui::CloseCurrentPopup();
+      accepted = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel")) {
+      ImGui::CloseCurrentPopup();
+      if (editingAxis_ == AxisEditing::X)
+        axisEditorValues_ = table_.xBreakpoints();
+      else if (editingAxis_ == AxisEditing::Y)
+        axisEditorValues_ = table_.yBreakpoints();
+    }
+    return accepted;
+  }
+
+  void TableEditorPanel::renderValueGrid()
+  {
+    const auto &xBreakpoints = table_.xBreakpoints();
+    const auto &yBreakpoints = table_.yBreakpoints();
+    const size_t cols = xBreakpoints.size();
+    const size_t rows = yBreakpoints.size();
+    if (cols == 0 || rows == 0) {
+      ImGui::TextDisabled("No breakpoints defined yet.");
+      return;
+    }
+    const ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+      ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
+      ImGuiTableFlags_SizingFixedFit;
+    if (ImGui::BeginTable("ValueGrid", static_cast<int>(cols + 1), flags, ImVec2(0.0f, 400.0f))) {
+      ImGui::TableSetupScrollFreeze(1, 1);
+      ImGui::TableSetupColumn("Load \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+      for (size_t c = 0; c < cols; ++c) {
+        // Use xDecimalPlaces_ for column headers
+        std::string header = formatValue(xBreakpoints[c], xDecimalPlaces_);
+        ImGui::TableSetupColumn(header.c_str(), ImGuiTableColumnFlags_WidthFixed, 65.0f);
+      }
+      ImGui::TableHeadersRow();
+      for (size_t r = 0; r < rows; ++r) {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        // Use yDecimalPlaces_ for row headers
+        ImGui::Text("%s", formatValue(yBreakpoints[r], yDecimalPlaces_).c_str());
+        for (size_t c = 0; c < cols; ++c) {
+          ImGui::TableSetColumnIndex(static_cast<int>(c + 1));
+          ImGui::PushID(static_cast<int>(r * cols + c));
+          double v = table_.value(r, c);
+          ImGui::SetNextItemWidth(55.0f);
+          // Cell values could use 2 decimal places as well
+          if (ImGui::InputDouble("##cell", &v, 0.0, 0.0, "%.2f")) {
+            table_.setValue(r, c, v);
+          }
+          ImGui::PopID();
+        }
+      }
+      ImGui::EndTable();
+    }
+  }
+
+  void TableEditorPanel::render(PlotCursor & /*cursor*/)
+  {
+    std::string windowLabel = displayName_ + "###" + title();
+    ImGui::Begin(windowLabel.c_str(), &open_);
+
+    if (ImGui::Button("Edit vertical axis")) {
+      axisEditorValues_ = table_.yBreakpoints();
+      axisEditorBinCount_ = static_cast<int>(axisEditorValues_.size());
+      editingAxis_ = AxisEditing::Y;
+      ImGui::OpenPopup("Axis Editor");
+    }    
+    
+    ImGui::SameLine();
+
+    if (ImGui::Button("Edit horizontal axis")) {
+      axisEditorValues_ = table_.xBreakpoints();
+      axisEditorBinCount_ = static_cast<int>(axisEditorValues_.size());
+      editingAxis_ = AxisEditing::X;
+      ImGui::OpenPopup("Axis Editor");
+    }
+
+    if (ImGui::BeginPopupModal("Axis Editor")) {
+      if (renderAxisEditorPopup("Axis Editor")) {
+        if (editingAxis_ == AxisEditing::X)
+          table_.setXBreakpoints(axisEditorValues_);
+        else
+          table_.setYBreakpoints(axisEditorValues_);
+
+        editingAxis_ = AxisEditing::None;
+      }
+      ImGui::EndPopup();
+    }
+
+    ImGui::Separator();
+
+    renderValueGrid();
+
+    ImGui::End();
+  }
+
+  nlohmann::json TableEditorPanel::saveState() const
+  {
+    nlohmann::json valuesJson = PlotPanel::saveState();
+    for (size_t r = 0; r < table_.rowCount(); ++r) {
+      nlohmann::json rowJson = nlohmann::json::array();
+      for (size_t c = 0; c < table_.columnCount(); ++c) {
+        rowJson.push_back(table_.value(r, c));
+      }
+      valuesJson.push_back(rowJson);
+    }
+    return nlohmann::json{ {"xBreakpoints", table_.xBreakpoints()},
+                           {"yBreakpoints", table_.yBreakpoints()},
+                           {"values", valuesJson} };
+  }
+
+  void TableEditorPanel::loadState(const nlohmann::json &state)
+  {
+    PlotPanel::loadState(state);
+    std::vector<double> xBp = table_.xBreakpoints();
+    std::vector<double> yBp = table_.yBreakpoints();
+    if (state.contains("xBreakpoints") && state["xBreakpoints"].is_array()) {
+      xBp = state["xBreakpoints"].get<std::vector<double>>();
+    }
+    if (state.contains("yBreakpoints") && state["yBreakpoints"].is_array()) {
+      yBp = state["yBreakpoints"].get<std::vector<double>>();
+    }
+    table_.setXBreakpoints(xBp);
+    table_.setYBreakpoints(yBp);
+
+    if (state.contains("values") && state["values"].is_array()) {
+      const auto &valuesJson = state["values"];
+      for (size_t r = 0; r < valuesJson.size() && r < table_.rowCount(); ++r) {
+        const auto &rowJson = valuesJson[r];
+        if (!rowJson.is_array()) {
+          continue;
+        }
+        for (size_t c = 0; c < rowJson.size() && c < table_.columnCount(); ++c) {
+          if (rowJson[c].is_number()) {
+            table_.setValue(r, c, rowJson[c].get<double>());
+          }
+        }
+      }
+    }
+  }
+
+} // namespace ui
+
+
+## File: src/ui/tableeditorpanel.h
+
+#pragma once
+
+#include <string>
+
+#include "3rdparty/nlohmann/json_fwd.hpp"
+#include "core/table2d.h"
+#include "ui/plotpanel.h"
+
+namespace ui {
+
+  // Manual editor for a core::Table2D: editable axis breakpoints (RPM/Load,
+  // or whatever the caller labels them) and an editable value grid, laid
+  // out RPM-across-the-top / Load-down-the-side to match the TunerStudio/
+  // MLVHD convention. Used for both the Target AFR table and the real VE
+  // table (current tune) -- same structure, different content and title.
+  //
+  // Deliberately does NOT auto-sort or auto-resample breakpoints on edit:
+  // if you type a breakpoint out of increasing order, the row/column it's
+  // used as index-position for existing values doesn't move with it (same
+  // as TunerStudio itself -- keeping breakpoints increasing is on you). A
+  // warning is shown inline if an axis isn't strictly increasing.
+  class TableEditorPanel : public PlotPanel {
+  public:
+    // panelTypeIdValue is the workspace-save/load type tag (distinguishes
+    // "TargetAfrTable" from "VeTable" instances of this same class).
+    // displayName is shown in the window title (e.g. "Target AFR").
+    TableEditorPanel(std::string title, std::string panelTypeIdValue, std::string displayName, 
+      core::Table2D initialTable, int xDecimalPlaces = 0, int yDecimalPlaces = 2);
+
+    void render(PlotCursor &cursor) override;
+    bool wantsClose() const override { return !open_; }
+
+    std::string panelTypeId() const override { return panelTypeIdValue_; }
+    nlohmann::json saveState() const override;
+    void loadState(const nlohmann::json &state) override;
+
+    const core::Table2D &table() const { return table_; }
+
+  private:
+    static std::string formatValue(double value, int decimalPlaces);
+    void renderValueGrid();
+    bool renderAxisEditorPopup(const char *title);
+
+  private:
+    std::string panelTypeIdValue_;
+    std::string displayName_;
+    core::Table2D table_;
+    bool open_ = true;
+    int xDecimalPlaces_ = 0;  // Default: integers for RPM
+    int yDecimalPlaces_ = 2;  // Default: 2 decimals for load
+    std::vector<double> axisEditorValues_;
+    int axisEditorBinCount_ = 0;
+    enum class AxisEditing {
+      None,
+      X,
+      Y,
+    };
+    AxisEditing editingAxis_ = AxisEditing::None;    
+  };
+
+} // namespace ui
+
+
+## File: src/ui/timeseriespanel.cpp
+
+#include "ui/timeseriespanel.h"
+
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstdio>
+#include <utility>
+
+#include "3rdparty/nlohmann/json.hpp"
+#include "imgui.h"
+#include "implot.h"
+
+namespace ui {
+
+  namespace {
+    std::string toLower(const std::string &s) {
+      std::string result = s;
+      for (char &c : result) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      }
+      return result;
+    }
+  } // namespace
+
+  TimeSeriesPanel::TimeSeriesPanel(std::string title, std::vector<std::string> initialChannelNames)
+    : PlotPanel(std::move(title))
+  {
+    generatePlaceholderData();
+
+    int colorIdx = 0;
+    for (const auto &name : initialChannelNames) {
+      ChannelState state;
+      state.enabled = true;
+      state.color = ImPlot::GetColormapColor(colorIdx++);
+      channelStates_[name] = state;
+    }
+  }
+
+  void TimeSeriesPanel::generatePlaceholderData()
+  {
+    constexpr int kSampleCount = 2000;
+    constexpr double kDurationSec = 60.0;
+
+    placeholderTimeSec_.resize(kSampleCount);
+    placeholderValue_.resize(kSampleCount);
+
+    for (int i = 0; i < kSampleCount; ++i) {
+      double t = (static_cast<double>(i) / (kSampleCount - 1)) * kDurationSec;
+      placeholderTimeSec_[i] = t;
+      placeholderValue_[i] = 2500.0 + 1500.0 * std::sin(t * 0.3) + 200.0 * std::sin(t * 2.7);
+    }
+  }
+
+  void TimeSeriesPanel::setSession(const core::LogSession *session)
+  {
+    session_ = session;
+    rebindChannels();
+  }
+
+  void TimeSeriesPanel::rebindChannels()
+  {
+    cachedTimeSec_ = (session_ != nullptr) ? session_->timeSec() : nullptr;
+
+    if (session_ != nullptr) {
+      int colorIdx = static_cast<int>(channelStates_.size());
+      for (const auto &channel : session_->channels()) {
+        const std::string &name = channel.name();
+
+        // Check for key existence BEFORE calling operator[]
+        auto it = channelStates_.find(name);
+        if (it == channelStates_.end()) {
+          ChannelState state;
+          state.enabled = false;
+          state.color = ImPlot::GetColormapColor(colorIdx++);
+          it = channelStates_.emplace(name, state).first;
+        }
+
+        // Cache min/max for fast sidebar/legend rendering
+        auto &state = it->second;
+        const auto &vals = channel.values();
+        if (!vals.empty()) {
+          auto [minIt, maxIt] = std::minmax_element(vals.begin(), vals.end());
+          state.minIdx = static_cast<size_t>(minIt - vals.begin());
+          state.maxIdx = static_cast<size_t>(maxIt - vals.begin());
+          state.cachedMin = *minIt;
+          state.cachedMax = *maxIt;
+          state.hasRange = true;
+        } else {
+          state.hasRange = false;
+        }
+      }
+    }
+  }
+
+  nlohmann::json TimeSeriesPanel::saveState() const
+  {
+    nlohmann::json j = PlotPanel::saveState();
+    j["showSidebar"] = showSidebar_;
+    j["maxChannelsPerPlot"] = maxChannelsPerPlot_;
+
+    nlohmann::json channelsJson = nlohmann::json::object();
+    for (const auto &[name, state] : channelStates_) {
+      channelsJson[name] = {
+        {"enabled", state.enabled},
+        {"color", {state.color.x, state.color.y, state.color.z, state.color.w}}
+      };
+    }
+    j["channels"] = channelsJson;
+    return j;
+  }
+
+  void TimeSeriesPanel::loadState(const nlohmann::json &state)
+  {
+    PlotPanel::loadState(state);
+    if (state.contains("showSidebar") && state["showSidebar"].is_boolean()) {
+      showSidebar_ = state["showSidebar"].get<bool>();
+    }
+    if (state.contains("maxChannelsPerPlot") && state["maxChannelsPerPlot"].is_number_integer()) {
+      maxChannelsPerPlot_ = state["maxChannelsPerPlot"].get<int>();
+    }
+
+    if (state.contains("channels") && state["channels"].is_object()) {
+      for (auto it = state["channels"].begin(); it != state["channels"].end(); ++it) {
+        ChannelState cs;
+        cs.enabled = it.value().value("enabled", false);
+        if (it.value().contains("color") && it.value()["color"].is_array() && it.value()["color"].size() == 4) {
+          cs.color = ImVec4(
+            it.value()["color"][0],
+            it.value()["color"][1],
+            it.value()["color"][2],
+            it.value()["color"][3]
+          );
+        }
+        channelStates_[it.key()] = cs;
+      }
+    }
+    rebindChannels();
+  }
+
+  size_t TimeSeriesPanel::getCursorIndex(double queryTime) const
+  {
+    if (!cachedTimeSec_ || cachedTimeSec_->empty()) return 0;
+    auto it = std::lower_bound(cachedTimeSec_->begin(), cachedTimeSec_->end(), queryTime);
+    size_t index = static_cast<size_t>(it - cachedTimeSec_->begin());
+    if (index >= cachedTimeSec_->size()) {
+      index = cachedTimeSec_->size() - 1;
+    } else if (index > 0) {
+      double distNext = std::fabs((*cachedTimeSec_)[index] - queryTime);
+      double distPrev = std::fabs((*cachedTimeSec_)[index - 1] - queryTime);
+      if (distPrev < distNext) {
+        index -= 1;
+      }
+    }
+    return index;
+  }
+
+  void TimeSeriesPanel::jumpCursorToIndex(size_t index, PlotCursor &cursor, const std::string &label)
+  {
+    if (cachedTimeSec_ != nullptr && index < cachedTimeSec_->size()) {
+      double targetTime = (*cachedTimeSec_)[index];
+
+      // Update active cursor
+      cursor.timeSec = targetTime;
+      cursor.active = true;
+
+      // Set artifact cursor at the same spot
+      artifactCursor_.timeSec = targetTime;
+      artifactCursor_.active = true;
+      artifactCursor_.label = label;
+
+      // Signal plot renderer to center X-axis
+      targetXCenterTime_ = targetTime;
+      pendingXAxisCenter_ = true;
+    }
+  }
+
+  void TimeSeriesPanel::renderHeaderControls()
+  {
+    if (ImGui::Button(showSidebar_ ? "< Hide Channels" : "> Show Channels")) {
+      showSidebar_ = !showSidebar_;
+    }
+
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(100.0f);
+    if (ImGui::InputInt("Max/Plot", &maxChannelsPerPlot_)) {
+      if (maxChannelsPerPlot_ < 1) maxChannelsPerPlot_ = 1;
+      if (maxChannelsPerPlot_ > 16) maxChannelsPerPlot_ = 16;
+    }
+    if (ImGui::IsItemHovered()) {
+      ImGui::SetTooltip("Maximum channels displayed per subplot before creating a new subplot.");
+    }
+  }
+
+  void TimeSeriesPanel::renderLeftSidebar(PlotCursor &cursor)
+  {
+    ImGui::Text("Channels");
+    ImGui::Separator();
+
+    ImGui::InputTextWithHint("##ChannelFilter", "Filter...", filterText_.data(), filterText_.capacity() + 1,
+      ImGuiInputTextFlags_CallbackResize,
+      [](ImGuiInputTextCallbackData *data) -> int {
+        auto *str = static_cast<std::string *>(data->UserData);
+        str->resize(static_cast<size_t>(data->BufTextLen));
+        data->Buf = str->data();
+        return 0;
+      },
+      &filterText_);
+
+    ImGui::Separator();
+
+    ImGui::BeginChild("ChannelListScroll", ImVec2(0, 0), false);
+
+    const std::string filterLower = toLower(filterText_);
+
+    if (session_ != nullptr && !session_->channels().empty()) {
+      for (const auto &channel : session_->channels()) {
+        const std::string &name = channel.name();
+        if (!filterLower.empty() && toLower(name).find(filterLower) == std::string::npos) {
+          continue;
+        }
+
+        auto &state = channelStates_[name];
+        ImGui::PushID(name.c_str());
+
+        // [checkbox] color-picker channel-name
+        ImGui::Checkbox("##check", &state.enabled);
+        ImGui::SameLine();
+
+        ImGui::ColorEdit4("##color", (float *)&state.color,
+          ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoAlpha);
+        ImGui::SameLine();
+
+        ImGui::TextUnformatted(name.c_str());
+
+        // Display Min/Max in sidebar as clickable text
+        if (state.hasRange) {
+          ImGui::SameLine();
+          ImGui::PushID("jump_min");
+          if (ImGui::SmallButton(std::to_string(static_cast<int>(state.cachedMin)).c_str())) {
+            jumpCursorToIndex(state.minIdx, cursor);
+          }
+          if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Jump to Min (%.2f)", state.cachedMin);
+          }
+          ImGui::PopID();
+
+          ImGui::SameLine();
+          ImGui::PushID("jump_max");
+          if (ImGui::SmallButton(std::to_string(static_cast<int>(state.cachedMax)).c_str())) {
+            jumpCursorToIndex(state.maxIdx, cursor);
+          }
+          if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Jump to Max (%.2f)", state.cachedMax);
+          }
+          ImGui::PopID();
+        }
+
+        ImGui::PopID();
+      }
+    } else {
+      ImGui::TextDisabled("No session loaded");
+    }
+
+    ImGui::EndChild();
+  }
+
+  void TimeSeriesPanel::renderPlotArea(PlotCursor &cursor)
+  {
+    const std::vector<double> &timeSec = (cachedTimeSec_ != nullptr && !cachedTimeSec_->empty())
+      ? *cachedTimeSec_
+      : placeholderTimeSec_;
+
+    bool hasRealData = (session_ != nullptr && cachedTimeSec_ != nullptr);
+
+    // Collect enabled channels
+    std::vector<const core::Channel *> activeChannels;
+    if (hasRealData) {
+      for (const auto &channel : session_->channels()) {
+        auto it = channelStates_.find(channel.name());
+        if (it != channelStates_.end() && it->second.enabled) {
+          activeChannels.push_back(&channel);
+        }
+      }
+    }
+
+    int numActive = static_cast<int>(activeChannels.size());
+    int maxPerPlot = std::max(1, maxChannelsPerPlot_);
+    int subplotCount = (numActive > 0) ? ((numActive + maxPerPlot - 1) / maxPerPlot) : 1;
+
+    // Calculate new X limits BEFORE starting subplots if a jump was requested
+    double newMinX = 0.0;
+    double newMaxX = 0.0;
+    if (pendingXAxisCenter_) {
+      // Pick a reasonable view span (e.g., 20 seconds, or 10% of total log duration)
+      double totalDuration = timeSec.back() - timeSec.front();
+      double viewSpan = (totalDuration > 0.0) ? (totalDuration * 0.10) : 20.0;
+      if (viewSpan < 1.0) viewSpan = 1.0; // clamp minimum span
+
+      newMinX = targetXCenterTime_ - (viewSpan * 0.5);
+      newMaxX = targetXCenterTime_ + (viewSpan * 0.5);
+    }
+
+    bool renderOverlay = false;
+    ImVec2 lastPlotPos, lastPlotSize;
+
+    if (ImPlot::BeginSubplots("##TimeSeriesSubplots", subplotCount, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkAllX | ImPlotSubplotFlags_NoLegend)) {
+      for (int plotIdx = 0; plotIdx < subplotCount; ++plotIdx) {
+        std::string plotID = "##Plot_" + std::to_string(plotIdx);
+
+        // Set next axis limits for the plot before BeginPlot
+        if (pendingXAxisCenter_) {
+          ImPlot::SetNextAxisLimits(ImAxis_X1, newMinX, newMaxX, ImGuiCond_Always);
+        }
+
+        if (ImPlot::BeginPlot(plotID.c_str(), ImVec2(-1, -1))) {
+          ImPlot::SetupAxes("Time (s)", "Normalized", ImPlotAxisFlags_None, ImPlotAxisFlags_NoTickLabels);
+
+          if (hasRealData && numActive > 0) {
+            int startIdx = plotIdx * maxPerPlot;
+            int endIdx = std::min(startIdx + maxPerPlot, numActive);
+
+            for (int i = startIdx; i < endIdx; ++i) {
+              const auto *ch = activeChannels[i];
+              const auto &rawVals = ch->values();
+              if (rawVals.empty()) continue;
+
+              double minVal = channelStates_[ch->name()].cachedMin;
+              double maxVal = channelStates_[ch->name()].cachedMax;
+              double range = maxVal - minVal;
+
+              std::vector<double> normVals(rawVals.size());
+              for (size_t s = 0; s < rawVals.size(); ++s) {
+                normVals[s] = (range > 1e-6) ? ((rawVals[s] - minVal) / range) : 0.5;
+              }
+
+              ImPlotSpec spec;
+              spec.LineColor = channelStates_[ch->name()].color;
+              ImPlot::PlotLine(ch->name().c_str(), timeSec.data(), normVals.data(),
+                static_cast<int>(timeSec.size()), spec);
+            }
+          } else {
+            ImPlot::PlotLine("Placeholder", timeSec.data(), placeholderValue_.data(),
+              static_cast<int>(timeSec.size()));
+          }
+
+          if (ImPlot::IsPlotHovered()) {
+            cursor.timeSec = ImPlot::GetPlotMousePos().x;
+            cursor.active = true;
+          }
+
+          if (artifactCursor_.active) {
+            double artifactX = artifactCursor_.timeSec;
+            // Draw a dashed or dimmed vertical line
+            ImPlot::DragLineX(1, &artifactX, artifactCursor_.color, 1.0f, ImPlotDragToolFlags_NoInputs);
+
+            // Optional: Tag annotation at the top of the plot
+            if (!artifactCursor_.label.empty()) {
+              ImPlot::TagX(artifactCursor_.timeSec, artifactCursor_.color, "%s", artifactCursor_.label.c_str());
+            }
+          }
+
+          if (cursor.active) {
+            double markerX = cursor.timeSec;
+            ImPlot::DragLineX(0, &markerX, ImVec4(1.0f, 1.0f, 0.0f, 0.8f), 1.0f, ImPlotDragToolFlags_NoInputs);
+          }
+
+          if (ImPlot::IsPlotHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+            artifactCursor_.active = false;
+          }
+
+          if (plotIdx == subplotCount - 1) {
+            lastPlotPos = ImPlot::GetPlotPos();
+            lastPlotSize = ImPlot::GetPlotSize();
+            renderOverlay = true;
+          }
+
+          ImPlot::EndPlot();
+        }
+      }
+
+      ImPlot::EndSubplots();
+    }
+
+    // Reset pending jump flag after applying limits to all subplots
+    pendingXAxisCenter_ = false;
+
+    // Common overlay window flags
+    const ImGuiWindowFlags overlayFlags = ImGuiWindowFlags_NoDecoration |
+      ImGuiWindowFlags_AlwaysAutoResize |
+      ImGuiWindowFlags_NoSavedSettings |
+      ImGuiWindowFlags_NoFocusOnAppearing |
+      ImGuiWindowFlags_NoNav |
+      ImGuiWindowFlags_NoMove |
+      ImGuiWindowFlags_NoDocking;
+
+    // --- Bottom-Left Legend Overlay (Channel Min/Max Range Summary) ---
+    if (renderOverlay && hasRealData && !activeChannels.empty()) {
+      ImVec2 bottomLeftPos = ImVec2(lastPlotPos.x + 10.0f, lastPlotPos.y + lastPlotSize.y - 10.0f);
+
+      ImGui::SetNextWindowPos(bottomLeftPos, ImGuiCond_Always, ImVec2(0.0f, 1.0f));
+      ImGui::SetNextWindowBgAlpha(0.75f);
+
+      std::string rangeWindowID = "##RangeOverlay_" + title();
+      bool open = true;
+
+      if (ImGui::Begin(rangeWindowID.c_str(), &open, overlayFlags)) {
+        ImGui::TextDisabled("Channel Ranges (Click to Jump)");
+        ImGui::Separator();
+
+        for (const auto *channel : activeChannels) {
+          const auto &st = channelStates_[channel->name()];
+          ImGui::PushID(channel->name().c_str());
+
+          ImGui::TextColored(st.color, "%s:", channel->name().c_str());
+          ImGui::SameLine();
+
+          // Interactive Min label
+          char minBuf[32];
+          std::snprintf(minBuf, sizeof(minBuf), "[%.1f", st.cachedMin);
+          ImGui::TextUnformatted(minBuf);
+          if (ImGui::IsItemHovered()) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            ImGui::SetTooltip("Click to jump to Min (%.2f)", st.cachedMin);
+          }
+          if (ImGui::IsItemClicked()) {
+            jumpCursorToIndex(st.minIdx, cursor);
+          }
+
+          ImGui::SameLine(0, 2.0f);
+          ImGui::TextUnformatted("-");
+          ImGui::SameLine(0, 2.0f);
+
+          // Interactive Max label
+          char maxBuf[32];
+          std::snprintf(maxBuf, sizeof(maxBuf), "%.1f]", st.cachedMax);
+          ImGui::TextUnformatted(maxBuf);
+          if (ImGui::IsItemHovered()) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            ImGui::SetTooltip("Click to jump to Max (%.2f)", st.cachedMax);
+          }
+          if (ImGui::IsItemClicked()) {
+            jumpCursorToIndex(st.maxIdx, cursor);
+          }
+
+          ImGui::PopID();
+        }
+      }
+      ImGui::End();
+    }
+
+    // --- Bottom-Right Legend Overlay (Cursor Values) ---
+    if (renderOverlay && cursor.active) {
+      size_t cursorIdx = getCursorIndex(cursor.timeSec);
+      ImVec2 bottomRightPos = ImVec2(lastPlotPos.x + lastPlotSize.x - 10.0f, lastPlotPos.y + lastPlotSize.y - 10.0f);
+
+      ImGui::SetNextWindowPos(bottomRightPos, ImGuiCond_Always, ImVec2(1.0f, 1.0f)); // Anchor bottom-right
+      ImGui::SetNextWindowBgAlpha(0.85f);
+
+      std::string overlayWindowID = "##CursorOverlay_" + title();
+      bool open = true;
+
+      if (ImGui::Begin(overlayWindowID.c_str(), &open, overlayFlags)) {
+        ImGui::TextDisabled("Cursor @ %.3f s", cursor.timeSec);
+
+        if (artifactCursor_.active) {
+          double deltaTime = cursor.timeSec - artifactCursor_.timeSec;
+          ImGui::SameLine();
+          ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "(dt: %+.3f s)", deltaTime);
+        }
+
+        ImGui::Separator();
+
+        if (hasRealData) {
+          if (!activeChannels.empty()) {
+            for (const auto *channel : activeChannels) {
+              const auto &st = channelStates_[channel->name()];
+              double val = (cursorIdx < channel->values().size()) ? channel->values()[cursorIdx] : 0.0;
+
+              ImGui::TextColored(st.color, "%s:", channel->name().c_str());
+              ImGui::SameLine();
+              if (!channel->unit().empty()) {
+                ImGui::Text("%.2f %s", val, channel->unit().c_str());
+              } else {
+                ImGui::Text("%.2f", val);
+              }
+            }
+          } else {
+            ImGui::TextDisabled("No active channels");
+          }
+        } else {
+          ImGui::Text("%.2f", placeholderValue_[cursorIdx % placeholderValue_.size()]);
+        }
+      }
+      ImGui::End();
+    }
+  }
+
+  void TimeSeriesPanel::render(PlotCursor &cursor)
+  {
+    std::string windowLabel = "Time Series###" + title();
+    ImGui::Begin(windowLabel.c_str(), &open_);
+
+    renderHeaderControls();
+    ImGui::Separator();
+
+    if (showSidebar_) {
+      ImGui::BeginChild("SidebarChild", ImVec2(240, 0), true);
+      renderLeftSidebar(cursor);
+      ImGui::EndChild();
+
+      ImGui::SameLine();
+    }
+
+    ImGui::BeginChild("PlotChild", ImVec2(0, 0), false);
+    renderPlotArea(cursor);
+    ImGui::EndChild();
+
+    ImGui::End();
+  }
+
+} // namespace ui
+
+
+## File: src/ui/timeseriespanel.h
+
+#pragma once
+
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#include "core/logsession.h"
+#include "ui/plotpanel.h"
+
+#include <imgui.h>
+
+namespace ui {
+
+  class TimeSeriesPanel : public PlotPanel {
+  public:
+    TimeSeriesPanel(std::string title, std::vector<std::string> initialChannelNames = {});
+
+    void render(PlotCursor &cursor) override;
+    bool wantsClose() const override { return !open_; }
+
+    void setSession(const core::LogSession *session) override;
+
+    std::string panelTypeId() const override { return "TimeSeries"; }
+    nlohmann::json saveState() const override;
+    void loadState(const nlohmann::json &state) override;
+
+  private:
+    struct ChannelState {
+      bool enabled = false;
+      ImVec4 color = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+      double cachedMin = 0.0;
+      double cachedMax = 0.0;
+      size_t minIdx = 0; // Cached index for fast jump
+      size_t maxIdx = 0; // Cached index for fast jump
+      bool hasRange = false;
+    };
+
+    struct ArtifactCursor {
+      double timeSec = 0.0;
+      bool active = false;
+      std::string label; // e.g., "RPM Max (7200.0)"
+      ImVec4 color = ImVec4(0.9f, 0.9f, 0.3f, 0.4f); // Dimmed/grayed out
+    };
+
+    ArtifactCursor artifactCursor_;
+
+    void rebindChannels();
+    void renderHeaderControls();
+    void renderLeftSidebar(PlotCursor &cursor);
+    void renderPlotArea(PlotCursor &cursor);
+    size_t getCursorIndex(double queryTime) const;
+    void jumpCursorToIndex(size_t index, PlotCursor &cursor, const std::string &label = "");
+
+    bool pendingXAxisCenter_ = false;
+    double targetXCenterTime_ = 0.0;
+    
+    const core::LogSession *session_ = nullptr;
+    bool open_ = true;
+    bool showSidebar_ = true;
+    int maxChannelsPerPlot_ = 4;
+
+    std::string filterText_;
+
+    std::unordered_map<std::string, ChannelState> channelStates_;
+
+    const std::vector<double> *cachedTimeSec_ = nullptr;
+    std::vector<double> placeholderTimeSec_;
+    std::vector<double> placeholderValue_;
+
+    void generatePlaceholderData();
+  };
+
+} // namespace ui
+
+
