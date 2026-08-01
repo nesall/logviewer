@@ -5,6 +5,7 @@
 #include <fstream>
 #include <limits>
 #include <utility>
+#include <filesystem>
 
 namespace io {
 
@@ -72,8 +73,14 @@ namespace io {
 
   } // namespace
 
-  bool MegasquirtCsvParser::parse(const std::string &path, core::LogSession &outSession,
-    std::string &errorOut) {
+  bool MegasquirtCsvParser::parse(const std::string &path, core::LogSession &outSession, std::string &errorOut, std::atomic<float> *progress) {
+    std::error_code ec;
+    const uint64_t fileSize = std::filesystem::file_size(path, ec);
+    if (ec || fileSize == 0) {
+      errorOut = "Could not determine file size or file is empty: " + path;
+      return false;
+    }
+
     std::ifstream file(path);
     if (!file.is_open()) {
       errorOut = "Could not open file: " + path;
@@ -85,14 +92,17 @@ namespace io {
     std::string captureDate;
     std::vector<std::string> headerTokens;
     bool foundHeader = false;
+    uint64_t bytesRead = 0;
 
     // Scan defensively for the header row rather than hardcoding line
     // numbers, in case a future TunerStudio version adds/removes a
     // metadata line.
     while (std::getline(file, line)) {
+      bytesRead += line.size() + 1; // +1 for newline character
       if (line.empty()) {
         continue;
       }
+
       if (line.front() == '"') {
         std::string content = line;
         if (content.size() >= 2 && content.back() == '"') {
@@ -122,6 +132,7 @@ namespace io {
       errorOut = "File ended after header row (missing units row): " + path;
       return false;
     }
+    bytesRead += line.size() + 1;
     std::vector<std::string> unitTokens = splitTabDelimited(line);
 
     const size_t columnCount = headerTokens.size();
@@ -138,9 +149,15 @@ namespace io {
     std::vector<bool> sawBooleanToken(columnCount, false);
 
     while (std::getline(file, line)) {
-      if (line.empty()) {
-        continue;
+      bytesRead += line.size() + 1;
+
+      if (line.empty()) continue;
+
+      if (progress && (rowCount % 500 == 0)) {
+        float p = static_cast<float>(bytesRead) / static_cast<float>(fileSize);
+        progress->store(std::min(p, 1.0f));
       }
+
       std::vector<std::string> tokens = splitTabDelimited(line);
 
       if (tokens.size() != columnCount) {
@@ -170,6 +187,8 @@ namespace io {
       }
       ++rowCount;
     }
+
+    if (progress) progress->store(1.0f);
 
     int timeChannelIndex = -1;
     for (size_t i = 0; i < channels.size(); ++i) {

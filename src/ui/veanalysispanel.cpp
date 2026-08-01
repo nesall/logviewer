@@ -628,20 +628,76 @@ namespace ui {
   nlohmann::json VeAnalysisPanel::saveState() const
   {
     auto j = PlotPanel::saveState();
+
+    // Persist input flags and view settings
     j["hasTargetAfr"] = hasTargetAfr_;
     j["hasCurrentVe"] = hasCurrentVe_;
+    j["alignAfrDeltaToVeTable"] = alignAfrDeltaToVeTable_;
+
+    // Persist analysis channel / sample thresholds
+    j["config"] = {
+      {"rpmChannel", config_.rpmChannel},
+      {"loadChannel", config_.loadChannel},
+      {"afrChannel", config_.afrChannel},
+      {"minSamplesPerBin", config_.minSamplesPerBin}
+    };
+
+    // Only serialize primary input tables (ignore calculated ones)
     j["targetAfr"] = targetAfrPanel_.saveState();
     j["currentVe"] = currentVePanel_.saveState();
+
     return j;
   }
 
   void VeAnalysisPanel::loadState(const nlohmann::json &state)
   {
     PlotPanel::loadState(state);
-    if (state.contains("hasTargetAfr")) hasTargetAfr_ = state["hasTargetAfr"].get<bool>();
-    if (state.contains("hasCurrentVe")) hasCurrentVe_ = state["hasCurrentVe"].get<bool>();
-    if (state.contains("targetAfr")) targetAfrPanel_.loadState(state["targetAfr"]);
-    if (state.contains("currentVe")) currentVePanel_.loadState(state["currentVe"]);
+
+    if (state.contains("hasTargetAfr") && state["hasTargetAfr"].is_boolean()) {
+      hasTargetAfr_ = state["hasTargetAfr"].get<bool>();
+    }
+    if (state.contains("hasCurrentVe") && state["hasCurrentVe"].is_boolean()) {
+      hasCurrentVe_ = state["hasCurrentVe"].get<bool>();
+    }
+    if (state.contains("alignAfrDeltaToVeTable") && state["alignAfrDeltaToVeTable"].is_boolean()) {
+      alignAfrDeltaToVeTable_ = state["alignAfrDeltaToVeTable"].get<bool>();
+    }
+
+    // Restore analysis config
+    if (state.contains("config") && state["config"].is_object()) {
+      const auto &cfg = state["config"];
+      if (cfg.contains("rpmChannel") && cfg["rpmChannel"].is_string()) {
+        config_.rpmChannel = cfg["rpmChannel"].get<std::string>();
+      }
+      if (cfg.contains("loadChannel") && cfg["loadChannel"].is_string()) {
+        config_.loadChannel = cfg["loadChannel"].get<std::string>();
+      }
+      if (cfg.contains("afrChannel") && cfg["afrChannel"].is_string()) {
+        config_.afrChannel = cfg["afrChannel"].get<std::string>();
+      }
+      if (cfg.contains("minSamplesPerBin") && cfg["minSamplesPerBin"].is_number_integer()) {
+        config_.minSamplesPerBin = cfg["minSamplesPerBin"].get<size_t>();
+      }
+    }
+
+    // Restore input tables
+    if (state.contains("targetAfr")) {
+      targetAfrPanel_.loadState(state["targetAfr"]);
+    }
+    if (state.contains("currentVe")) {
+      currentVePanel_.loadState(state["currentVe"]);
+    }
+
+    // Automatically recalculate all derived tables (Observed AFR, AFR Delta, Suggested VE)
+    if (session_ != nullptr) {
+      computeObservedAfr();
+      if (hasTargetAfr_) {
+        computeAfrDelta();
+      }
+      if (hasTargetAfr_ && hasCurrentVe_) {
+        computeSuggestedVe();
+      }
+    }
   }
 
 } // namespace ui

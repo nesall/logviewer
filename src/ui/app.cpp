@@ -56,8 +56,8 @@ namespace ui {
 
   App::App(GLFWwindow *window) : window_(window)
   {
-    loadSettings_();
-    updateWindowTitle_();
+    loadSettings();
+    updateWindowTitle();
 
 
     // Two starter panels; setSession() rebinds them to real data once a
@@ -109,7 +109,7 @@ namespace ui {
       auto selection = pendingOpenLogDialog_->result();
       pendingOpenLogDialog_.reset();
       if (!selection.empty()) {
-        loadLogFile_(selection.front());
+        loadLogFile(selection.front());
       }
     }
 
@@ -117,7 +117,7 @@ namespace ui {
       std::string path = pendingSaveWorkspaceDialog_->result();
       pendingSaveWorkspaceDialog_.reset();
       if (!path.empty()) {
-        saveWorkspaceFile_(path);
+        saveWorkspaceFile(path);
       }
     }
 
@@ -125,7 +125,7 @@ namespace ui {
       auto selection = pendingLoadWorkspaceDialog_->result();
       pendingLoadWorkspaceDialog_.reset();
       if (!selection.empty()) {
-        loadWorkspaceFile_(selection.front());
+        loadWorkspaceFile(selection.front());
       }
     }
   }
@@ -134,25 +134,27 @@ namespace ui {
   // Log loading
   // ---------------------------------------------------------------------
 
-  void App::loadLogFile_(const std::string &path)
+  void App::loadLogFile(const std::string &path)
   {
-    core::LogSession newSession;
-    std::string error;
-    if (!parser_.parse(path, newSession, error)) {
-      loadErrorMessage_ = error;
-      showLoadErrorPopup_ = true;
-      return;
-    }
+    //core::LogSession newSession;
+    //std::string error;
+    //if (!parser_.parse(path, newSession, error)) {
+    //  loadErrorMessage_ = error;
+    //  showLoadErrorPopup_ = true;
+    //  return;
+    //}
 
-    session_ = std::move(newSession);
-    refreshPanelsFromSession();
+    //session_ = std::move(newSession);
+    //refreshPanelsFromSession();
+    startAsyncLogLoad(path);
   }
 
   // ---------------------------------------------------------------------
   // Workspace save/load
   // ---------------------------------------------------------------------
 
-  void App::saveWorkspaceFile_(const std::string &path) {
+  void App::saveWorkspaceFile(const std::string &path)
+  {
     nlohmann::json root;
     root["logFilePath"] = session_.sourcePath();
 
@@ -179,11 +181,12 @@ namespace ui {
     }
     file << root.dump(2);
     currentWorkspacePath_ = path;
-    updateWindowTitle_();
-    addRecentWorkspace_(path);
+    updateWindowTitle();
+    addRecentWorkspace(path);
   }
 
-  void App::loadWorkspaceFile_(const std::string &path) {
+  void App::loadWorkspaceFile(const std::string &path)
+  {
     std::ifstream file(path);
     if (!file.is_open()) {
       loadErrorMessage_ = "Could not open workspace file: " + path;
@@ -200,51 +203,92 @@ namespace ui {
       return;
     }
 
-    addRecentWorkspace_(path);
+    addRecentWorkspace(path);
     currentWorkspacePath_ = path;
-    updateWindowTitle_();
-    panels_.clear();
+    updateWindowTitle();
+    
+    // Helper lambda to finish restoring panel states once log session loads
+    auto restorePanelsAndLayout = [this, root]() {
+      panels_.clear();
 
-    if (root.contains("logFilePath") && root["logFilePath"].is_string()) {
-      std::string logPath = root["logFilePath"].get<std::string>();
-      if (!logPath.empty()) {
-        loadLogFile_(logPath); // shows its own error popup on failure
-      }
-    }
+      if (root.contains("panels") && root["panels"].is_array()) {
+        for (const auto &panelJson : root["panels"]) {
+          if (!panelJson.contains("type") || !panelJson["type"].is_string()) continue;
 
-    if (root.contains("panels") && root["panels"].is_array()) {
-      for (const auto &panelJson : root["panels"]) {
-        if (!panelJson.contains("type") || !panelJson["type"].is_string()) {
-          continue;
-        }
-        std::string type = panelJson["type"].get<std::string>();
-        nlohmann::json state = panelJson.contains("state") ? panelJson["state"] : nlohmann::json::object();
-        PlotPanel *panel = nullptr;
-        if (type == "TimeSeries") {
-          panel = addTimeSeriesPanel({ "RPM" });
-        } else if (type == "Scatter") {
-          panel = addScatterPanel("RPM", "AFR");
-        } else if (type == "Status") {
-          panel = addStatusPanel();
-        } else if (type == "VeAnalysisPanel") {
-          panel = addVeAnalysisPanel();
-        }
-        if (panel != nullptr) {
-          panel->loadState(state);
+          std::string type = panelJson["type"].get<std::string>();
+          nlohmann::json state = panelJson.contains("state") ? panelJson["state"] : nlohmann::json::object();
+          PlotPanel *panel = nullptr;
+
+          if (type == "TimeSeries") panel = addTimeSeriesPanel({ "RPM" });
+          else if (type == "Scatter") panel = addScatterPanel("RPM", "AFR");
+          else if (type == "Status") panel = addStatusPanel();
+          else if (type == "VeAnalysisPanel") panel = addVeAnalysisPanel();
+
+          if (panel != nullptr) {
+            panel->loadState(state);
+          }
         }
       }
-    }
+
+      if (root.contains("imguiLayout") && root["imguiLayout"].is_string()) {
+        std::string iniData = root["imguiLayout"].get<std::string>();
+        ImGui::LoadIniSettingsFromMemory(iniData.c_str(), iniData.size());
+      }
+      };
+    
+    //panels_.clear();
+    //if (root.contains("logFilePath") && root["logFilePath"].is_string()) {
+    //  std::string logPath = root["logFilePath"].get<std::string>();
+    //  if (!logPath.empty()) {
+    //    loadLogFile(logPath); // shows its own error popup on failure
+    //  }
+    //}
+    //if (root.contains("panels") && root["panels"].is_array()) {
+    //  for (const auto &panelJson : root["panels"]) {
+    //    if (!panelJson.contains("type") || !panelJson["type"].is_string()) {
+    //      continue;
+    //    }
+    //    std::string type = panelJson["type"].get<std::string>();
+    //    nlohmann::json state = panelJson.contains("state") ? panelJson["state"] : nlohmann::json::object();
+    //    PlotPanel *panel = nullptr;
+    //    if (type == "TimeSeries") {
+    //      panel = addTimeSeriesPanel({ "RPM" });
+    //    } else if (type == "Scatter") {
+    //      panel = addScatterPanel("RPM", "AFR");
+    //    } else if (type == "Status") {
+    //      panel = addStatusPanel();
+    //    } else if (type == "VeAnalysisPanel") {
+    //      panel = addVeAnalysisPanel();
+    //    }
+    //    if (panel != nullptr) {
+    //      panel->loadState(state);
+    //    }
+    //  }
+    //}
 
     // Restore ImGui docking / window layout -- must come after the panels
     // above are (re)created, since it applies by matching each window's
     // "###panelId" ID against what's in the ini blob.
-    if (root.contains("imguiLayout") && root["imguiLayout"].is_string()) {
-      std::string iniData = root["imguiLayout"].get<std::string>();
-      ImGui::LoadIniSettingsFromMemory(iniData.c_str(), iniData.size());
+    //if (root.contains("imguiLayout") && root["imguiLayout"].is_string()) {
+    //  std::string iniData = root["imguiLayout"].get<std::string>();
+    //  ImGui::LoadIniSettingsFromMemory(iniData.c_str(), iniData.size());
+    //}
+
+    if (root.contains("logFilePath") && root["logFilePath"].is_string()) {
+      std::string logPath = root["logFilePath"].get<std::string>();
+      if (!logPath.empty()) {
+        // Async load log file, then restore panels
+        startAsyncLogLoad(logPath, restorePanelsAndLayout);
+      } else {
+        restorePanelsAndLayout();
+      }
+    } else {
+      restorePanelsAndLayout();
     }
   }
 
-  void App::addRecentWorkspace_(const std::string &path) {
+  void App::addRecentWorkspace(const std::string &path)
+  {
     // Move to front if already present, rather than allowing duplicates.
     recentWorkspacePaths_.erase(
       std::remove(recentWorkspacePaths_.begin(), recentWorkspacePaths_.end(), path),
@@ -253,10 +297,11 @@ namespace ui {
     if (recentWorkspacePaths_.size() > kMaxRecentWorkspaces) {
       recentWorkspacePaths_.resize(kMaxRecentWorkspaces);
     }
-    saveSettings_();
+    saveSettings();
   }
 
-  void App::loadSettings_() {
+  void App::loadSettings()
+  {
     std::ifstream file(kSettingsFilePath);
     if (!file.is_open()) {
       return; // no settings file yet -- fine, just start empty
@@ -281,7 +326,8 @@ namespace ui {
     }
   }
 
-  void App::saveSettings_() const {
+  void App::saveSettings() const
+  {
     nlohmann::json root;
     root["recentWorkspaces"] = recentWorkspacePaths_;
 
@@ -292,7 +338,8 @@ namespace ui {
     // Best-effort -- not worth an error popup if this fails to write.
   }
 
-  void App::updateWindowTitle_() {
+  void App::updateWindowTitle()
+  {
     if (window_ == nullptr) {
       return;
     }
@@ -327,6 +374,67 @@ namespace ui {
         nextPanelId_ = (std::max)(nextPanelId_, trailingNumber + 1);
       }
     }
+  }
+
+  void App::renderLoadProgressModal()
+  {
+    if (!showProgressModal_) return;
+
+    ImGui::OpenPopup("Loading...");
+
+    // Center modal on screen
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(350, 0));
+
+    if (ImGui::BeginPopupModal("Loading...", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+      ImGui::TextUnformatted(progressStatusText_.c_str());
+      ImGui::Spacing();
+
+      float p = loadProgress_.load();
+      char progressBuf[32];
+      std::snprintf(progressBuf, sizeof(progressBuf), "%.0f%%", p * 100.0f);
+      ImGui::ProgressBar(p, ImVec2(-1.0f, 0.0f), progressBuf);
+
+      // Check if task completed
+      if (activeLoadTask_.valid() &&
+        activeLoadTask_.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+
+        LoadResult res = activeLoadTask_.get();
+        showProgressModal_ = false;
+        ImGui::CloseCurrentPopup();
+
+        if (!res.success) {
+          loadErrorMessage_ = res.error;
+          showLoadErrorPopup_ = true;
+        } else {
+          session_ = std::move(res.session);
+          refreshPanelsFromSession();
+
+          if (pendingOnCompleteCallback_) {
+            pendingOnCompleteCallback_();
+            pendingOnCompleteCallback_ = nullptr;
+          }
+        }
+      }
+
+      ImGui::EndPopup();
+    }
+  }
+
+  void App::startAsyncLogLoad(const std::string & path, std::function<void()> onComplete)
+  {
+    showProgressModal_ = true;
+    loadProgress_ = 0.0f;
+    progressStatusText_ = "Loading " + fileNameOnly(path) + "...";
+    pendingOnCompleteCallback_ = std::move(onComplete);
+
+    // Launch thread
+    activeLoadTask_ = std::async(std::launch::async, [this, path]() {
+      LoadResult res;
+      res.success = parser_.parse(path, res.session, res.error, &loadProgress_);
+      return res;
+      });
   }
 
   PlotPanel *App::addTimeSeriesPanel(const std::vector<std::string> &initialChannelNames)
@@ -491,9 +599,10 @@ namespace ui {
     if (!pendingRecentWorkspaceLoad_.empty()) {
       std::string path = std::move(pendingRecentWorkspaceLoad_);
       pendingRecentWorkspaceLoad_.clear();
-      loadWorkspaceFile_(path);
+      loadWorkspaceFile(path);
     }
 
+    renderLoadProgressModal();
     renderLoadErrorPopup();
 
     for (auto &panel : panels_) {

@@ -157,43 +157,114 @@ namespace core {
 namespace core {
 
   Table2D::Table2D(std::vector<double> xBreakpoints, std::vector<double> yBreakpoints)
-    : xBreakpoints_(std::move(xBreakpoints)), yBreakpoints_(std::move(yBreakpoints)) {
-    ensureValuesSized_();
+    : xBreakpoints_(std::move(xBreakpoints)), yBreakpoints_(std::move(yBreakpoints))
+  {
+    ensureValuesSized();
   }
 
-  void Table2D::setXBreakpoints(std::vector<double> breakpoints) {
-    xBreakpoints_ = std::move(breakpoints);
-    ensureValuesSized_();
+  void Table2D::setXBreakpoints(std::vector<double> breakpoints)
+  {
+    // If not sorted, sort breakpoints and re-order column values accordingly
+    bool needSort = false;
+    for (size_t i = 1; i < breakpoints.size(); ++i) {
+      if (breakpoints[i] < breakpoints[i - 1]) {
+        needSort = true;
+        break;
+      }
+    }
+
+    if (needSort) {
+      // Create index permutation vector
+      std::vector<size_t> p(breakpoints.size());
+      for (size_t i = 0; i < p.size(); ++i) p[i] = i;
+      std::sort(p.begin(), p.end(), [&breakpoints](size_t a, size_t b) {
+        return breakpoints[a] < breakpoints[b];
+        });
+
+      std::vector<double> sortedX(breakpoints.size());
+      for (size_t i = 0; i < p.size(); ++i) {
+        sortedX[i] = breakpoints[p[i]];
+      }
+
+      // Reorder values matrix columns to match sorted X breakpoints
+      for (auto &row : values_) {
+        if (row.size() == breakpoints.size()) {
+          std::vector<double> sortedRow(row.size());
+          for (size_t i = 0; i < p.size(); ++i) {
+            sortedRow[i] = row[p[i]];
+          }
+          row = std::move(sortedRow);
+        }
+      }
+      xBreakpoints_ = std::move(sortedX);
+    } else {
+      xBreakpoints_ = std::move(breakpoints);
+    }
+    ensureValuesSized();
   }
 
-  void Table2D::setYBreakpoints(std::vector<double> breakpoints) {
-    yBreakpoints_ = std::move(breakpoints);
-    ensureValuesSized_();
+  void Table2D::setYBreakpoints(std::vector<double> breakpoints)
+  {
+    bool needSort = false;
+    for (size_t i = 1; i < breakpoints.size(); ++i) {
+      if (breakpoints[i] < breakpoints[i - 1]) {
+        needSort = true;
+        break;
+      }
+    }
+
+    if (needSort) {
+      std::vector<size_t> p(breakpoints.size());
+      for (size_t i = 0; i < p.size(); ++i) p[i] = i;
+      std::sort(p.begin(), p.end(), [&breakpoints](size_t a, size_t b) {
+        return breakpoints[a] < breakpoints[b];
+        });
+
+      std::vector<double> sortedY(breakpoints.size());
+      for (size_t i = 0; i < p.size(); ++i) {
+        sortedY[i] = breakpoints[p[i]];
+      }
+
+      if (values_.size() == breakpoints.size()) {
+        std::vector<std::vector<double>> sortedValues(values_.size());
+        for (size_t i = 0; i < p.size(); ++i) {
+          sortedValues[i] = std::move(values_[p[i]]);
+        }
+        values_ = std::move(sortedValues);
+      }
+      yBreakpoints_ = std::move(sortedY);
+    } else {
+      yBreakpoints_ = std::move(breakpoints);
+    }
+    ensureValuesSized();
   }
 
-  void Table2D::ensureValuesSized_() {
+  void Table2D::ensureValuesSized()
+  {
     values_.resize(yBreakpoints_.size());
     for (auto &row : values_) {
       row.resize(xBreakpoints_.size(), 0.0);
     }
   }
 
-  double Table2D::value(size_t row, size_t col) const {
+  double Table2D::value(size_t row, size_t col) const
+  {
     if (row >= values_.size() || col >= values_[row].size()) {
       return 0.0;
     }
     return values_[row][col];
   }
 
-  void Table2D::setValue(size_t row, size_t col, double newValue) {
+  void Table2D::setValue(size_t row, size_t col, double newValue)
+  {
     if (row >= values_.size() || col >= values_[row].size()) {
       return;
     }
     values_[row][col] = newValue;
   }
 
-  void Table2D::locate_(const std::vector<double> &breakpoints, double queryValue, size_t &lowIndex,
-    double &frac) {
+  void Table2D::locate(const std::vector<double> &breakpoints, double queryValue, size_t &lowIndex, double &frac)
+  {
     if (breakpoints.empty()) {
       lowIndex = 0;
       frac = 0.0;
@@ -221,19 +292,20 @@ namespace core {
     frac = (span > 1e-12) ? (queryValue - lowValue) / span : 0.0;
   }
 
-  double Table2D::sample(double x, double y) const {
+  double Table2D::sample(double x, double y) const
+  {
     if (xBreakpoints_.empty() || yBreakpoints_.empty()) {
       return 0.0;
     }
 
     size_t colLow = 0;
     double fracX = 0.0;
-    locate_(xBreakpoints_, x, colLow, fracX);
+    locate(xBreakpoints_, x, colLow, fracX);
     size_t colHigh = std::min(colLow + 1, xBreakpoints_.size() - 1);
 
     size_t rowLow = 0;
     double fracY = 0.0;
-    locate_(yBreakpoints_, y, rowLow, fracY);
+    locate(yBreakpoints_, y, rowLow, fracY);
     size_t rowHigh = std::min(rowLow + 1, yBreakpoints_.size() - 1);
 
     double v00 = value(rowLow, colLow);
@@ -246,8 +318,8 @@ namespace core {
     return top + (bottom - top) * fracY;
   }
 
-  Table2D Table2D::resampledTo(const std::vector<double> &newXBreakpoints,
-    const std::vector<double> &newYBreakpoints) const {
+  Table2D Table2D::resampledTo(const std::vector<double> &newXBreakpoints, const std::vector<double> &newYBreakpoints) const
+  {
     Table2D result(newXBreakpoints, newYBreakpoints);
     for (size_t row = 0; row < newYBreakpoints.size(); ++row) {
       for (size_t col = 0; col < newXBreakpoints.size(); ++col) {
@@ -257,7 +329,8 @@ namespace core {
     return result;
   }
 
-  std::vector<double> generateEvenBreakpoints(double minValue, double maxValue, size_t count) {
+  std::vector<double> generateEvenBreakpoints(double minValue, double maxValue, size_t count)
+  {
     std::vector<double> breakpoints;
     if (count == 0) {
       return breakpoints;
@@ -323,12 +396,11 @@ namespace core {
       const std::vector<double> &newYBreakpoints) const;
 
   private:
-    void ensureValuesSized_();
+    void ensureValuesSized();
     // Finds the breakpoint segment containing `queryValue`: lowIndex is
     // the index of the breakpoint at or before it, frac in [0,1] is the
     // fractional position within that segment. Clamps at the edges.
-    static void locate_(const std::vector<double> &breakpoints, double queryValue,
-      size_t &lowIndex, double &frac);
+    static void locate(const std::vector<double> &breakpoints, double queryValue, size_t &lowIndex, double &frac);
 
     std::vector<double> xBreakpoints_;
     std::vector<double> yBreakpoints_;
@@ -838,6 +910,7 @@ int main() {
 #include "ui/statuspanel.h"
 #include "ui/tableeditorpanel.h"
 #include "ui/timeseriespanel.h"
+#include "ui/veanalysispanel.h"
 
 namespace ui {
 
@@ -1046,10 +1119,8 @@ namespace ui {
           panel = addScatterPanel("RPM", "AFR");
         } else if (type == "Status") {
           panel = addStatusPanel();
-        } else if (type == "TargetAfrTable") {
-          panel = addTableEditorPanel("TargetAfrTable", "Target AFR");
-        } else if (type == "VeTable") {
-          panel = addTableEditorPanel("VeTable", "VE Table (Current)");
+        } else if (type == "VeAnalysisPanel") {
+          panel = addVeAnalysisPanel();
         }
         if (panel != nullptr) {
           panel->loadState(state);
@@ -1178,14 +1249,23 @@ namespace ui {
     return panels_.back().get();
   }
 
-  PlotPanel *App::addTableEditorPanel(const std::string &panelTypeIdValue, const std::string &displayName)
+  //PlotPanel *App::addTableEditorPanel(const std::string &panelTypeIdValue, const std::string &displayName)
+  //{
+  //  std::string panelId = displayName + " " + std::to_string(nextPanelId_++);
+  //  // 16x16 default (common MS3 table size) -- fully editable afterward.
+  //  core::Table2D defaultTable(core::generateEvenBreakpoints(500, 7000, 16),
+  //    core::generateEvenBreakpoints(20, 100, 16));
+  //  auto panel = std::make_unique<TableEditorPanel>(panelId, panelTypeIdValue, displayName,
+  //    std::move(defaultTable));
+  //  panels_.push_back(std::move(panel));
+  //  return panels_.back().get();
+  //}
+
+  PlotPanel *App::addVeAnalysisPanel()
   {
-    std::string panelId = displayName + " " + std::to_string(nextPanelId_++);
-    // 16x16 default (common MS3 table size) -- fully editable afterward.
-    core::Table2D defaultTable(core::generateEvenBreakpoints(500, 7000, 16),
-      core::generateEvenBreakpoints(20, 100, 16));
-    auto panel = std::make_unique<TableEditorPanel>(panelId, panelTypeIdValue, displayName,
-      std::move(defaultTable));
+    std::string panelId = "VE Analyzer " + std::to_string(nextPanelId_++);
+    auto panel = std::make_unique<VeAnalysisPanel>(panelId);
+    panel->setSession(&session_);
     panels_.push_back(std::move(panel));
     return panels_.back().get();
   }
@@ -1239,11 +1319,8 @@ namespace ui {
         if (ImGui::MenuItem("Add Status Panel")) {
           addStatusPanel();
         }
-        if (ImGui::MenuItem("Add Target AFR Table")) {
-          addTableEditorPanel("TargetAfrTable", "Target AFR");
-        }
-        if (ImGui::MenuItem("Add VE Table (Current)")) {
-          addTableEditorPanel("VeTable", "VE Table (Current)");
+        if (ImGui::MenuItem("Add VE Analyzer / Observed AFR")) {
+          addVeAnalysisPanel();
         }
         ImGui::EndMenu();
       }
@@ -1391,7 +1468,8 @@ namespace ui {
     PlotPanel *addTimeSeriesPanel(const std::vector<std::string> &initialChannelNames);
     PlotPanel *addScatterPanel(const std::string &initialXChannel, const std::string &initialYChannel);
     PlotPanel *addStatusPanel();
-    PlotPanel *addTableEditorPanel(const std::string &panelTypeIdValue, const std::string &displayName);
+    //PlotPanel *addTableEditorPanel(const std::string &panelTypeIdValue, const std::string &displayName);
+    PlotPanel *addVeAnalysisPanel();
     // After a workspace load restores each panel's title() via loadState(),
     // bump nextPanelId_ past any trailing number found in those titles --
     // otherwise a panel added later via the Panels menu could reuse an ID
@@ -2174,10 +2252,14 @@ namespace ui {
 
 #include "ui/tableeditorpanel.h"
 
+#include <algorithm>
 #include <cstdio>
+#include <fstream>
+#include <sstream>
 #include <utility>
 
 #include "3rdparty/nlohmann/json.hpp"
+#include "3rdparty/portable-file-dialogs.h"
 #include "imgui.h"
 
 namespace ui {
@@ -2190,8 +2272,7 @@ namespace ui {
     , table_(std::move(initialTable))
     , xDecimalPlaces_(xDecimalPlaces)
     , yDecimalPlaces_(yDecimalPlaces)
-  {
-  }
+  {}
 
   std::string TableEditorPanel::formatValue(double value, int decimalPlaces)
   {
@@ -2204,6 +2285,183 @@ namespace ui {
     return std::string(buffer);
   }
 
+  void TableEditorPanel::copyToClipboard(bool includeHeaders) const
+  {
+    const auto &xBp = table_.xBreakpoints(); 
+      const auto &yBp = table_.yBreakpoints(); 
+      std::string result;
+
+    if (includeHeaders) {
+      result += "\t";
+      for (size_t c = 0; c < xBp.size(); ++c) {
+        result += formatValue(xBp[c], xDecimalPlaces_); 
+          if (c + 1 < xBp.size()) result += "\t";
+      }
+      result += "\n";
+    }
+
+    // Top-to-bottom matching TunerStudio layout (highest Y breakpoint first)
+    for (size_t r = yBp.size(); r-- > 0; ) {
+      if (includeHeaders) {
+        result += formatValue(yBp[r], yDecimalPlaces_) + "\t"; 
+      }
+      for (size_t c = 0; c < xBp.size(); ++c) {
+        result += formatValue(table_.value(r, c), 2); 
+          if (c + 1 < xBp.size()) result += "\t";
+      }
+      result += "\n";
+    }
+
+    ImGui::SetClipboardText(result.c_str());
+  }
+
+  void TableEditorPanel::pasteFromClipboard()
+  {
+    const char *text = ImGui::GetClipboardText();
+    if (!text || *text == '\0') return;
+
+    std::string clip(text);
+    std::stringstream ss(clip);
+    std::string line;
+
+    std::vector<std::vector<std::string>> grid;
+    while (std::getline(ss, line)) {
+      if (line.empty() || line == "\r") continue;
+      std::stringstream lineStream(line);
+      std::string cell;
+      std::vector<std::string> row;
+      while (std::getline(lineStream, cell, '\t')) {
+        cell.erase(std::remove(cell.begin(), cell.end(), '\r'), cell.end());
+        row.push_back(cell);
+      }
+      if (!row.empty()) grid.push_back(row);
+    }
+
+    if (grid.empty()) return;
+
+    // Header detection: row 0 starts with empty token or tab
+    bool hasHeaders = grid[0][0].empty();
+
+    if (hasHeaders && grid.size() > 1) {
+      std::vector<double> newXBp;
+      for (size_t c = 1; c < grid[0].size(); ++c) {
+        try { newXBp.push_back(std::stod(grid[0][c])); } catch (...) {}
+      }
+
+      std::vector<double> newYBp;
+      std::vector<std::vector<double>> newValues;
+
+      for (size_t r = 1; r < grid.size(); ++r) {
+        try {
+          newYBp.push_back(std::stod(grid[r][0]));
+          std::vector<double> valRow;
+          for (size_t c = 1; c < grid[r].size(); ++c) {
+            valRow.push_back(std::stod(grid[r][c]));
+          }
+          newValues.push_back(valRow);
+        } catch (...) {}
+      }
+
+      std::reverse(newYBp.begin(), newYBp.end());
+      std::reverse(newValues.begin(), newValues.end());
+
+      table_.setXBreakpoints(newXBp); 
+        table_.setYBreakpoints(newYBp); 
+        for (size_t r = 0; r < newValues.size() && r < table_.rowCount(); ++r) {
+          
+          for (size_t c = 0; c < newValues[r].size() && c < table_.columnCount(); ++c) {
+            
+            table_.setValue(r, c, newValues[r][c]); 
+          }
+        }
+    } else {
+      // Plain cell grid paste (preserving existing axes)
+      for (size_t r = 0; r < grid.size() && r < table_.rowCount(); ++r) {
+        
+        size_t targetRow = table_.rowCount() - 1 - r;
+        for (size_t c = 0; c < grid[r].size() && c < table_.columnCount(); ++c) {
+          
+          try { table_.setValue(targetRow, c, std::stod(grid[r][c])); } catch (...) {}
+        }
+      }
+    }
+  }
+
+  bool TableEditorPanel::importTunerStudioXml(const std::string &xmlContent)
+  {
+    auto extractVector = [](const std::string &src, const std::string &tag) -> std::vector<double> {
+      std::vector<double> result;
+      size_t startTag = src.find("<" + tag);
+      if (startTag == std::string::npos) return result;
+      size_t contentStart = src.find('>', startTag);
+      size_t endTag = src.find("</" + tag + ">", contentStart);
+      if (contentStart == std::string::npos || endTag == std::string::npos) return result;
+
+      std::string inner = src.substr(contentStart + 1, endTag - contentStart - 1);
+      std::stringstream ss(inner);
+      double val;
+      while (ss >> val) {
+        result.push_back(val);
+      }
+      return result;
+      };
+
+    std::vector<double> xBp = extractVector(xmlContent, "xAxis");
+      std::vector<double> yBp = extractVector(xmlContent, "yAxis");
+      std::vector<double> zVals = extractVector(xmlContent, "zValues");
+
+      if (xBp.empty() || yBp.empty() || zVals.empty()) {
+        return false;
+      }
+
+    table_.setXBreakpoints(xBp); 
+      table_.setYBreakpoints(yBp); 
+
+      size_t rows = yBp.size();
+    size_t cols = xBp.size();
+
+    if (zVals.size() < rows * cols) return false;
+
+    for (size_t r = 0; r < rows; ++r) {
+      for (size_t c = 0; c < cols; ++c) {
+        table_.setValue(r, c, zVals[r * cols + c]); 
+      }
+    }
+
+    return true;
+  }
+
+  void TableEditorPanel::renderToast()
+  {
+    if (copyToastTimer_ > 0.0f) {
+      copyToastTimer_ -= ImGui::GetIO().DeltaTime;
+      float alpha = (copyToastTimer_ < 0.5f) ? (copyToastTimer_ / 0.5f) : 1.0f;
+      if (alpha < 0.0f) alpha = 0.0f;
+
+      ImVec2 winPos = ImGui::GetWindowPos();
+      ImVec2 winSize = ImGui::GetWindowSize();
+
+      ImVec2 toastSize(160.0f, 30.0f);
+      // Anchor to top-right of the current panel
+      ImVec2 pMin(winPos.x + winSize.x - toastSize.x - 20.0f, winPos.y + 35.0f);
+      ImVec2 pMax(pMin.x + toastSize.x, pMin.y + toastSize.y);
+
+      ImU32 bgCol = ImGui::ColorConvertFloat4ToU32(ImVec4(0.1f, 0.3f, 0.1f, 0.9f * alpha));
+      ImU32 textCol = ImGui::ColorConvertFloat4ToU32(ImVec4(0.4f, 1.0f, 0.4f, alpha));
+      ImU32 borderCol = ImGui::ColorConvertFloat4ToU32(ImVec4(0.2f, 0.6f, 0.2f, 0.9f * alpha));
+
+      // Paint directly to the screen overlay (immune to ImGui window state bugs)
+      ImDrawList *drawList = ImGui::GetForegroundDrawList();
+      drawList->AddRectFilled(pMin, pMax, bgCol, 4.0f);
+      drawList->AddRect(pMin, pMax, borderCol, 4.0f);
+
+      const char *text = "Copied to clipboard!";
+      ImVec2 textSize = ImGui::CalcTextSize(text);
+      ImVec2 textPos(pMin.x + (toastSize.x - textSize.x) * 0.5f, pMin.y + (toastSize.y - textSize.y) * 0.5f);
+      drawList->AddText(textPos, textCol, text);
+    }
+  }
+
   bool TableEditorPanel::renderAxisEditorPopup(const char *title)
   {
     ImGui::Text("Number of bins");
@@ -2213,8 +2471,7 @@ namespace ui {
 
     ImGui::InputInt("##bin_count", &remapBinCount, 1, 10);
 
-    if (remapBinCount < 0)
-      remapBinCount = 0;
+    if (remapBinCount < 0) remapBinCount = 0;
 
     if (remapBinCount != oldCount) {
       axisEditorValues_.resize(remapBinCount, 0.0);
@@ -2224,42 +2481,29 @@ namespace ui {
 
     ImGui::BeginChild("BinValues", ImVec2(250, 300), true);
 
-    // Determine decimal places based on which axis is being edited
     int decimalPlaces = (editingAxis_ == AxisEditing::X) ? xDecimalPlaces_ : yDecimalPlaces_;
     std::string format = "%." + std::to_string(decimalPlaces) + "f";
 
     for (int i = 0; i < static_cast<int>(axisEditorValues_.size()); ++i) {
       ImGui::PushID(i);
-
       std::string label = "Bin " + std::to_string(i + 1);
       ImGui::InputDouble(label.c_str(), &axisEditorValues_[i], 0.0, 0.0, format.c_str());
-
       ImGui::PopID();
     }
 
     ImGui::EndChild();
 
-
     if (ImGui::Button("Space evenly")) {
       if (axisEditorValues_.size() >= 2) {
         double first = axisEditorValues_.front();
         double last = axisEditorValues_.back();
-
         double step = (last - first) / (axisEditorValues_.size() - 1);
-
         for (size_t i = 1; i + 1 < axisEditorValues_.size(); ++i)
           axisEditorValues_[i] = first + step * i;
       }
     }
 
     ImGui::Separator();
-
-    // Hint text
-    if (axisEditorValues_.size() >= 2 &&
-      axisEditorValues_.front() == 0.0 &&
-      axisEditorValues_.back() == 0.0) {
-      ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.0f), "Enter first and last values before spacing.");
-    }
 
     bool accepted = false;
     if (ImGui::Button("OK")) {
@@ -2270,51 +2514,84 @@ namespace ui {
     if (ImGui::Button("Cancel")) {
       ImGui::CloseCurrentPopup();
       if (editingAxis_ == AxisEditing::X)
-        axisEditorValues_ = table_.xBreakpoints();
+        axisEditorValues_ = table_.xBreakpoints(); 
       else if (editingAxis_ == AxisEditing::Y)
-        axisEditorValues_ = table_.yBreakpoints();
+        axisEditorValues_ = table_.yBreakpoints(); 
     }
     return accepted;
   }
 
   void TableEditorPanel::renderValueGrid()
   {
-    const auto &xBreakpoints = table_.xBreakpoints();
-    const auto &yBreakpoints = table_.yBreakpoints();
-    const size_t cols = xBreakpoints.size();
+    const auto &xBreakpoints = table_.xBreakpoints(); 
+      const auto &yBreakpoints = table_.yBreakpoints(); 
+      const size_t cols = xBreakpoints.size();
     const size_t rows = yBreakpoints.size();
+
     if (cols == 0 || rows == 0) {
       ImGui::TextDisabled("No breakpoints defined yet.");
       return;
     }
+
     const ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
       ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
-      ImGuiTableFlags_SizingFixedFit;
+      ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
+
     if (ImGui::BeginTable("ValueGrid", static_cast<int>(cols + 1), flags, ImVec2(0.0f, 400.0f))) {
       ImGui::TableSetupScrollFreeze(1, 1);
       ImGui::TableSetupColumn("Load \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+
       for (size_t c = 0; c < cols; ++c) {
-        // Use xDecimalPlaces_ for column headers
-        std::string header = formatValue(xBreakpoints[c], xDecimalPlaces_);
-        ImGui::TableSetupColumn(header.c_str(), ImGuiTableColumnFlags_WidthFixed, 65.0f);
+        std::string header = formatValue(xBreakpoints[c], xDecimalPlaces_); 
+          ImGui::TableSetupColumn(header.c_str(), ImGuiTableColumnFlags_WidthFixed, 60.0f);
       }
       ImGui::TableHeadersRow();
-      for (size_t r = 0; r < rows; ++r) {
+
+      for (size_t r = rows; r-- > 0; ) {
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0);
-        // Use yDecimalPlaces_ for row headers
-        ImGui::Text("%s", formatValue(yBreakpoints[r], yDecimalPlaces_).c_str());
-        for (size_t c = 0; c < cols; ++c) {
-          ImGui::TableSetColumnIndex(static_cast<int>(c + 1));
-          ImGui::PushID(static_cast<int>(r * cols + c));
-          double v = table_.value(r, c);
-          ImGui::SetNextItemWidth(55.0f);
-          // Cell values could use 2 decimal places as well
-          if (ImGui::InputDouble("##cell", &v, 0.0, 0.0, "%.2f")) {
-            table_.setValue(r, c, v);
+        ImGui::Text("%s", formatValue(yBreakpoints[r], yDecimalPlaces_).c_str()); 
+
+          for (size_t c = 0; c < cols; ++c) {
+            ImGui::TableSetColumnIndex(static_cast<int>(c + 1));
+            ImGui::PushID(static_cast<int>(r * cols + c));
+
+            double v = table_.value(r, c); 
+
+              if (editingRow_ == static_cast<int>(r) && editingCol_ == static_cast<int>(c)) {
+                ImGui::SetNextItemWidth(55.0f);
+                // Auto-focus the input widget on the frame it opens
+                ImGui::SetKeyboardFocusHere();
+
+                bool committed = ImGui::InputDouble("##cell_edit", &v, 0.0, 0.0, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue);
+
+                // 1. Commit on Enter
+                if (committed) {
+                  table_.setValue(r, c, v);
+                  editingRow_ = -1;
+                  editingCol_ = -1;
+                }
+                // 2. Cancel on Escape key or when clicking away (deactivated without committing)
+                else if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsItemDeactivated()) {
+                  editingRow_ = -1;
+                  editingCol_ = -1;
+                }
+              } else {
+                char cellText[32];
+                std::snprintf(cellText, sizeof(cellText), "%.2f", v);
+                bool isSelected = (selectedRow_ == static_cast<int>(r) && selectedCol_ == static_cast<int>(c));
+                if (ImGui::Selectable(cellText, isSelected, ImGuiSelectableFlags_AllowDoubleClick)) {
+                  selectedRow_ = static_cast<int>(r);
+                  selectedCol_ = static_cast<int>(c);
+                  if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                    editingRow_ = static_cast<int>(r);
+                    editingCol_ = static_cast<int>(c);
+                  }
+                }
+              }
+
+            ImGui::PopID();
           }
-          ImGui::PopID();
-        }
       }
       ImGui::EndTable();
     }
@@ -2322,33 +2599,65 @@ namespace ui {
 
   void TableEditorPanel::render(PlotCursor & /*cursor*/)
   {
-    std::string windowLabel = displayName_ + "###" + title();
-    ImGui::Begin(windowLabel.c_str(), &open_);
-
     if (ImGui::Button("Edit vertical axis")) {
-      axisEditorValues_ = table_.yBreakpoints();
+      axisEditorValues_ = table_.yBreakpoints(); 
       axisEditorBinCount_ = static_cast<int>(axisEditorValues_.size());
       editingAxis_ = AxisEditing::Y;
       ImGui::OpenPopup("Axis Editor");
-    }    
-    
+    }
+
     ImGui::SameLine();
 
     if (ImGui::Button("Edit horizontal axis")) {
-      axisEditorValues_ = table_.xBreakpoints();
+      axisEditorValues_ = table_.xBreakpoints(); 
       axisEditorBinCount_ = static_cast<int>(axisEditorValues_.size());
       editingAxis_ = AxisEditing::X;
       ImGui::OpenPopup("Axis Editor");
     }
 
+    ImGui::SameLine();
+
+    if (ImGui::Button("Import / Export...")) {
+      ImGui::OpenPopup("TableImportExportMenu");
+    }
+
+    if (ImGui::BeginPopup("TableImportExportMenu")) {
+      if (ImGui::MenuItem("Copy Table")) {
+        copyToClipboard(false);
+        showCopyToast();
+      }
+      if (ImGui::MenuItem("Copy Table + Headers (Clipboard)")) {
+        copyToClipboard(true);
+        showCopyToast();
+      }
+      if (ImGui::MenuItem("Paste Grid (Clipboard)")) {
+        pasteFromClipboard();
+      }
+      ImGui::Separator();
+      if (ImGui::MenuItem("Import TunerStudio (.table)...")) {
+        auto openDlg = std::make_shared<pfd::open_file>(
+          "Import TunerStudio Table", ".",
+          std::vector<std::string>{"TunerStudio Table (*.table)", "*.table", "All Files", "*"});
+        auto result = openDlg->result();
+        if (!result.empty()) {
+          std::ifstream f(result.front());
+          if (f.is_open()) {
+            std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            importTunerStudioXml(content);
+          }
+        }
+      }
+      ImGui::EndPopup();
+    }
+
     if (ImGui::BeginPopupModal("Axis Editor")) {
       if (renderAxisEditorPopup("Axis Editor")) {
         if (editingAxis_ == AxisEditing::X)
-          table_.setXBreakpoints(axisEditorValues_);
+          table_.setXBreakpoints(axisEditorValues_); 
         else
-          table_.setYBreakpoints(axisEditorValues_);
+          table_.setYBreakpoints(axisEditorValues_); 
 
-        editingAxis_ = AxisEditing::None;
+          editingAxis_ = AxisEditing::None;
       }
       ImGui::EndPopup();
     }
@@ -2357,7 +2666,7 @@ namespace ui {
 
     renderValueGrid();
 
-    ImGui::End();
+    renderToast();
   }
 
   nlohmann::json TableEditorPanel::saveState() const
@@ -2366,7 +2675,7 @@ namespace ui {
     for (size_t r = 0; r < table_.rowCount(); ++r) {
       nlohmann::json rowJson = nlohmann::json::array();
       for (size_t c = 0; c < table_.columnCount(); ++c) {
-        rowJson.push_back(table_.value(r, c));
+        rowJson.push_back(table_.value(r, c)); 
       }
       valuesJson.push_back(rowJson);
     }
@@ -2378,31 +2687,29 @@ namespace ui {
   void TableEditorPanel::loadState(const nlohmann::json &state)
   {
     PlotPanel::loadState(state);
-    std::vector<double> xBp = table_.xBreakpoints();
-    std::vector<double> yBp = table_.yBreakpoints();
-    if (state.contains("xBreakpoints") && state["xBreakpoints"].is_array()) {
-      xBp = state["xBreakpoints"].get<std::vector<double>>();
-    }
+    std::vector<double> xBp = table_.xBreakpoints(); 
+      std::vector<double> yBp = table_.yBreakpoints(); 
+      if (state.contains("xBreakpoints") && state["xBreakpoints"].is_array()) {
+        xBp = state["xBreakpoints"].get<std::vector<double>>();
+      }
     if (state.contains("yBreakpoints") && state["yBreakpoints"].is_array()) {
       yBp = state["yBreakpoints"].get<std::vector<double>>();
     }
-    table_.setXBreakpoints(xBp);
-    table_.setYBreakpoints(yBp);
+    table_.setXBreakpoints(xBp); 
+      table_.setYBreakpoints(yBp); 
 
-    if (state.contains("values") && state["values"].is_array()) {
-      const auto &valuesJson = state["values"];
-      for (size_t r = 0; r < valuesJson.size() && r < table_.rowCount(); ++r) {
-        const auto &rowJson = valuesJson[r];
-        if (!rowJson.is_array()) {
-          continue;
-        }
-        for (size_t c = 0; c < rowJson.size() && c < table_.columnCount(); ++c) {
-          if (rowJson[c].is_number()) {
-            table_.setValue(r, c, rowJson[c].get<double>());
+      if (state.contains("values") && state["values"].is_array()) {
+        const auto &valuesJson = state["values"];
+        for (size_t r = 0; r < valuesJson.size() && r < table_.rowCount(); ++r) {
+          const auto &rowJson = valuesJson[r];
+          if (!rowJson.is_array()) continue;
+          for (size_t c = 0; c < rowJson.size() && c < table_.columnCount(); ++c) {
+            if (rowJson[c].is_number()) {
+              table_.setValue(r, c, rowJson[c].get<double>()); 
+            }
           }
         }
       }
-    }
   }
 
 } // namespace ui
@@ -2413,6 +2720,7 @@ namespace ui {
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "3rdparty/nlohmann/json_fwd.hpp"
 #include "core/table2d.h"
@@ -2420,23 +2728,9 @@ namespace ui {
 
 namespace ui {
 
-  // Manual editor for a core::Table2D: editable axis breakpoints (RPM/Load,
-  // or whatever the caller labels them) and an editable value grid, laid
-  // out RPM-across-the-top / Load-down-the-side to match the TunerStudio/
-  // MLVHD convention. Used for both the Target AFR table and the real VE
-  // table (current tune) -- same structure, different content and title.
-  //
-  // Deliberately does NOT auto-sort or auto-resample breakpoints on edit:
-  // if you type a breakpoint out of increasing order, the row/column it's
-  // used as index-position for existing values doesn't move with it (same
-  // as TunerStudio itself -- keeping breakpoints increasing is on you). A
-  // warning is shown inline if an axis isn't strictly increasing.
   class TableEditorPanel : public PlotPanel {
   public:
-    // panelTypeIdValue is the workspace-save/load type tag (distinguishes
-    // "TargetAfrTable" from "VeTable" instances of this same class).
-    // displayName is shown in the window title (e.g. "Target AFR").
-    TableEditorPanel(std::string title, std::string panelTypeIdValue, std::string displayName, 
+    TableEditorPanel(std::string title, std::string panelTypeIdValue, std::string displayName,
       core::Table2D initialTable, int xDecimalPlaces = 0, int yDecimalPlaces = 2);
 
     void render(PlotCursor &cursor) override;
@@ -2447,6 +2741,14 @@ namespace ui {
     void loadState(const nlohmann::json &state) override;
 
     const core::Table2D &table() const { return table_; }
+    void setTable(core::Table2D newTable) { table_ = std::move(newTable); }
+
+    void copyToClipboard(bool includeHeaders = true) const;
+    void pasteFromClipboard();
+    bool importTunerStudioXml(const std::string &xmlContent);
+    
+    void showCopyToast() { copyToastTimer_ = 1.5f; }
+    void renderToast();
 
   private:
     static std::string formatValue(double value, int decimalPlaces);
@@ -2458,8 +2760,15 @@ namespace ui {
     std::string displayName_;
     core::Table2D table_;
     bool open_ = true;
-    int xDecimalPlaces_ = 0;  // Default: integers for RPM
-    int yDecimalPlaces_ = 2;  // Default: 2 decimals for load
+    int xDecimalPlaces_ = 0;
+    int yDecimalPlaces_ = 2;
+
+    // Fast Cell Selection & Single-Cell Active Editing
+    int selectedRow_ = -1;
+    int selectedCol_ = -1;
+    int editingRow_ = -1;
+    int editingCol_ = -1;
+
     std::vector<double> axisEditorValues_;
     int axisEditorBinCount_ = 0;
     enum class AxisEditing {
@@ -2467,7 +2776,9 @@ namespace ui {
       X,
       Y,
     };
-    AxisEditing editingAxis_ = AxisEditing::None;    
+    AxisEditing editingAxis_ = AxisEditing::None;
+
+    float copyToastTimer_ = 0.0f;
   };
 
 } // namespace ui
@@ -3070,6 +3381,729 @@ namespace ui {
     std::vector<double> placeholderValue_;
 
     void generatePlaceholderData();
+  };
+
+} // namespace ui
+
+
+## File: src/ui/veanalysispanel.cpp
+
+#include "ui/veanalysispanel.h"
+#include "3rdparty/nlohmann/json.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include "imgui.h"
+
+namespace ui {
+
+  VeAnalysisPanel::VeAnalysisPanel(std::string title)
+    : PlotPanel(std::move(title))
+    , targetAfrPanel_("Target AFR Editor", "TargetAfrTable", "Target AFR",
+      core::Table2D(core::generateEvenBreakpoints(500, 7000, 16),
+        core::generateEvenBreakpoints(20, 100, 16)))
+    , currentVePanel_("Current VE Editor", "VeTable", "Current VE",
+      core::Table2D(core::generateEvenBreakpoints(500, 7000, 16),
+        core::generateEvenBreakpoints(20, 100, 16)))
+    , suggestedVePanel_("Suggested VE", "SuggestedVeTable", "Suggested VE",
+      core::Table2D(core::generateEvenBreakpoints(500, 7000, 16),
+        core::generateEvenBreakpoints(20, 100, 16)))
+  {
+    observedAfrTable_ = core::Table2D(core::generateEvenBreakpoints(500, 7000, 16),
+      core::generateEvenBreakpoints(20, 100, 16));
+  }
+
+  void VeAnalysisPanel::setSession(const core::LogSession *session)
+  {
+    session_ = session;
+    computeObservedAfr();
+  }
+
+  void VeAnalysisPanel::computeObservedAfr()
+  {
+    if (!session_) {
+      hasObservedData_ = false;
+      return;
+    }
+
+    const core::Channel *rpmCh = session_->findChannel(config_.rpmChannel);
+    const core::Channel *loadCh = session_->findChannel(config_.loadChannel);
+    const core::Channel *afrCh = session_->findChannel(config_.afrChannel);
+
+    if (!rpmCh || !loadCh || !afrCh) {
+      hasObservedData_ = false;
+      return;
+    }
+
+    std::vector<double> xBp;
+    std::vector<double> yBp;
+
+    // 1. Prefer user's explicit Current VE table axes if defined
+    if (hasCurrentVe_) {
+      xBp = currentVePanel_.table().xBreakpoints();
+      yBp = currentVePanel_.table().yBreakpoints();
+    }
+    // 2. Fall back to user's Target AFR table axes if defined
+    else if (hasTargetAfr_) {
+      xBp = targetAfrPanel_.table().xBreakpoints();
+      yBp = targetAfrPanel_.table().yBreakpoints();
+    }
+    // 3. Otherwise, dynamically auto-scale axes from the actual log range
+    else {
+      double minRpm = 10000.0, maxRpm = 0.0;
+      double minLoad = 1000.0, maxLoad = 0.0;
+
+      for (size_t i = 0; i < session_->rowCount(); ++i) {
+
+        double r = rpmCh->values()[i];
+        double l = loadCh->values()[i];
+        if (!std::isnan(r) && r > maxRpm) maxRpm = r;
+        if (!std::isnan(r) && r < minRpm) minRpm = r;
+        if (!std::isnan(l) && l > maxLoad) maxLoad = l;
+        if (!std::isnan(l) && l < minLoad) minLoad = l;
+      }
+
+      if (maxRpm <= minRpm || maxLoad <= minLoad) {
+        hasObservedData_ = false;
+        return;
+      }
+
+      // Generate a 16x16 grid spanning the log's real min/max boundaries
+      xBp = core::generateEvenBreakpoints(minRpm, maxRpm, 16);
+      yBp = core::generateEvenBreakpoints(minLoad, maxLoad, 16);
+    }
+
+    observedAfrTable_.setXBreakpoints(xBp);
+    observedAfrTable_.setYBreakpoints(yBp);
+
+    const size_t rows = yBp.size();
+    const size_t cols = xBp.size();
+    if (rows == 0 || cols == 0) return;
+
+    std::vector<std::vector<double>> sumAfr(rows, std::vector<double>(cols, 0.0));
+    std::vector<std::vector<size_t>> countAfr(rows, std::vector<size_t>(cols, 0));
+
+    const size_t numSamples = session_->rowCount();
+
+    for (size_t i = 0; i < numSamples; ++i) {
+      double rpm = rpmCh->values()[i];
+      double load = loadCh->values()[i];
+      double afr = afrCh->values()[i];
+
+      if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
+
+      size_t bestR = 0, bestC = 0;
+      double minDist = std::numeric_limits<double>::max();
+
+      for (size_t r = 0; r < rows; ++r) {
+        for (size_t c = 0; c < cols; ++c) {
+          double dRpm = (rpm - xBp[c]) / 1000.0;
+          double dLoad = (load - yBp[r]) / 10.0;
+          double dist = (dRpm * dRpm) + (dLoad * dLoad);
+
+          if (dist < minDist) {
+            minDist = dist;
+            bestR = r;
+            bestC = c;
+          }
+        }
+      }
+
+      sumAfr[bestR][bestC] += afr;
+      countAfr[bestR][bestC]++;
+    }
+
+    minObservedRow_ = rows;
+    maxObservedRow_ = 0;
+    minObservedCol_ = cols;
+    maxObservedCol_ = 0;
+    hasObservedData_ = false;
+
+    for (size_t r = 0; r < rows; ++r) {
+      for (size_t c = 0; c < cols; ++c) {
+        if (countAfr[r][c] >= config_.minSamplesPerBin) {
+
+          double avgAfr = sumAfr[r][c] / static_cast<double>(countAfr[r][c]);
+          observedAfrTable_.setValue(r, c, avgAfr);
+
+          if (r < minObservedRow_) minObservedRow_ = r;
+          if (r > maxObservedRow_) maxObservedRow_ = r;
+          if (c < minObservedCol_) minObservedCol_ = c;
+          if (c > maxObservedCol_) maxObservedCol_ = c;
+          hasObservedData_ = true;
+        } else {
+          observedAfrTable_.setValue(r, c, 0.0);
+        }
+      }
+    }
+  }
+
+  void VeAnalysisPanel::computeSuggestedVe()
+  {
+    if (!session_ || !hasTargetAfr_ || !hasCurrentVe_) return;
+    core::Table2D result = engine::VeAnalyzer::computeCorrectedVe(
+      *session_, currentVePanel_.table(), targetAfrPanel_.table(), config_);
+    suggestedVePanel_.setTable(result);
+    hasSuggestedVe_ = true;
+  }
+
+  void VeAnalysisPanel::renderObservedAfrTab()
+  {
+    if (session_ == nullptr) {
+      ImGui::TextDisabled("No log file loaded.");
+      return;
+    }
+
+    if (ImGui::Button("Recalculate Observed AFR")) {
+      computeObservedAfr();
+    }
+
+    if (!hasObservedData_) {
+      ImGui::TextDisabled("No valid AFR log samples binned in current axes range.");
+      return;
+    }
+
+    const auto &xBp = observedAfrTable_.xBreakpoints();
+    const auto &yBp = observedAfrTable_.yBreakpoints();
+
+    const size_t visibleCols = (maxObservedCol_ >= minObservedCol_) ? (maxObservedCol_ - minObservedCol_ + 1) : 0;
+
+    const ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+      ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
+      ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
+
+    if (ImGui::BeginTable("ObservedAfrGridCropped", static_cast<int>(visibleCols + 1), flags, ImVec2(0.0f, 400.0f))) {
+      ImGui::TableSetupScrollFreeze(1, 1);
+      ImGui::TableSetupColumn("MAP \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+
+      for (size_t c = minObservedCol_; c <= maxObservedCol_; ++c) {
+        std::string header = std::to_string(static_cast<int>(xBp[c])) + "##col" + std::to_string(c);
+        ImGui::TableSetupColumn(header.c_str(), ImGuiTableColumnFlags_WidthFixed, 65.0f);
+      }
+      ImGui::TableHeadersRow();
+
+      // Render in descending order (highest MAP/load at top) to match Target AFR orientation
+      if (maxObservedRow_ >= minObservedRow_) {
+        for (size_t r = maxObservedRow_; ; --r) {
+          ImGui::TableNextRow();
+          ImGui::TableSetColumnIndex(0);
+          ImGui::Text("%.1f", yBp[r]);
+
+          for (size_t c = minObservedCol_; c <= maxObservedCol_; ++c) {
+            ImGui::TableSetColumnIndex(static_cast<int>(c - minObservedCol_ + 1));
+            double val = observedAfrTable_.value(r, c);
+            if (val > 0.0) {
+              ImGui::Text("%.2f", val);
+            } else {
+              ImGui::TextDisabled(" - ");
+            }
+          }
+
+          if (r == minObservedRow_) break;
+        }
+      }
+      ImGui::EndTable();
+    }
+  }
+
+  void VeAnalysisPanel::renderReadOnlyTableGrid(const core::Table2D &table)
+  {
+    const auto &xBp = table.xBreakpoints();
+    const auto &yBp = table.yBreakpoints();
+    const size_t cols = xBp.size();
+    const size_t rows = yBp.size();
+
+    if (cols == 0 || rows == 0) {
+      ImGui::TextDisabled("Table is empty.");
+      return;
+    }
+
+    const ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+      ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
+      ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
+
+    if (ImGui::BeginTable("ReadOnlyGrid", static_cast<int>(cols + 1), flags, ImVec2(0.0f, 380.0f))) {
+      ImGui::TableSetupScrollFreeze(1, 1);
+      ImGui::TableSetupColumn("MAP \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+      for (size_t c = 0; c < cols; ++c) {
+        std::string header = std::to_string(static_cast<int>(xBp[c])) + "##col" + std::to_string(c);
+        ImGui::TableSetupColumn(header.c_str(), ImGuiTableColumnFlags_WidthFixed, 65.0f);
+      }
+      ImGui::TableHeadersRow();
+
+      // Render top-to-bottom matching TunerStudio layout (highest Y breakpoint at row 0)
+      for (size_t r = rows; r-- > 0; ) {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::Text("%.1f", yBp[r]);
+
+        for (size_t c = 0; c < cols; ++c) {
+          ImGui::TableSetColumnIndex(static_cast<int>(c + 1));
+          ImGui::Text("%.2f", table.value(r, c));
+        }
+      }
+      ImGui::EndTable();
+    }
+  }
+
+  void VeAnalysisPanel::computeAfrDelta()
+  {
+    if (!session_ || !hasTargetAfr_) {
+      hasAfrDelta_ = false;
+      return;
+    }
+
+    const core::Channel *rpmCh = session_->findChannel(config_.rpmChannel);
+    const core::Channel *loadCh = session_->findChannel(config_.loadChannel);
+    const core::Channel *afrCh = session_->findChannel(config_.afrChannel);
+
+    if (!rpmCh || !loadCh || !afrCh) {
+      hasAfrDelta_ = false;
+      return;
+    }
+
+    // 1. Determine reference grid axes
+    const bool useVeAxes = alignAfrDeltaToVeTable_ && hasCurrentVe_;
+    const core::Table2D &refTable = useVeAxes ? currentVePanel_.table() : targetAfrPanel_.table();
+
+    const auto &xBp = refTable.xBreakpoints();
+    const auto &yBp = refTable.yBreakpoints();
+    afrDeltaTable_.setXBreakpoints(xBp);
+    afrDeltaTable_.setYBreakpoints(yBp);
+
+    const size_t rows = yBp.size();
+    const size_t cols = xBp.size();
+
+    if (rows == 0 || cols == 0) return;
+
+    std::vector<std::vector<double>> sumAfr(rows, std::vector<double>(cols, 0.0));
+    std::vector<std::vector<size_t>> countAfr(rows, std::vector<size_t>(cols, 0));
+
+    const size_t numSamples = session_->rowCount();
+
+    // 2. Bin log data directly onto the selected reference grid
+    for (size_t i = 0; i < numSamples; ++i) {
+      double rpm = rpmCh->values()[i];
+      double load = loadCh->values()[i];
+      double afr = afrCh->values()[i];
+
+      if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
+
+      size_t bestR = 0, bestC = 0;
+      double minDist = std::numeric_limits<double>::max();
+
+      for (size_t r = 0; r < rows; ++r) {
+        for (size_t c = 0; c < cols; ++c) {
+          double dRpm = (rpm - xBp[c]) / 1000.0;
+          double dLoad = (load - yBp[r]) / 10.0;
+          double dist = (dRpm * dRpm) + (dLoad * dLoad);
+
+          if (dist < minDist) {
+            minDist = dist;
+            bestR = r;
+            bestC = c;
+          }
+        }
+      }
+
+      sumAfr[bestR][bestC] += afr;
+      countAfr[bestR][bestC]++;
+    }
+
+    // 3. Compute Delta safely
+    for (size_t r = 0; r < rows; ++r) {
+      for (size_t c = 0; c < cols; ++c) {
+        if (countAfr[r][c] >= config_.minSamplesPerBin) {
+          double obsAfr = sumAfr[r][c] / static_cast<double>(countAfr[r][c]);
+
+          // Target AFR is a dense grid without zeros, so sample() works flawlessly here
+          double tgtAfr = useVeAxes ? targetAfrPanel_.table().sample(xBp[c], yBp[r])
+            : targetAfrPanel_.table().value(r, c);
+
+          if (tgtAfr > 0.0) {
+            afrDeltaTable_.setValue(r, c, obsAfr - tgtAfr);
+          } else {
+            afrDeltaTable_.setValue(r, c, std::numeric_limits<double>::quiet_NaN());
+          }
+        } else {
+          // Flag empty bins with NaN to safely ignore them in the renderer
+          afrDeltaTable_.setValue(r, c, std::numeric_limits<double>::quiet_NaN());
+        }
+      }
+    }
+
+    hasAfrDelta_ = true;
+  }
+
+  void VeAnalysisPanel::renderAfrDeltaTab()
+  {
+    if (!hasTargetAfr_) {
+      ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.2f, 1.0f), "Please set the 'Target AFR' table first.");
+      return;
+    }
+
+    if (ImGui::Button("Recalculate AFR Delta")) {
+      computeAfrDelta();
+    }
+
+    ImGui::SameLine();
+
+    // Checkbox toggle to enable/disable Current VE alignment
+    ImGui::BeginDisabled(!hasCurrentVe_);
+    if (!hasCurrentVe_)
+      alignAfrDeltaToVeTable_ = false;
+    if (ImGui::Checkbox("Align grid to Current VE Table", &alignAfrDeltaToVeTable_)) {
+      computeAfrDelta(); // Immediately recalculate on toggle change
+    }
+    ImGui::EndDisabled();
+
+    if (!hasCurrentVe_) {
+      ImGui::SameLine();
+      ImGui::TextDisabled("(Target AFR axes used - load Current VE to enable VE alignment)");
+    }
+
+    if (hasAfrDelta_) {
+      const auto &xBp = afrDeltaTable_.xBreakpoints();
+      const auto &yBp = afrDeltaTable_.yBreakpoints();
+      const size_t cols = xBp.size();
+      const size_t rows = yBp.size();
+
+      if (cols == 0 || rows == 0) return;
+
+      const ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+        ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
+        ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
+
+      // Helper lambda for heat map background color based on delta (+ = lean/red, - = rich/blue)
+      auto getDeltaHeatMapColor = [](double delta) -> ImU32 {
+        float norm = static_cast<float>(delta / 2.0); // scale across +/- 2 AFR units
+        if (norm > 1.0f) norm = 1.0f;
+        if (norm < -1.0f) norm = -1.0f;
+
+        float r = 0.0f, g = 0.0f, b = 0.0f, a = 0.35f; // alpha for subtle shading
+        if (norm > 0.0f) {
+          r = norm;
+          g = 0.1f * (1.0f - norm);
+          b = 0.1f * (1.0f - norm);
+        } else {
+          float negNorm = -norm;
+          r = 0.1f * (1.0f - negNorm);
+          g = 0.1f * (1.0f - negNorm);
+          b = negNorm;
+        }
+        return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a));
+        };
+
+      if (ImGui::BeginTable("AfrDeltaGrid", static_cast<int>(cols + 1), flags, ImVec2(0.0f, 380.0f))) {
+        ImGui::TableSetupScrollFreeze(1, 1);
+        ImGui::TableSetupColumn("MAP \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+        //for (size_t c = 0; c < cols; ++c) {
+        //  ImGui::TableSetupColumn(std::to_string(static_cast<int>(xBp[c])).c_str(), ImGuiTableColumnFlags_WidthFixed, 65.0f);
+        //}
+        for (size_t c = 0; c < cols; ++c) {
+          std::string header = std::to_string(static_cast<int>(xBp[c])) + "##col" + std::to_string(c);
+          ImGui::TableSetupColumn(header.c_str(), ImGuiTableColumnFlags_WidthFixed, 65.0f);
+        }
+        ImGui::TableHeadersRow();
+
+        for (size_t r = rows; r-- > 0; ) {
+          ImGui::TableNextRow();
+          ImGui::TableSetColumnIndex(0);
+          ImGui::Text("%.1f", yBp[r]);
+
+          for (size_t c = 0; c < cols; ++c) {
+            ImGui::TableSetColumnIndex(static_cast<int>(c + 1));
+
+            double delta = afrDeltaTable_.value(r, c);
+
+            // Render only if the bin actually captured log samples (is not NaN)
+            if (!std::isnan(delta)) {
+              ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, getDeltaHeatMapColor(delta));
+
+              if (delta > 0.3) {
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "+%.2f", delta); // Lean
+              } else if (delta < -0.3) {
+                ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "%.2f", delta);  // Rich
+              } else {
+                ImGui::Text("%.2f", delta);
+              }
+            } else {
+              ImGui::TextDisabled(" - ");
+            }
+          }
+        }
+        ImGui::EndTable();
+      }
+    } else {
+      ImGui::TextDisabled("No AFR Delta available. Ensure a log is loaded and Target AFR is set.");
+    }
+  }
+
+  void VeAnalysisPanel::renderReadOnlyTableTab(const char *tabName, TableEditorPanel &editorPanel, bool &tableSetFlag, const char *popupId)
+  {
+    std::string editBtnLabel = std::string("Edit / Change ") + tabName + "...";
+    if (ImGui::Button(editBtnLabel.c_str())) {
+      ImGui::OpenPopup(popupId);
+    }
+
+    if (tableSetFlag) {
+      ImGui::SameLine();
+      if (ImGui::Button("Copy to Clipboard")) {
+        editorPanel.copyToClipboard(false);
+        suggestedVePanel_.showCopyToast();
+      }
+      suggestedVePanel_.renderToast();
+
+      renderReadOnlyTableGrid(editorPanel.table());
+    } else {
+      ImGui::Separator();
+      ImGui::TextDisabled("No %s data set yet. Click '%s' to enter or paste values.", tabName, editBtnLabel.c_str());
+    }
+
+    // Modal Editor Window
+    ImGui::SetNextWindowSize(ImVec2(800, 600), ImGuiCond_FirstUseEver);
+    if (ImGui::BeginPopupModal(popupId, nullptr, ImGuiWindowFlags_NoDocking)) {
+      PlotCursor dummyCursor;
+      editorPanel.render(dummyCursor);
+
+      ImGui::Separator();
+      if (ImGui::Button("OK", ImVec2(120, 0))) {
+        tableSetFlag = true;
+        computeObservedAfr(); // Re-bins log
+        computeAfrDelta();    // Re-syncs AFR Delta grid[cite: 2]
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
+    }
+  }
+
+  void VeAnalysisPanel::renderSuggestedVeTab()
+  {
+    ImGui::BeginDisabled(!hasTargetAfr_ || !hasCurrentVe_ || session_ == nullptr);
+    if (ImGui::Button("Calculate Suggested VE")) {
+      computeSuggestedVe();
+    }
+    ImGui::EndDisabled();
+
+    if (!hasTargetAfr_ || !hasCurrentVe_) {
+      ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.2f, 1.0f),
+        "Please enter both 'Target AFR' and 'Current VE' tables before calculating.");
+      return;
+    }
+
+    if (hasSuggestedVe_) {
+      ImGui::SameLine();
+      if (ImGui::Button("Copy to Clipboard")) {
+        suggestedVePanel_.copyToClipboard(false);
+        suggestedVePanel_.showCopyToast();
+      }
+      suggestedVePanel_.renderToast();
+
+      const auto &xBp = suggestedVePanel_.table().xBreakpoints();
+      const auto &yBp = suggestedVePanel_.table().yBreakpoints();
+      const size_t cols = xBp.size();
+      const size_t rows = yBp.size();
+
+      if (cols == 0 || rows == 0) return;
+
+      // Heat map generator (Red/Orange = adding fuel, Green/Cyan = pulling fuel)
+      auto getVeChangeHeatMapColor = [](double diff) -> ImU32 {
+        float norm = static_cast<float>(diff / 10.0); // Scale across +/- 10 VE points
+        if (norm > 1.0f) norm = 1.0f;
+        if (norm < -1.0f) norm = -1.0f;
+
+        float r = 0.0f, g = 0.0f, b = 0.0f, a = 0.35f;
+
+        if (norm > 0.0f) {
+          // Adding fuel (Engine was lean) -> Red/Orange
+          r = norm;
+          g = 0.3f * norm;
+          b = 0.1f * (1.0f - norm);
+        } else {
+          // Pulling fuel (Engine was rich) -> Green/Cyan
+          float negNorm = -norm;
+          r = 0.1f * (1.0f - negNorm);
+          g = negNorm;
+          b = 0.8f * negNorm;
+        }
+        return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a));
+        };
+
+      const ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+        ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
+        ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
+
+      if (ImGui::BeginTable("SuggestedVeGrid", static_cast<int>(cols + 1), flags, ImVec2(0.0f, 380.0f))) {
+        ImGui::TableSetupScrollFreeze(1, 1);
+        ImGui::TableSetupColumn("MAP \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+        for (size_t c = 0; c < cols; ++c) {
+          std::string header = std::to_string(static_cast<int>(xBp[c])) + "##col" + std::to_string(c);
+          ImGui::TableSetupColumn(header.c_str(), ImGuiTableColumnFlags_WidthFixed, 65.0f);
+        }
+        ImGui::TableHeadersRow();
+
+        for (size_t r = rows; r-- > 0; ) {
+          ImGui::TableNextRow();
+          ImGui::TableSetColumnIndex(0);
+          ImGui::Text("%.1f", yBp[r]);
+
+          for (size_t c = 0; c < cols; ++c) {
+            ImGui::TableSetColumnIndex(static_cast<int>(c + 1));
+            double sugVe = suggestedVePanel_.table().value(r, c);
+            double curVe = currentVePanel_.table().value(r, c);
+            double diff = sugVe - curVe;
+
+            // Apply cell background heatmap if changed
+            if (std::abs(diff) > 0.01) {
+              ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, getVeChangeHeatMapColor(diff));
+              // Color text pale blue for changed cells
+              ImGui::TextColored(ImVec4(0.6f, 0.85f, 1.0f, 1.0f), "%.1f", sugVe);
+            } else {
+              ImGui::Text("%.1f", sugVe);
+            }
+
+            if (ImGui::IsItemHovered() && std::abs(diff) > 0.01) {
+              ImGui::SetTooltip("Current: %.1f | Change: %+.1f", curVe, diff);
+            }
+          }
+        }
+        ImGui::EndTable();
+      }
+    }
+  }
+  void VeAnalysisPanel::render(PlotCursor &cursor)
+  {
+    std::string windowLabel = "VE Analyzer###" + title();
+    ImGui::Begin(windowLabel.c_str(), &open_);
+
+    if (ImGui::BeginTabBar("VeAnalyzerTabBar")) {
+
+      if (ImGui::BeginTabItem("Observed AFR")) {
+        renderObservedAfrTab();
+        ImGui::EndTabItem();
+      }
+
+      if (ImGui::BeginTabItem("Target AFR")) {
+        renderReadOnlyTableTab("Target AFR", targetAfrPanel_, hasTargetAfr_, "EditTargetAfrModal");
+        ImGui::EndTabItem();
+      }
+
+      if (ImGui::BeginTabItem("AFR Delta")) {
+        computeAfrDelta();
+        renderAfrDeltaTab();
+        ImGui::EndTabItem();
+      }
+
+      if (ImGui::BeginTabItem("Current VE")) {
+        renderReadOnlyTableTab("Current VE", currentVePanel_, hasCurrentVe_, "EditCurrentVeModal");
+        ImGui::EndTabItem();
+      }
+
+      if (ImGui::BeginTabItem("Suggested VE")) {
+        renderSuggestedVeTab();
+        ImGui::EndTabItem();
+      }
+
+      ImGui::EndTabBar();
+    }
+
+    ImGui::End();
+  }
+
+  nlohmann::json VeAnalysisPanel::saveState() const
+  {
+    auto j = PlotPanel::saveState();
+    j["hasTargetAfr"] = hasTargetAfr_;
+    j["hasCurrentVe"] = hasCurrentVe_;
+    j["targetAfr"] = targetAfrPanel_.saveState();
+    j["currentVe"] = currentVePanel_.saveState();
+    return j;
+  }
+
+  void VeAnalysisPanel::loadState(const nlohmann::json &state)
+  {
+    PlotPanel::loadState(state);
+    if (state.contains("hasTargetAfr")) hasTargetAfr_ = state["hasTargetAfr"].get<bool>();
+    if (state.contains("hasCurrentVe")) hasCurrentVe_ = state["hasCurrentVe"].get<bool>();
+    if (state.contains("targetAfr")) targetAfrPanel_.loadState(state["targetAfr"]);
+    if (state.contains("currentVe")) currentVePanel_.loadState(state["currentVe"]);
+  }
+
+} // namespace ui
+
+
+## File: src/ui/veanalysispanel.h
+
+#pragma once
+
+#include <memory>
+#include <string>
+#include <vector>
+#include "core/logsession.h"
+#include "engine/ve_analyzer.h"
+#include "ui/plotpanel.h"
+#include "ui/tableeditorpanel.h"
+
+namespace ui {
+
+  class VeAnalysisPanel : public PlotPanel {
+  public:
+    explicit VeAnalysisPanel(std::string title);
+
+    void render(PlotCursor &cursor) override;
+    bool wantsClose() const override { return !open_; }
+    void setSession(const core::LogSession *session) override;
+
+    std::string panelTypeId() const override { return "VeAnalysisPanel"; }
+    nlohmann::json saveState() const override;
+    void loadState(const nlohmann::json &state) override;
+
+  private:
+    void computeObservedAfr();
+    void computeSuggestedVe();
+
+    void renderObservedAfrTab();
+    void renderReadOnlyTableTab(const char *tabName, TableEditorPanel &editorPanel,
+      bool &tableSetFlag, const char *popupId);
+    void renderSuggestedVeTab();
+    void renderReadOnlyTableGrid(const core::Table2D &table);
+
+    void computeAfrDelta();
+    void renderAfrDeltaTab();
+
+    const core::LogSession *session_ = nullptr;
+    bool open_ = true;
+
+    engine::VeAnalysisConfig config_;
+
+    // Core tables
+    core::Table2D observedAfrTable_;
+    TableEditorPanel targetAfrPanel_;
+    TableEditorPanel currentVePanel_;
+    TableEditorPanel suggestedVePanel_;
+    core::Table2D afrDeltaTable_;
+    bool hasAfrDelta_ = false;
+    bool alignAfrDeltaToVeTable_ = true;
+
+    // Editing buffers for popups
+    core::Table2D targetAfrEditBuffer_;
+    core::Table2D currentVeEditBuffer_;
+
+    bool hasTargetAfr_ = false;
+    bool hasCurrentVe_ = false;
+    bool hasSuggestedVe_ = false;
+
+    // Cropped axis bounds for Observed AFR
+    size_t minObservedRow_ = 0;
+    size_t maxObservedRow_ = 0;
+    size_t minObservedCol_ = 0;
+    size_t maxObservedCol_ = 0;
+    bool hasObservedData_ = false;
   };
 
 } // namespace ui

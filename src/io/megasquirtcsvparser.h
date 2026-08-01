@@ -11,7 +11,7 @@ namespace io {
   // the raw MS3 ECU log format (both out of scope for now).
   class MegasquirtCsvParser : public LogParser {
   public:
-    bool parse(const std::string &path, core::LogSession &outSession, std::string &errorOut) override;
+    bool parse(const std::string &path, core::LogSession &outSession, std::string &errorOut, std::atomic<float> *progress = nullptr) override;
   };
 
 } // namespace io

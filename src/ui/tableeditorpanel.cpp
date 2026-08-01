@@ -419,45 +419,56 @@ namespace ui {
 
   nlohmann::json TableEditorPanel::saveState() const
   {
-    nlohmann::json valuesJson = PlotPanel::saveState();
+    nlohmann::json j = PlotPanel::saveState();
+
+    // Construct a 2D JSON array for the matrix values
+    nlohmann::json valuesGrid = nlohmann::json::array();
     for (size_t r = 0; r < table_.rowCount(); ++r) {
       nlohmann::json rowJson = nlohmann::json::array();
       for (size_t c = 0; c < table_.columnCount(); ++c) {
-        rowJson.push_back(table_.value(r, c)); 
+        rowJson.push_back(table_.value(r, c));
       }
-      valuesJson.push_back(rowJson);
+      valuesGrid.push_back(rowJson);
     }
-    return nlohmann::json{ {"xBreakpoints", table_.xBreakpoints()},
-                           {"yBreakpoints", table_.yBreakpoints()},
-                           {"values", valuesJson} };
+
+    j["xBreakpoints"] = table_.xBreakpoints();
+    j["yBreakpoints"] = table_.yBreakpoints();
+    j["values"] = valuesGrid;
+
+    return j;
   }
 
   void TableEditorPanel::loadState(const nlohmann::json &state)
   {
     PlotPanel::loadState(state);
-    std::vector<double> xBp = table_.xBreakpoints(); 
-      std::vector<double> yBp = table_.yBreakpoints(); 
-      if (state.contains("xBreakpoints") && state["xBreakpoints"].is_array()) {
-        xBp = state["xBreakpoints"].get<std::vector<double>>();
-      }
+
+    std::vector<double> xBp = table_.xBreakpoints();
+    std::vector<double> yBp = table_.yBreakpoints();
+
+    if (state.contains("xBreakpoints") && state["xBreakpoints"].is_array()) {
+      xBp = state["xBreakpoints"].get<std::vector<double>>();
+    }
     if (state.contains("yBreakpoints") && state["yBreakpoints"].is_array()) {
       yBp = state["yBreakpoints"].get<std::vector<double>>();
     }
-    table_.setXBreakpoints(xBp); 
-      table_.setYBreakpoints(yBp); 
 
-      if (state.contains("values") && state["values"].is_array()) {
-        const auto &valuesJson = state["values"];
-        for (size_t r = 0; r < valuesJson.size() && r < table_.rowCount(); ++r) {
-          const auto &rowJson = valuesJson[r];
-          if (!rowJson.is_array()) continue;
-          for (size_t c = 0; c < rowJson.size() && c < table_.columnCount(); ++c) {
-            if (rowJson[c].is_number()) {
-              table_.setValue(r, c, rowJson[c].get<double>()); 
-            }
+    // Updating breakpoints automatically resizes internal table values matrix
+    table_.setXBreakpoints(xBp);
+    table_.setYBreakpoints(yBp);
+
+    if (state.contains("values") && state["values"].is_array()) {
+      const auto &valuesJson = state["values"];
+      for (size_t r = 0; r < valuesJson.size() && r < table_.rowCount(); ++r) {
+        const auto &rowJson = valuesJson[r];
+        if (!rowJson.is_array()) continue;
+
+        for (size_t c = 0; c < rowJson.size() && c < table_.columnCount(); ++c) {
+          if (rowJson[c].is_number()) {
+            table_.setValue(r, c, rowJson[c].get<double>());
           }
         }
       }
+    }
   }
 
 } // namespace ui

@@ -3,6 +3,9 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <functional>
+#include <atomic>
+#include <future>
 
 #include "core/logsession.h"
 #include "io/megasquirtcsvparser.h"
@@ -44,13 +47,13 @@ namespace ui {
     void beginSaveWorkspaceDialog();
     void beginLoadWorkspaceDialog();
 
-    void loadLogFile_(const std::string &path);
-    void saveWorkspaceFile_(const std::string &path);
-    void loadWorkspaceFile_(const std::string &path);
-    void addRecentWorkspace_(const std::string &path);
-    void loadSettings_();
-    void saveSettings_() const;
-    void updateWindowTitle_();
+    void loadLogFile(const std::string &path);
+    void saveWorkspaceFile(const std::string &path);
+    void loadWorkspaceFile(const std::string &path);
+    void addRecentWorkspace(const std::string &path);
+    void loadSettings();
+    void saveSettings() const;
+    void updateWindowTitle();
 
     void refreshPanelsFromSession();
     PlotPanel *addTimeSeriesPanel(const std::vector<std::string> &initialChannelNames);
@@ -96,6 +99,23 @@ namespace ui {
     // the menu's loop would mutate recentWorkspacePaths_ (via
     // addRecentWorkspace_) while we're still iterating over it.
     std::string pendingRecentWorkspaceLoad_;
+
+    void renderLoadProgressModal();
+    void startAsyncLogLoad(const std::string &path, std::function<void()> onComplete = nullptr);
+
+    // Async loader state
+    bool showProgressModal_ = false;
+    std::atomic<float> loadProgress_{ 0.0f };
+    std::atomic<bool> loadCancelRequested_{ false };
+    std::string progressStatusText_;
+
+    struct LoadResult {
+      bool success = false;
+      core::LogSession session;
+      std::string error;
+    };
+    std::future<LoadResult> activeLoadTask_;
+    std::function<void()> pendingOnCompleteCallback_;
   };
 
 } // namespace ui
