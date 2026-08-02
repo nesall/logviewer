@@ -49,23 +49,17 @@ namespace ui {
     std::vector<double> xBp;
     std::vector<double> yBp;
 
-    // 1. Prefer user's explicit Current VE table axes if defined
     if (hasCurrentVe_) {
       xBp = currentVePanel_.table().xBreakpoints();
       yBp = currentVePanel_.table().yBreakpoints();
-    }
-    // 2. Fall back to user's Target AFR table axes if defined
-    else if (hasTargetAfr_) {
+    } else if (hasTargetAfr_) {
       xBp = targetAfrPanel_.table().xBreakpoints();
       yBp = targetAfrPanel_.table().yBreakpoints();
-    }
-    // 3. Otherwise, dynamically auto-scale axes from the actual log range
-    else {
+    } else {
       double minRpm = 10000.0, maxRpm = 0.0;
       double minLoad = 1000.0, maxLoad = 0.0;
 
       for (size_t i = 0; i < session_->rowCount(); ++i) {
-
         double r = rpmCh->values()[i];
         double l = loadCh->values()[i];
         if (!std::isnan(r) && r > maxRpm) maxRpm = r;
@@ -79,7 +73,6 @@ namespace ui {
         return;
       }
 
-      // Generate a 16x16 grid spanning the log's real min/max boundaries
       xBp = core::generateEvenBreakpoints(minRpm, maxRpm, 16);
       yBp = core::generateEvenBreakpoints(minLoad, maxLoad, 16);
     }
@@ -95,6 +88,7 @@ namespace ui {
     std::vector<std::vector<size_t>> countAfr(rows, std::vector<size_t>(cols, 0));
 
     const size_t numSamples = session_->rowCount();
+    engine::VeTransientFilter filter(*session_, config_);
 
     for (size_t i = 0; i < numSamples; ++i) {
       double rpm = rpmCh->values()[i];
@@ -102,6 +96,8 @@ namespace ui {
       double afr = afrCh->values()[i];
 
       if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
+
+      if (filter.shouldIgnoreSample(i, load)) continue;
 
       size_t bestR = 0, bestC = 0;
       double minDist = std::numeric_limits<double>::max();
@@ -133,7 +129,6 @@ namespace ui {
     for (size_t r = 0; r < rows; ++r) {
       for (size_t c = 0; c < cols; ++c) {
         if (countAfr[r][c] >= config_.minSamplesPerBin) {
-
           double avgAfr = sumAfr[r][c] / static_cast<double>(countAfr[r][c]);
           observedAfrTable_.setValue(r, c, avgAfr);
 
@@ -163,6 +158,47 @@ namespace ui {
     if (session_ == nullptr) {
       ImGui::TextDisabled("No log file loaded.");
       return;
+    }
+
+    // --- Filter Configuration Collapsible Header ---
+    if (ImGui::CollapsingHeader("Analysis & Transient Filters")) {
+      ImGui::PushItemWidth(120.0f);
+
+      bool changed = false;
+
+      changed |= ImGui::Checkbox("Filter Acceleration Transients (TPSdot)", &config_.enableTpsDotFilter);
+      if (config_.enableTpsDotFilter) {
+        ImGui::SameLine();
+        changed |= ImGui::InputDouble("Max |TPSdot| (%/s)##max_tpsdot", &config_.maxTpsDot, 5.0, 10.0, "%.0f");
+      }
+
+      changed |= ImGui::Checkbox("Filter Cold Warmup (CLT)", &config_.enableCltFilter);
+      if (config_.enableCltFilter) {
+        ImGui::SameLine();
+        changed |= ImGui::InputDouble("Min Coolant Temp##min_clt", &config_.minCoolantTemp, 5.0, 10.0, "%.0f");
+      }
+
+      changed |= ImGui::Checkbox("Filter Overrun Decel", &config_.enableOverrunFilter);
+      if (config_.enableOverrunFilter) {
+        ImGui::SameLine();
+        changed |= ImGui::InputDouble("Min Load Threshold##min_load", &config_.minLoadThreshold, 1.0, 5.0, "%.1f");
+      }
+
+      int minSamples = static_cast<int>(config_.minSamplesPerBin);
+      if (ImGui::InputInt("Min Samples / Bin", &minSamples)) {
+        if (minSamples < 1) minSamples = 1;
+        config_.minSamplesPerBin = static_cast<size_t>(minSamples);
+        changed = true;
+      }
+
+      ImGui::PopItemWidth();
+
+      if (changed) {
+        computeObservedAfr();
+        if (hasTargetAfr_) computeAfrDelta();
+        if (hasTargetAfr_ && hasCurrentVe_) computeSuggestedVe();
+      }
+      ImGui::Separator();
     }
 
     if (ImGui::Button("Recalculate Observed AFR")) {
@@ -273,7 +309,6 @@ namespace ui {
       return;
     }
 
-    // 1. Determine reference grid axes
     const bool useVeAxes = alignAfrDeltaToVeTable_ && hasCurrentVe_;
     const core::Table2D &refTable = useVeAxes ? currentVePanel_.table() : targetAfrPanel_.table();
 
@@ -291,14 +326,16 @@ namespace ui {
     std::vector<std::vector<size_t>> countAfr(rows, std::vector<size_t>(cols, 0));
 
     const size_t numSamples = session_->rowCount();
+    engine::VeTransientFilter filter(*session_, config_);
 
-    // 2. Bin log data directly onto the selected reference grid
     for (size_t i = 0; i < numSamples; ++i) {
       double rpm = rpmCh->values()[i];
       double load = loadCh->values()[i];
       double afr = afrCh->values()[i];
 
       if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
+
+      if (filter.shouldIgnoreSample(i, load)) continue;
 
       size_t bestR = 0, bestC = 0;
       double minDist = std::numeric_limits<double>::max();
@@ -321,13 +358,10 @@ namespace ui {
       countAfr[bestR][bestC]++;
     }
 
-    // 3. Compute Delta safely
     for (size_t r = 0; r < rows; ++r) {
       for (size_t c = 0; c < cols; ++c) {
         if (countAfr[r][c] >= config_.minSamplesPerBin) {
           double obsAfr = sumAfr[r][c] / static_cast<double>(countAfr[r][c]);
-
-          // Target AFR is a dense grid without zeros, so sample() works flawlessly here
           double tgtAfr = useVeAxes ? targetAfrPanel_.table().sample(xBp[c], yBp[r])
             : targetAfrPanel_.table().value(r, c);
 
@@ -337,7 +371,6 @@ namespace ui {
             afrDeltaTable_.setValue(r, c, std::numeric_limits<double>::quiet_NaN());
           }
         } else {
-          // Flag empty bins with NaN to safely ignore them in the renderer
           afrDeltaTable_.setValue(r, c, std::numeric_limits<double>::quiet_NaN());
         }
       }
@@ -639,7 +672,15 @@ namespace ui {
       {"rpmChannel", config_.rpmChannel},
       {"loadChannel", config_.loadChannel},
       {"afrChannel", config_.afrChannel},
-      {"minSamplesPerBin", config_.minSamplesPerBin}
+      {"tpsDotChannel", config_.tpsDotChannel},
+      {"cltChannel", config_.cltChannel},
+      {"minSamplesPerBin", config_.minSamplesPerBin},
+      {"enableTpsDotFilter", config_.enableTpsDotFilter},
+      {"maxTpsDot", config_.maxTpsDot},
+      {"enableCltFilter", config_.enableCltFilter},
+      {"minCoolantTemp", config_.minCoolantTemp},
+      {"enableOverrunFilter", config_.enableOverrunFilter},
+      {"minLoadThreshold", config_.minLoadThreshold}
     };
 
     // Only serialize primary input tables (ignore calculated ones)
@@ -666,18 +707,19 @@ namespace ui {
     // Restore analysis config
     if (state.contains("config") && state["config"].is_object()) {
       const auto &cfg = state["config"];
-      if (cfg.contains("rpmChannel") && cfg["rpmChannel"].is_string()) {
-        config_.rpmChannel = cfg["rpmChannel"].get<std::string>();
-      }
-      if (cfg.contains("loadChannel") && cfg["loadChannel"].is_string()) {
-        config_.loadChannel = cfg["loadChannel"].get<std::string>();
-      }
-      if (cfg.contains("afrChannel") && cfg["afrChannel"].is_string()) {
-        config_.afrChannel = cfg["afrChannel"].get<std::string>();
-      }
-      if (cfg.contains("minSamplesPerBin") && cfg["minSamplesPerBin"].is_number_integer()) {
-        config_.minSamplesPerBin = cfg["minSamplesPerBin"].get<size_t>();
-      }
+      if (cfg.contains("rpmChannel")) config_.rpmChannel = cfg["rpmChannel"].get<std::string>();
+      if (cfg.contains("loadChannel")) config_.loadChannel = cfg["loadChannel"].get<std::string>();
+      if (cfg.contains("afrChannel")) config_.afrChannel = cfg["afrChannel"].get<std::string>();
+      if (cfg.contains("tpsDotChannel")) config_.tpsDotChannel = cfg["tpsDotChannel"].get<std::string>();
+      if (cfg.contains("cltChannel")) config_.cltChannel = cfg["cltChannel"].get<std::string>();
+      if (cfg.contains("minSamplesPerBin")) config_.minSamplesPerBin = cfg["minSamplesPerBin"].get<size_t>();
+
+      if (cfg.contains("enableTpsDotFilter")) config_.enableTpsDotFilter = cfg["enableTpsDotFilter"].get<bool>();
+      if (cfg.contains("maxTpsDot")) config_.maxTpsDot = cfg["maxTpsDot"].get<double>();
+      if (cfg.contains("enableCltFilter")) config_.enableCltFilter = cfg["enableCltFilter"].get<bool>();
+      if (cfg.contains("minCoolantTemp")) config_.minCoolantTemp = cfg["minCoolantTemp"].get<double>();
+      if (cfg.contains("enableOverrunFilter")) config_.enableOverrunFilter = cfg["enableOverrunFilter"].get<bool>();
+      if (cfg.contains("minLoadThreshold")) config_.minLoadThreshold = cfg["minLoadThreshold"].get<double>();
     }
 
     // Restore input tables

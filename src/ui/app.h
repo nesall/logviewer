@@ -35,6 +35,7 @@ namespace ui {
     void renderDockspace();
     void renderMenuBar();
     void renderLoadErrorPopup();
+    void renderCustomChannelModal();
 
     // File dialogs are non-blocking: opening one just creates it, and
     // pollPendingDialogs_() checks each frame whether the user has
@@ -69,6 +70,12 @@ namespace ui {
 
     bool showDemoWindow_ = false;
     bool firstFrame_ = true;
+
+    bool showCustomChannelModal_ = false;
+    char customNameBuf_[64] = "";
+    char customUnitBuf_[32] = "";
+    char customFormulaBuf_[256] = "";
+    std::string customChannelError_;
 
     GLFWwindow *window_ = nullptr;
     std::string currentWorkspacePath_; // empty until a workspace is saved/loaded

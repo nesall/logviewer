@@ -31,11 +31,11 @@ namespace ui {
     void loadState(const nlohmann::json &state) override;
 
   private:
-    void renderChannelPickerPopup_();
-    void renderCellGrid_(const PlotCursor &cursor);
-    bool isVisible_(const core::Channel &channel) const;
-    void setVisible_(const std::string &channelName, bool visible);
-    size_t nearestIndex_(const std::vector<double> &timeSec, double queryTime) const;
+    void renderChannelPickerPopup();
+    void renderCellGrid(const PlotCursor &cursor);
+    bool isVisible(const core::Channel &channel) const;
+    void setVisible(const std::string &channelName, bool visible);
+    size_t nearestIndex(const std::vector<double> &timeSec, double queryTime) const;
 
     const core::LogSession *session_ = nullptr;
     bool open_ = true;

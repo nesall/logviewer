@@ -34,12 +34,20 @@ namespace core {
     bool isBoolean() const { return isBoolean_; }
     void setIsBoolean(bool value) { isBoolean_ = value; }
 
+    bool isCustom() const { return isCustom_; }
+    void setIsCustom(bool value) { isCustom_ = value; }
+
+    const std::string &formula() const { return formula_; }
+    void setFormula(std::string formula) { formula_ = std::move(formula); }
+
   private:
     std::string name_;
     std::string unit_;
     std::vector<double> values_;
     bool isNumeric_ = true;
     bool isBoolean_ = false;
+    bool isCustom_ = false;
+    std::string formula_; // Stores original formula text e.g. "[MAP] - 101.3"
   };
 
 } // namespace core

@@ -11,11 +11,37 @@ namespace engine {
     std::string rpmChannel = "RPM";
     std::string loadChannel = "MAP";
     std::string afrChannel = "AFR";
+
+    // Optional filtering channels
+    std::string tpsDotChannel = "TPSdot";
+    std::string cltChannel = "CLT";
+    std::string statusChannel = "Engine"; // or "Status1" for fuel cut checks
+
     size_t minSamplesPerBin = 10;
 
-    // Future expansion for transient filtering
-    // double minCoolantTemp = 160.0;
-    // double maxTpsDot = 50.0; 
+    // Transient & Environmental Filtering Rules
+    bool enableTpsDotFilter = true;
+    double maxTpsDot = 30.0; // Ignore rapid throttle movements (e.g., > 30 %/s)
+
+    bool enableCltFilter = true;
+    double minCoolantTemp = 160.0; // Ignore cold start / warmup enrichment
+
+    bool enableOverrunFilter = true;
+    double minLoadThreshold = 15.0; // Ignore deep overrun / vacuum decel
+  };
+
+  // Reusable transient filter to share identical rules across different binning grids
+  class VeTransientFilter {
+  public:
+    VeTransientFilter(const core::LogSession &session, const VeAnalysisConfig &config);
+
+    // Returns true if the sample at `rowIndex` should be ignored based on active filter rules
+    bool shouldIgnoreSample(size_t rowIndex, double load) const;
+
+  private:
+    const VeAnalysisConfig &config_;
+    const core::Channel *tpsDotCh_ = nullptr;
+    const core::Channel *cltCh_ = nullptr;
   };
 
   class VeAnalyzer {

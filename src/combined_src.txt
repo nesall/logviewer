@@ -50,12 +50,148 @@ namespace core {
     bool isBoolean() const { return isBoolean_; }
     void setIsBoolean(bool value) { isBoolean_ = value; }
 
+    bool isCustom() const { return isCustom_; }
+    void setIsCustom(bool value) { isCustom_ = value; }
+
+    const std::string &formula() const { return formula_; }
+    void setFormula(std::string formula) { formula_ = std::move(formula); }
+
   private:
     std::string name_;
     std::string unit_;
     std::vector<double> values_;
     bool isNumeric_ = true;
     bool isBoolean_ = false;
+    bool isCustom_ = false;
+    std::string formula_; // Stores original formula text e.g. "[MAP] - 101.3"
+  };
+
+} // namespace core
+
+
+## File: src/core/formula_evaluator.cpp
+
+#include "core/formula_evaluator.h"
+#include <vector>
+#include "3rdparty/exprtk.hpp"
+#include "core/channel.h"
+#include "core/logsession.h"
+
+
+
+core::Channel core::FormulaEvaluator::evaluate(const CustomChannelDef &def, const LogSession &session, std::string &errorOut)
+{
+  Channel resultChannel(def.name, def.unit);
+  resultChannel.setIsCustom(true);
+  resultChannel.setFormula(def.formula);
+
+  std::string sanitizedFormula = def.formula;
+
+  // 1. Parse bracketed channel names like [MAP] and map them to valid C++ identifiers
+  struct BoundVar {
+    std::string rawToken;      // e.g. "[MAP]"
+    std::string varName;       // e.g. "var_MAP"
+    const std::vector<double> *data = nullptr;
+    double currentVal = 0.0;
+  };
+
+  std::vector<BoundVar> boundVars;
+  size_t pos = 0;
+  int varCounter = 0;
+
+  while ((pos = sanitizedFormula.find('[', pos)) != std::string::npos) {
+    size_t endPos = sanitizedFormula.find(']', pos);
+    if (endPos == std::string::npos) {
+      errorOut = "Mismatched brackets in formula";
+      return resultChannel;
+    }
+
+    std::string chName = sanitizedFormula.substr(pos + 1, endPos - pos - 1);
+    const Channel *ch = session.findChannel(chName);
+    if (!ch) {
+      errorOut = "Channel not found: " + chName;
+      return resultChannel;
+    }
+
+    std::string token = "[" + chName + "]";
+    std::string varName = "v_" + std::to_string(varCounter++);
+
+    boundVars.push_back({ token, varName, &ch->values(), 0.0 });
+
+    // Replace "[MAP]" with "v_0" in expression string
+    while ((pos = sanitizedFormula.find(token)) != std::string::npos) {
+      sanitizedFormula.replace(pos, token.length(), varName);
+    }
+  }
+
+  // 2. Setup ExprTk Symbol Table
+  exprtk::symbol_table<double> symbolTable;
+  for (auto &bv : boundVars) {
+    symbolTable.add_variable(bv.varName, bv.currentVal);
+  }
+  symbolTable.add_constants();
+
+  exprtk::expression<double> expression;
+  expression.register_symbol_table(symbolTable);
+
+  exprtk::parser<double> parser;
+  if (!parser.compile(sanitizedFormula, expression)) {
+    errorOut = "ExprTk Syntax Error: " + parser.error();
+    return resultChannel;
+  }
+
+  // 3. Evaluate row by row
+  const size_t rowCount = session.rowCount();
+  std::vector<double> &outVals = resultChannel.values();
+  outVals.resize(rowCount, std::numeric_limits<double>::quiet_NaN());
+
+  for (size_t row = 0; row < rowCount; ++row) {
+    bool hasNaN = false;
+
+    for (auto &bv : boundVars) {
+      double val = (*bv.data)[row];
+      if (std::isnan(val)) {
+        hasNaN = true;
+        break;
+      }
+      bv.currentVal = val;
+    }
+
+    if (!hasNaN) {
+      outVals[row] = expression.value();
+    }
+  }
+
+  resultChannel.setIsNumeric(true);
+  return resultChannel;
+}
+
+
+
+## File: src/core/formula_evaluator.h
+
+// src/core/formula_evaluator.h
+
+#pragma once
+
+#include <cmath>
+#include <limits>
+#include <string>
+
+namespace core {
+
+  class Channel;
+  class LogSession;
+
+  struct CustomChannelDef {
+    std::string name;
+    std::string unit;
+    std::string formula; // e.g. "[MAP] - 101.3" or "([RPM] * [PW]) / 12000"
+  };
+
+  class FormulaEvaluator {
+  public:
+    static Channel evaluate(const CustomChannelDef &def, const LogSession &session, std::string &errorOut);
   };
 
 } // namespace core
@@ -427,11 +563,44 @@ namespace core {
 
 ## File: src/engine/ve_analyzer.cpp
 
+// src/engine/ve_analyzer.cpp
+
 #include "engine/ve_analyzer.h"
 #include <cmath>
 #include <limits>
 
 namespace engine {
+
+  VeTransientFilter::VeTransientFilter(const core::LogSession &session, const VeAnalysisConfig &config)
+    : config_(config)
+  {
+    if (config_.enableTpsDotFilter) {
+      tpsDotCh_ = session.findChannel(config_.tpsDotChannel);
+    }
+    if (config_.enableCltFilter) {
+      cltCh_ = session.findChannel(config_.cltChannel);
+    }
+  }
+
+  bool VeTransientFilter::shouldIgnoreSample(size_t rowIndex, double load) const
+  {
+    if (config_.enableOverrunFilter && load < config_.minLoadThreshold) {
+      return true;
+    }
+    if (tpsDotCh_ && rowIndex < tpsDotCh_->values().size()) {
+      double tpsDot = tpsDotCh_->values()[rowIndex];
+      if (!std::isnan(tpsDot) && std::abs(tpsDot) > config_.maxTpsDot) {
+        return true;
+      }
+    }
+    if (cltCh_ && rowIndex < cltCh_->values().size()) {
+      double clt = cltCh_->values()[rowIndex];
+      if (!std::isnan(clt) && clt < config_.minCoolantTemp) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   core::Table2D VeAnalyzer::computeCorrectedVe(
     const core::LogSession &session,
@@ -446,8 +615,10 @@ namespace engine {
     const core::Channel *afrCh = session.findChannel(config.afrChannel);
 
     if (!rpmCh || !loadCh || !afrCh) {
-      return correctedVe; // Missing required channels
+      return correctedVe;
     }
+
+    VeTransientFilter filter(session, config);
 
     const size_t rows = currentVe.rowCount();
     const size_t cols = currentVe.columnCount();
@@ -465,13 +636,13 @@ namespace engine {
 
       if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
 
-      // Find nearest cell (Simple Nearest-Neighbor approach)
+      if (filter.shouldIgnoreSample(i, load)) continue;
+
       size_t bestR = 0, bestC = 0;
       double minDist = std::numeric_limits<double>::max();
 
       for (size_t r = 0; r < rows; ++r) {
         for (size_t c = 0; c < cols; ++c) {
-          // Normalize to prevent RPM magnitude from dominating MAP magnitude
           double dRpm = (rpm - currentVe.xBreakpoints()[c]) / 1000.0;
           double dLoad = (load - currentVe.yBreakpoints()[r]) / 10.0;
           double dist = (dRpm * dRpm) + (dLoad * dLoad);
@@ -494,7 +665,6 @@ namespace engine {
         if (countAfr[r][c] >= config.minSamplesPerBin) {
           double avgObservedAfr = sumAfr[r][c] / static_cast<double>(countAfr[r][c]);
 
-          // Sample the target AFR table at this cell's coordinates
           double rpmBp = currentVe.xBreakpoints()[c];
           double loadBp = currentVe.yBreakpoints()[r];
           double tgtAfr = targetAfr.sample(rpmBp, loadBp);
@@ -529,11 +699,37 @@ namespace engine {
     std::string rpmChannel = "RPM";
     std::string loadChannel = "MAP";
     std::string afrChannel = "AFR";
+
+    // Optional filtering channels
+    std::string tpsDotChannel = "TPSdot";
+    std::string cltChannel = "CLT";
+    std::string statusChannel = "Engine"; // or "Status1" for fuel cut checks
+
     size_t minSamplesPerBin = 10;
 
-    // Future expansion for transient filtering
-    // double minCoolantTemp = 160.0;
-    // double maxTpsDot = 50.0; 
+    // Transient & Environmental Filtering Rules
+    bool enableTpsDotFilter = true;
+    double maxTpsDot = 30.0; // Ignore rapid throttle movements (e.g., > 30 %/s)
+
+    bool enableCltFilter = true;
+    double minCoolantTemp = 160.0; // Ignore cold start / warmup enrichment
+
+    bool enableOverrunFilter = true;
+    double minLoadThreshold = 15.0; // Ignore deep overrun / vacuum decel
+  };
+
+  // Reusable transient filter to share identical rules across different binning grids
+  class VeTransientFilter {
+  public:
+    VeTransientFilter(const core::LogSession &session, const VeAnalysisConfig &config);
+
+    // Returns true if the sample at `rowIndex` should be ignored based on active filter rules
+    bool shouldIgnoreSample(size_t rowIndex, double load) const;
+
+  private:
+    const VeAnalysisConfig &config_;
+    const core::Channel *tpsDotCh_ = nullptr;
+    const core::Channel *cltCh_ = nullptr;
   };
 
   class VeAnalyzer {
@@ -555,6 +751,7 @@ namespace engine {
 #pragma once
 
 #include <string>
+#include <atomic>
 
 #include "core/logsession.h"
 
@@ -570,7 +767,7 @@ namespace io {
 
     // Returns true and populates outSession on success. Returns false and
     // populates errorOut on failure.
-    virtual bool parse(const std::string &path, core::LogSession &outSession, std::string &errorOut) = 0;
+    virtual bool parse(const std::string &path, core::LogSession &outSession, std::string &errorOut, std::atomic<float> *progress = nullptr) = 0;
   };
 
 } // namespace io
@@ -585,6 +782,7 @@ namespace io {
 #include <fstream>
 #include <limits>
 #include <utility>
+#include <filesystem>
 
 namespace io {
 
@@ -652,8 +850,14 @@ namespace io {
 
   } // namespace
 
-  bool MegasquirtCsvParser::parse(const std::string &path, core::LogSession &outSession,
-    std::string &errorOut) {
+  bool MegasquirtCsvParser::parse(const std::string &path, core::LogSession &outSession, std::string &errorOut, std::atomic<float> *progress) {
+    std::error_code ec;
+    const uint64_t fileSize = std::filesystem::file_size(path, ec);
+    if (ec || fileSize == 0) {
+      errorOut = "Could not determine file size or file is empty: " + path;
+      return false;
+    }
+
     std::ifstream file(path);
     if (!file.is_open()) {
       errorOut = "Could not open file: " + path;
@@ -665,14 +869,17 @@ namespace io {
     std::string captureDate;
     std::vector<std::string> headerTokens;
     bool foundHeader = false;
+    uint64_t bytesRead = 0;
 
     // Scan defensively for the header row rather than hardcoding line
     // numbers, in case a future TunerStudio version adds/removes a
     // metadata line.
     while (std::getline(file, line)) {
+      bytesRead += line.size() + 1; // +1 for newline character
       if (line.empty()) {
         continue;
       }
+
       if (line.front() == '"') {
         std::string content = line;
         if (content.size() >= 2 && content.back() == '"') {
@@ -702,6 +909,7 @@ namespace io {
       errorOut = "File ended after header row (missing units row): " + path;
       return false;
     }
+    bytesRead += line.size() + 1;
     std::vector<std::string> unitTokens = splitTabDelimited(line);
 
     const size_t columnCount = headerTokens.size();
@@ -718,9 +926,15 @@ namespace io {
     std::vector<bool> sawBooleanToken(columnCount, false);
 
     while (std::getline(file, line)) {
-      if (line.empty()) {
-        continue;
+      bytesRead += line.size() + 1;
+
+      if (line.empty()) continue;
+
+      if (progress && (rowCount % 500 == 0)) {
+        float p = static_cast<float>(bytesRead) / static_cast<float>(fileSize);
+        progress->store(std::min(p, 1.0f));
       }
+
       std::vector<std::string> tokens = splitTabDelimited(line);
 
       if (tokens.size() != columnCount) {
@@ -750,6 +964,8 @@ namespace io {
       }
       ++rowCount;
     }
+
+    if (progress) progress->store(1.0f);
 
     int timeChannelIndex = -1;
     for (size_t i = 0; i < channels.size(); ++i) {
@@ -795,7 +1011,7 @@ namespace io {
   // the raw MS3 ECU log format (both out of scope for now).
   class MegasquirtCsvParser : public LogParser {
   public:
-    bool parse(const std::string &path, core::LogSession &outSession, std::string &errorOut) override;
+    bool parse(const std::string &path, core::LogSession &outSession, std::string &errorOut, std::atomic<float> *progress = nullptr) override;
   };
 
 } // namespace io
@@ -903,6 +1119,7 @@ int main() {
 #include "3rdparty/nlohmann/json.hpp"
 #include "3rdparty/portable-file-dialogs.h"
 #include "core/table2d.h"
+#include "core/formula_evaluator.h"
 #include "imgui.h"
 #include <GLFW/glfw3.h>
 
@@ -949,8 +1166,8 @@ namespace ui {
 
   App::App(GLFWwindow *window) : window_(window)
   {
-    loadSettings_();
-    updateWindowTitle_();
+    loadSettings();
+    updateWindowTitle();
 
 
     // Two starter panels; setSession() rebinds them to real data once a
@@ -1002,7 +1219,7 @@ namespace ui {
       auto selection = pendingOpenLogDialog_->result();
       pendingOpenLogDialog_.reset();
       if (!selection.empty()) {
-        loadLogFile_(selection.front());
+        loadLogFile(selection.front());
       }
     }
 
@@ -1010,7 +1227,7 @@ namespace ui {
       std::string path = pendingSaveWorkspaceDialog_->result();
       pendingSaveWorkspaceDialog_.reset();
       if (!path.empty()) {
-        saveWorkspaceFile_(path);
+        saveWorkspaceFile(path);
       }
     }
 
@@ -1018,7 +1235,7 @@ namespace ui {
       auto selection = pendingLoadWorkspaceDialog_->result();
       pendingLoadWorkspaceDialog_.reset();
       if (!selection.empty()) {
-        loadWorkspaceFile_(selection.front());
+        loadWorkspaceFile(selection.front());
       }
     }
   }
@@ -1027,27 +1244,41 @@ namespace ui {
   // Log loading
   // ---------------------------------------------------------------------
 
-  void App::loadLogFile_(const std::string &path)
+  void App::loadLogFile(const std::string &path)
   {
-    core::LogSession newSession;
-    std::string error;
-    if (!parser_.parse(path, newSession, error)) {
-      loadErrorMessage_ = error;
-      showLoadErrorPopup_ = true;
-      return;
-    }
+    //core::LogSession newSession;
+    //std::string error;
+    //if (!parser_.parse(path, newSession, error)) {
+    //  loadErrorMessage_ = error;
+    //  showLoadErrorPopup_ = true;
+    //  return;
+    //}
 
-    session_ = std::move(newSession);
-    refreshPanelsFromSession();
+    //session_ = std::move(newSession);
+    //refreshPanelsFromSession();
+    startAsyncLogLoad(path);
   }
 
   // ---------------------------------------------------------------------
   // Workspace save/load
   // ---------------------------------------------------------------------
 
-  void App::saveWorkspaceFile_(const std::string &path) {
+  void App::saveWorkspaceFile(const std::string &path)
+  {
     nlohmann::json root;
     root["logFilePath"] = session_.sourcePath();
+
+    nlohmann::json customChannelsJson = nlohmann::json::array();
+    for (const auto &channel : session_.channels()) {
+      if (channel.isCustom()) {
+        customChannelsJson.push_back({
+          {"name", channel.name()},
+          {"unit", channel.unit()},
+          {"formula", channel.formula()}
+          });
+      }
+    }
+    root["customChannels"] = customChannelsJson;
 
     nlohmann::json panelsJson = nlohmann::json::array();
     for (const auto &panel : panels_) {
@@ -1072,11 +1303,12 @@ namespace ui {
     }
     file << root.dump(2);
     currentWorkspacePath_ = path;
-    updateWindowTitle_();
-    addRecentWorkspace_(path);
+    updateWindowTitle();
+    addRecentWorkspace(path);
   }
 
-  void App::loadWorkspaceFile_(const std::string &path) {
+  void App::loadWorkspaceFile(const std::string &path)
+  {
     std::ifstream file(path);
     if (!file.is_open()) {
       loadErrorMessage_ = "Could not open workspace file: " + path;
@@ -1093,51 +1325,74 @@ namespace ui {
       return;
     }
 
-    addRecentWorkspace_(path);
+    addRecentWorkspace(path);
     currentWorkspacePath_ = path;
-    updateWindowTitle_();
-    panels_.clear();
+    updateWindowTitle();
+    
+    auto restoreWorkspaceState = [this, root]()
+      {
+        // 1. Re-evaluate and append Custom Channels
+        if (root.contains("customChannels") && root["customChannels"].is_array()) {
+          for (const auto &customJson : root["customChannels"]) {
+            if (!customJson.contains("name") || !customJson.contains("formula")) continue;
+
+            core::CustomChannelDef def;
+            def.name = customJson["name"].get<std::string>();
+            def.unit = customJson.value("unit", "");
+            def.formula = customJson["formula"].get<std::string>();
+
+            std::string err;
+            core::Channel customCh = core::FormulaEvaluator::evaluate(def, session_, err);
+            if (err.empty()) {
+              session_.addChannel(std::move(customCh));
+            }
+          }
+          // Rebind panel session references after adding virtual channels
+          refreshPanelsFromSession();
+        }
+
+        // 2. Restore Panels
+        panels_.clear();
+        if (root.contains("panels") && root["panels"].is_array()) {
+          for (const auto &panelJson : root["panels"]) {
+            if (!panelJson.contains("type") || !panelJson["type"].is_string()) continue;
+
+            std::string type = panelJson["type"].get<std::string>();
+            nlohmann::json state = panelJson.contains("state") ? panelJson["state"] : nlohmann::json::object();
+            PlotPanel *panel = nullptr;
+
+            if (type == "TimeSeries") panel = addTimeSeriesPanel({ "RPM" });
+            else if (type == "Scatter") panel = addScatterPanel("RPM", "AFR");
+            else if (type == "Status") panel = addStatusPanel();
+            else if (type == "VeAnalysisPanel") panel = addVeAnalysisPanel();
+
+            if (panel != nullptr) {
+              panel->loadState(state);
+            }
+          }
+        }
+
+        // 3. Restore ImGui Docking Layout
+        if (root.contains("imguiLayout") && root["imguiLayout"].is_string()) {
+          std::string iniData = root["imguiLayout"].get<std::string>();
+          ImGui::LoadIniSettingsFromMemory(iniData.c_str(), iniData.size());
+        }
+      };
 
     if (root.contains("logFilePath") && root["logFilePath"].is_string()) {
       std::string logPath = root["logFilePath"].get<std::string>();
       if (!logPath.empty()) {
-        loadLogFile_(logPath); // shows its own error popup on failure
+        startAsyncLogLoad(logPath, restoreWorkspaceState);
+      } else {
+        restoreWorkspaceState();
       }
-    }
-
-    if (root.contains("panels") && root["panels"].is_array()) {
-      for (const auto &panelJson : root["panels"]) {
-        if (!panelJson.contains("type") || !panelJson["type"].is_string()) {
-          continue;
-        }
-        std::string type = panelJson["type"].get<std::string>();
-        nlohmann::json state = panelJson.contains("state") ? panelJson["state"] : nlohmann::json::object();
-        PlotPanel *panel = nullptr;
-        if (type == "TimeSeries") {
-          panel = addTimeSeriesPanel({ "RPM" });
-        } else if (type == "Scatter") {
-          panel = addScatterPanel("RPM", "AFR");
-        } else if (type == "Status") {
-          panel = addStatusPanel();
-        } else if (type == "VeAnalysisPanel") {
-          panel = addVeAnalysisPanel();
-        }
-        if (panel != nullptr) {
-          panel->loadState(state);
-        }
-      }
-    }
-
-    // Restore ImGui docking / window layout -- must come after the panels
-    // above are (re)created, since it applies by matching each window's
-    // "###panelId" ID against what's in the ini blob.
-    if (root.contains("imguiLayout") && root["imguiLayout"].is_string()) {
-      std::string iniData = root["imguiLayout"].get<std::string>();
-      ImGui::LoadIniSettingsFromMemory(iniData.c_str(), iniData.size());
+    } else {
+      restoreWorkspaceState();
     }
   }
 
-  void App::addRecentWorkspace_(const std::string &path) {
+  void App::addRecentWorkspace(const std::string &path)
+  {
     // Move to front if already present, rather than allowing duplicates.
     recentWorkspacePaths_.erase(
       std::remove(recentWorkspacePaths_.begin(), recentWorkspacePaths_.end(), path),
@@ -1146,10 +1401,11 @@ namespace ui {
     if (recentWorkspacePaths_.size() > kMaxRecentWorkspaces) {
       recentWorkspacePaths_.resize(kMaxRecentWorkspaces);
     }
-    saveSettings_();
+    saveSettings();
   }
 
-  void App::loadSettings_() {
+  void App::loadSettings()
+  {
     std::ifstream file(kSettingsFilePath);
     if (!file.is_open()) {
       return; // no settings file yet -- fine, just start empty
@@ -1174,7 +1430,8 @@ namespace ui {
     }
   }
 
-  void App::saveSettings_() const {
+  void App::saveSettings() const
+  {
     nlohmann::json root;
     root["recentWorkspaces"] = recentWorkspacePaths_;
 
@@ -1185,7 +1442,8 @@ namespace ui {
     // Best-effort -- not worth an error popup if this fails to write.
   }
 
-  void App::updateWindowTitle_() {
+  void App::updateWindowTitle()
+  {
     if (window_ == nullptr) {
       return;
     }
@@ -1220,6 +1478,67 @@ namespace ui {
         nextPanelId_ = (std::max)(nextPanelId_, trailingNumber + 1);
       }
     }
+  }
+
+  void App::renderLoadProgressModal()
+  {
+    if (!showProgressModal_) return;
+
+    ImGui::OpenPopup("Loading...");
+
+    // Center modal on screen
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(350, 0));
+
+    if (ImGui::BeginPopupModal("Loading...", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+      ImGui::TextUnformatted(progressStatusText_.c_str());
+      ImGui::Spacing();
+
+      float p = loadProgress_.load();
+      char progressBuf[32];
+      std::snprintf(progressBuf, sizeof(progressBuf), "%.0f%%", p * 100.0f);
+      ImGui::ProgressBar(p, ImVec2(-1.0f, 0.0f), progressBuf);
+
+      // Check if task completed
+      if (activeLoadTask_.valid() &&
+        activeLoadTask_.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+
+        LoadResult res = activeLoadTask_.get();
+        showProgressModal_ = false;
+        ImGui::CloseCurrentPopup();
+
+        if (!res.success) {
+          loadErrorMessage_ = res.error;
+          showLoadErrorPopup_ = true;
+        } else {
+          session_ = std::move(res.session);
+          refreshPanelsFromSession();
+
+          if (pendingOnCompleteCallback_) {
+            pendingOnCompleteCallback_();
+            pendingOnCompleteCallback_ = nullptr;
+          }
+        }
+      }
+
+      ImGui::EndPopup();
+    }
+  }
+
+  void App::startAsyncLogLoad(const std::string & path, std::function<void()> onComplete)
+  {
+    showProgressModal_ = true;
+    loadProgress_ = 0.0f;
+    progressStatusText_ = "Loading " + fileNameOnly(path) + "...";
+    pendingOnCompleteCallback_ = std::move(onComplete);
+
+    // Launch thread
+    activeLoadTask_ = std::async(std::launch::async, [this, path]() {
+      LoadResult res;
+      res.success = parser_.parse(path, res.session, res.error, &loadProgress_);
+      return res;
+      });
   }
 
   PlotPanel *App::addTimeSeriesPanel(const std::vector<std::string> &initialChannelNames)
@@ -1324,6 +1643,12 @@ namespace ui {
         }
         ImGui::EndMenu();
       }
+      if (ImGui::BeginMenu("Tools")) {
+        if (ImGui::MenuItem("Custom Channels...")) {
+          showCustomChannelModal_ = true;
+        }
+        ImGui::EndMenu();
+      }
       ImGui::EndMenuBar();
     }
   }
@@ -1375,6 +1700,156 @@ namespace ui {
     }
   }
 
+  void App::renderCustomChannelModal()
+  {
+    if (showCustomChannelModal_) {
+      ImGui::OpenPopup("Custom Calculated Channels");
+    }
+
+    // Set a comfortable size for the dual-pane modal
+    ImGui::SetNextWindowSize(ImVec2(700, 420), ImGuiCond_FirstUseEver);
+
+    if (ImGui::BeginPopupModal("Custom Calculated Channels", &showCustomChannelModal_, ImGuiWindowFlags_None)) {
+
+      // Track selected index (-1 means "New Channel" mode)
+      static int selectedIndex = -1;
+      static char nameBuf[64] = "";
+      static char unitBuf[32] = "";
+      static char formulaBuf[256] = "";
+
+      // Helper to load selected channel into input buffers
+      auto populateBuffers = [&](const core::Channel &ch) {
+        std::snprintf(nameBuf, sizeof(nameBuf), "%s", ch.name().c_str());
+        std::snprintf(unitBuf, sizeof(unitBuf), "%s", ch.unit().c_str());
+        std::snprintf(formulaBuf, sizeof(formulaBuf), "%s", ch.formula().c_str());
+        };
+
+      auto clearBuffers = [&]() {
+        nameBuf[0] = '\0';
+        unitBuf[0] = '\0';
+        formulaBuf[0] = '\0';
+        customChannelError_.clear();
+        };
+
+      // --- LEFT COLUMN: Custom Channels List ---
+      ImGui::BeginChild("CustomChannelList", ImVec2(220, -ImGui::GetFrameHeightWithSpacing()), true);
+
+      if (ImGui::Selectable("+ New Custom Channel", selectedIndex == -1)) {
+        selectedIndex = -1;
+        clearBuffers();
+      }
+      ImGui::Separator();
+
+      auto &channels = session_.channels();
+      for (int i = 0; i < static_cast<int>(channels.size()); ++i) {
+        if (!channels[i].isCustom()) continue;
+
+        ImGui::PushID(i);
+        std::string label = channels[i].name();
+        if (!channels[i].unit().empty()) {
+          label += " (" + channels[i].unit() + ")";
+        }
+
+        if (ImGui::Selectable(label.c_str(), selectedIndex == i)) {
+          selectedIndex = i;
+          populateBuffers(channels[i]);
+          customChannelError_.clear();
+        }
+        ImGui::PopID();
+      }
+      ImGui::EndChild();
+
+      ImGui::SameLine();
+
+      // --- RIGHT COLUMN: Editor Form ---
+      ImGui::BeginGroup();
+      ImGui::BeginChild("CustomChannelEditor", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()), false);
+
+      if (selectedIndex == -1) {
+        ImGui::TextDisabled("Create New Calculated Channel");
+      } else {
+        ImGui::TextDisabled("Editing Channel: %s", channels[selectedIndex].name().c_str());
+      }
+      ImGui::Separator();
+      ImGui::Spacing();
+
+      ImGui::InputText("Channel Name", nameBuf, sizeof(nameBuf));
+      ImGui::InputText("Unit", unitBuf, sizeof(unitBuf));
+      ImGui::InputText("Formula", formulaBuf, sizeof(formulaBuf));
+
+      ImGui::Spacing();
+      ImGui::TextWrapped("Use [ChannelName] for variables, e.g. [MAP] - 101.3 or ([RPM] * [PW]) / 12000");
+
+      if (!customChannelError_.empty()) {
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", customChannelError_.c_str());
+      }
+
+      ImGui::EndChild();
+      ImGui::EndGroup();
+
+      ImGui::Separator();
+
+      // --- BOTTOM BUTTON BAR ---
+      if (selectedIndex == -1) {
+        // Add Mode
+        if (ImGui::Button("Add Channel", ImVec2(120, 0))) {
+          core::CustomChannelDef def{ nameBuf, unitBuf, formulaBuf };
+          std::string err;
+
+          core::Channel newCh = core::FormulaEvaluator::evaluate(def, session_, err);
+          if (!err.empty()) {
+            customChannelError_ = err;
+          } else {
+            session_.addChannel(std::move(newCh));
+            refreshPanelsFromSession();
+            clearBuffers();
+            selectedIndex = static_cast<int>(session_.channels().size()) - 1;
+          }
+        }
+      } else {
+        // Edit / Update Mode
+        if (ImGui::Button("Update / Re-evaluate", ImVec2(160, 0))) {
+          core::CustomChannelDef def{ nameBuf, unitBuf, formulaBuf };
+          std::string err;
+
+          core::Channel updatedCh = core::FormulaEvaluator::evaluate(def, session_, err);
+          if (!err.empty()) {
+            customChannelError_ = err;
+          } else {
+            // Replace existing channel in-place
+            channels[selectedIndex] = std::move(updatedCh);
+            refreshPanelsFromSession();
+            customChannelError_.clear();
+          }
+        }
+
+        ImGui::SameLine();
+
+        // Delete Mode
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.7f, 0.2f, 0.2f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9f, 0.3f, 0.3f, 1.0f));
+        if (ImGui::Button("Delete Channel", ImVec2(120, 0))) {
+          if (selectedIndex >= 0 && selectedIndex < static_cast<int>(channels.size())) {
+            channels.erase(channels.begin() + selectedIndex);
+            refreshPanelsFromSession(); // Rebind open panels so deleted channel is safely unbound
+            selectedIndex = -1;
+            clearBuffers();
+          }
+        }
+        ImGui::PopStyleColor(2);
+      }
+
+      ImGui::SameLine();
+      if (ImGui::Button("Close", ImVec2(100, 0))) {
+        showCustomChannelModal_ = false;
+        ImGui::CloseCurrentPopup();
+      }
+
+      ImGui::EndPopup();
+    }
+  }
+
   void App::render()
   {
     pollPendingDialogs();
@@ -1384,10 +1859,12 @@ namespace ui {
     if (!pendingRecentWorkspaceLoad_.empty()) {
       std::string path = std::move(pendingRecentWorkspaceLoad_);
       pendingRecentWorkspaceLoad_.clear();
-      loadWorkspaceFile_(path);
+      loadWorkspaceFile(path);
     }
 
+    renderLoadProgressModal();
     renderLoadErrorPopup();
+    renderCustomChannelModal();
 
     for (auto &panel : panels_) {
       panel->render(cursor_);
@@ -1415,6 +1892,9 @@ namespace ui {
 #include <memory>
 #include <string>
 #include <vector>
+#include <functional>
+#include <atomic>
+#include <future>
 
 #include "core/logsession.h"
 #include "io/megasquirtcsvparser.h"
@@ -1444,6 +1924,7 @@ namespace ui {
     void renderDockspace();
     void renderMenuBar();
     void renderLoadErrorPopup();
+    void renderCustomChannelModal();
 
     // File dialogs are non-blocking: opening one just creates it, and
     // pollPendingDialogs_() checks each frame whether the user has
@@ -1456,13 +1937,13 @@ namespace ui {
     void beginSaveWorkspaceDialog();
     void beginLoadWorkspaceDialog();
 
-    void loadLogFile_(const std::string &path);
-    void saveWorkspaceFile_(const std::string &path);
-    void loadWorkspaceFile_(const std::string &path);
-    void addRecentWorkspace_(const std::string &path);
-    void loadSettings_();
-    void saveSettings_() const;
-    void updateWindowTitle_();
+    void loadLogFile(const std::string &path);
+    void saveWorkspaceFile(const std::string &path);
+    void loadWorkspaceFile(const std::string &path);
+    void addRecentWorkspace(const std::string &path);
+    void loadSettings();
+    void saveSettings() const;
+    void updateWindowTitle();
 
     void refreshPanelsFromSession();
     PlotPanel *addTimeSeriesPanel(const std::vector<std::string> &initialChannelNames);
@@ -1478,6 +1959,12 @@ namespace ui {
 
     bool showDemoWindow_ = false;
     bool firstFrame_ = true;
+
+    bool showCustomChannelModal_ = false;
+    char customNameBuf_[64] = "";
+    char customUnitBuf_[32] = "";
+    char customFormulaBuf_[256] = "";
+    std::string customChannelError_;
 
     GLFWwindow *window_ = nullptr;
     std::string currentWorkspacePath_; // empty until a workspace is saved/loaded
@@ -1508,6 +1995,23 @@ namespace ui {
     // the menu's loop would mutate recentWorkspacePaths_ (via
     // addRecentWorkspace_) while we're still iterating over it.
     std::string pendingRecentWorkspaceLoad_;
+
+    void renderLoadProgressModal();
+    void startAsyncLogLoad(const std::string &path, std::function<void()> onComplete = nullptr);
+
+    // Async loader state
+    bool showProgressModal_ = false;
+    std::atomic<float> loadProgress_{ 0.0f };
+    std::atomic<bool> loadCancelRequested_{ false };
+    std::string progressStatusText_;
+
+    struct LoadResult {
+      bool success = false;
+      core::LogSession session;
+      std::string error;
+    };
+    std::future<LoadResult> activeLoadTask_;
+    std::function<void()> pendingOnCompleteCallback_;
   };
 
 } // namespace ui
@@ -1993,13 +2497,15 @@ namespace ui {
 
   StatusPanel::StatusPanel(std::string title) : PlotPanel(std::move(title)) {}
 
-  void StatusPanel::setSession(const core::LogSession *session) {
+  void StatusPanel::setSession(const core::LogSession *session)
+  {
     session_ = session;
     // Deliberately not clearing visibilityOverrides_ here -- user choices
     // persist across reloads by channel name (see class comment).
   }
 
-  bool StatusPanel::isVisible_(const core::Channel &channel) const {
+  bool StatusPanel::isVisible(const core::Channel &channel) const
+  {
     auto it = visibilityOverrides_.find(channel.name());
     if (it != visibilityOverrides_.end()) {
       return it->second;
@@ -2007,7 +2513,8 @@ namespace ui {
     return channel.isBoolean();
   }
 
-  void StatusPanel::setVisible_(const std::string &channelName, bool visible) {
+  void StatusPanel::setVisible(const std::string &channelName, bool visible)
+  {
     visibilityOverrides_[channelName] = visible;
   }
 
@@ -2035,7 +2542,8 @@ namespace ui {
     }
   }
 
-  size_t StatusPanel::nearestIndex_(const std::vector<double> &timeSec, double queryTime) const {
+  size_t StatusPanel::nearestIndex(const std::vector<double> &timeSec, double queryTime) const
+  {
     auto it = std::lower_bound(timeSec.begin(), timeSec.end(), queryTime);
     size_t index = static_cast<size_t>(it - timeSec.begin());
     if (index >= timeSec.size()) {
@@ -2050,7 +2558,8 @@ namespace ui {
     return index;
   }
 
-  void StatusPanel::renderChannelPickerPopup_() {
+  void StatusPanel::renderChannelPickerPopup()
+  {
     if (ImGui::Button("Channels...")) {
       ImGui::OpenPopup("StatusPanelChannelsPopup");
     }
@@ -2064,19 +2573,19 @@ namespace ui {
 
       if (ImGui::Button("Select All")) {
         for (const auto &channel : session_->channels()) {
-          setVisible_(channel.name(), true);
+          setVisible(channel.name(), true);
         }
       }
       ImGui::SameLine();
       if (ImGui::Button("Unselect All")) {
         for (const auto &channel : session_->channels()) {
-          setVisible_(channel.name(), false);
+          setVisible(channel.name(), false);
         }
       }
       ImGui::SameLine();
       if (ImGui::Button("Status Channels Only")) {
         for (const auto &channel : session_->channels()) {
-          setVisible_(channel.name(), channel.isBoolean());
+          setVisible(channel.name(), channel.isBoolean());
         }
       }
 
@@ -2097,9 +2606,9 @@ namespace ui {
         if (!filterLower.empty() && toLower(channel.name()).find(filterLower) == std::string::npos) {
           continue;
         }
-        bool visible = isVisible_(channel);
+        bool visible = isVisible(channel);
         if (ImGui::Checkbox(channel.name().c_str(), &visible)) {
-          setVisible_(channel.name(), visible);
+          setVisible(channel.name(), visible);
         }
       }
       ImGui::EndChild();
@@ -2108,7 +2617,8 @@ namespace ui {
     }
   }
 
-  void StatusPanel::renderCellGrid_(const PlotCursor &cursor) {
+  void StatusPanel::renderCellGrid(const PlotCursor &cursor)
+  {
     if (session_ == nullptr || session_->channels().empty()) {
       ImGui::TextDisabled("No log loaded yet.");
       return;
@@ -2123,14 +2633,14 @@ namespace ui {
 
     int col = 0;
     for (const auto &channel : session_->channels()) {
-      if (!isVisible_(channel)) {
+      if (!isVisible(channel)) {
         continue;
       }
 
       bool haveValue = false;
       double value = 0.0;
       if (timeSec != nullptr && !timeSec->empty() && channel.values().size() == timeSec->size()) {
-        size_t index = cursor.active ? nearestIndex_(*timeSec, cursor.timeSec) : timeSec->size() - 1;
+        size_t index = cursor.active ? nearestIndex(*timeSec, cursor.timeSec) : timeSec->size() - 1;
         value = channel.values()[index];
         haveValue = true;
       }
@@ -2178,13 +2688,14 @@ namespace ui {
     }
   }
 
-  void StatusPanel::render(PlotCursor &cursor) {
+  void StatusPanel::render(PlotCursor &cursor)
+  {
     std::string windowLabel = "Status###" + title();
     ImGui::Begin(windowLabel.c_str(), &open_);
 
-    renderChannelPickerPopup_();
+    renderChannelPickerPopup();
     ImGui::Separator();
-    renderCellGrid_(cursor);
+    renderCellGrid(cursor);
 
     ImGui::End();
   }
@@ -2227,11 +2738,11 @@ namespace ui {
     void loadState(const nlohmann::json &state) override;
 
   private:
-    void renderChannelPickerPopup_();
-    void renderCellGrid_(const PlotCursor &cursor);
-    bool isVisible_(const core::Channel &channel) const;
-    void setVisible_(const std::string &channelName, bool visible);
-    size_t nearestIndex_(const std::vector<double> &timeSec, double queryTime) const;
+    void renderChannelPickerPopup();
+    void renderCellGrid(const PlotCursor &cursor);
+    bool isVisible(const core::Channel &channel) const;
+    void setVisible(const std::string &channelName, bool visible);
+    size_t nearestIndex(const std::vector<double> &timeSec, double queryTime) const;
 
     const core::LogSession *session_ = nullptr;
     bool open_ = true;
@@ -2671,45 +3182,56 @@ namespace ui {
 
   nlohmann::json TableEditorPanel::saveState() const
   {
-    nlohmann::json valuesJson = PlotPanel::saveState();
+    nlohmann::json j = PlotPanel::saveState();
+
+    // Construct a 2D JSON array for the matrix values
+    nlohmann::json valuesGrid = nlohmann::json::array();
     for (size_t r = 0; r < table_.rowCount(); ++r) {
       nlohmann::json rowJson = nlohmann::json::array();
       for (size_t c = 0; c < table_.columnCount(); ++c) {
-        rowJson.push_back(table_.value(r, c)); 
+        rowJson.push_back(table_.value(r, c));
       }
-      valuesJson.push_back(rowJson);
+      valuesGrid.push_back(rowJson);
     }
-    return nlohmann::json{ {"xBreakpoints", table_.xBreakpoints()},
-                           {"yBreakpoints", table_.yBreakpoints()},
-                           {"values", valuesJson} };
+
+    j["xBreakpoints"] = table_.xBreakpoints();
+    j["yBreakpoints"] = table_.yBreakpoints();
+    j["values"] = valuesGrid;
+
+    return j;
   }
 
   void TableEditorPanel::loadState(const nlohmann::json &state)
   {
     PlotPanel::loadState(state);
-    std::vector<double> xBp = table_.xBreakpoints(); 
-      std::vector<double> yBp = table_.yBreakpoints(); 
-      if (state.contains("xBreakpoints") && state["xBreakpoints"].is_array()) {
-        xBp = state["xBreakpoints"].get<std::vector<double>>();
-      }
+
+    std::vector<double> xBp = table_.xBreakpoints();
+    std::vector<double> yBp = table_.yBreakpoints();
+
+    if (state.contains("xBreakpoints") && state["xBreakpoints"].is_array()) {
+      xBp = state["xBreakpoints"].get<std::vector<double>>();
+    }
     if (state.contains("yBreakpoints") && state["yBreakpoints"].is_array()) {
       yBp = state["yBreakpoints"].get<std::vector<double>>();
     }
-    table_.setXBreakpoints(xBp); 
-      table_.setYBreakpoints(yBp); 
 
-      if (state.contains("values") && state["values"].is_array()) {
-        const auto &valuesJson = state["values"];
-        for (size_t r = 0; r < valuesJson.size() && r < table_.rowCount(); ++r) {
-          const auto &rowJson = valuesJson[r];
-          if (!rowJson.is_array()) continue;
-          for (size_t c = 0; c < rowJson.size() && c < table_.columnCount(); ++c) {
-            if (rowJson[c].is_number()) {
-              table_.setValue(r, c, rowJson[c].get<double>()); 
-            }
+    // Updating breakpoints automatically resizes internal table values matrix
+    table_.setXBreakpoints(xBp);
+    table_.setYBreakpoints(yBp);
+
+    if (state.contains("values") && state["values"].is_array()) {
+      const auto &valuesJson = state["values"];
+      for (size_t r = 0; r < valuesJson.size() && r < table_.rowCount(); ++r) {
+        const auto &rowJson = valuesJson[r];
+        if (!rowJson.is_array()) continue;
+
+        for (size_t c = 0; c < rowJson.size() && c < table_.columnCount(); ++c) {
+          if (rowJson[c].is_number()) {
+            table_.setValue(r, c, rowJson[c].get<double>());
           }
         }
       }
+    }
   }
 
 } // namespace ui
@@ -3439,23 +3961,17 @@ namespace ui {
     std::vector<double> xBp;
     std::vector<double> yBp;
 
-    // 1. Prefer user's explicit Current VE table axes if defined
     if (hasCurrentVe_) {
       xBp = currentVePanel_.table().xBreakpoints();
       yBp = currentVePanel_.table().yBreakpoints();
-    }
-    // 2. Fall back to user's Target AFR table axes if defined
-    else if (hasTargetAfr_) {
+    } else if (hasTargetAfr_) {
       xBp = targetAfrPanel_.table().xBreakpoints();
       yBp = targetAfrPanel_.table().yBreakpoints();
-    }
-    // 3. Otherwise, dynamically auto-scale axes from the actual log range
-    else {
+    } else {
       double minRpm = 10000.0, maxRpm = 0.0;
       double minLoad = 1000.0, maxLoad = 0.0;
 
       for (size_t i = 0; i < session_->rowCount(); ++i) {
-
         double r = rpmCh->values()[i];
         double l = loadCh->values()[i];
         if (!std::isnan(r) && r > maxRpm) maxRpm = r;
@@ -3469,7 +3985,6 @@ namespace ui {
         return;
       }
 
-      // Generate a 16x16 grid spanning the log's real min/max boundaries
       xBp = core::generateEvenBreakpoints(minRpm, maxRpm, 16);
       yBp = core::generateEvenBreakpoints(minLoad, maxLoad, 16);
     }
@@ -3485,6 +4000,7 @@ namespace ui {
     std::vector<std::vector<size_t>> countAfr(rows, std::vector<size_t>(cols, 0));
 
     const size_t numSamples = session_->rowCount();
+    engine::VeTransientFilter filter(*session_, config_);
 
     for (size_t i = 0; i < numSamples; ++i) {
       double rpm = rpmCh->values()[i];
@@ -3492,6 +4008,8 @@ namespace ui {
       double afr = afrCh->values()[i];
 
       if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
+
+      if (filter.shouldIgnoreSample(i, load)) continue;
 
       size_t bestR = 0, bestC = 0;
       double minDist = std::numeric_limits<double>::max();
@@ -3523,7 +4041,6 @@ namespace ui {
     for (size_t r = 0; r < rows; ++r) {
       for (size_t c = 0; c < cols; ++c) {
         if (countAfr[r][c] >= config_.minSamplesPerBin) {
-
           double avgAfr = sumAfr[r][c] / static_cast<double>(countAfr[r][c]);
           observedAfrTable_.setValue(r, c, avgAfr);
 
@@ -3553,6 +4070,47 @@ namespace ui {
     if (session_ == nullptr) {
       ImGui::TextDisabled("No log file loaded.");
       return;
+    }
+
+    // --- Filter Configuration Collapsible Header ---
+    if (ImGui::CollapsingHeader("Analysis & Transient Filters")) {
+      ImGui::PushItemWidth(120.0f);
+
+      bool changed = false;
+
+      changed |= ImGui::Checkbox("Filter Acceleration Transients (TPSdot)", &config_.enableTpsDotFilter);
+      if (config_.enableTpsDotFilter) {
+        ImGui::SameLine();
+        changed |= ImGui::InputDouble("Max |TPSdot| (%/s)##max_tpsdot", &config_.maxTpsDot, 5.0, 10.0, "%.0f");
+      }
+
+      changed |= ImGui::Checkbox("Filter Cold Warmup (CLT)", &config_.enableCltFilter);
+      if (config_.enableCltFilter) {
+        ImGui::SameLine();
+        changed |= ImGui::InputDouble("Min Coolant Temp##min_clt", &config_.minCoolantTemp, 5.0, 10.0, "%.0f");
+      }
+
+      changed |= ImGui::Checkbox("Filter Overrun Decel", &config_.enableOverrunFilter);
+      if (config_.enableOverrunFilter) {
+        ImGui::SameLine();
+        changed |= ImGui::InputDouble("Min Load Threshold##min_load", &config_.minLoadThreshold, 1.0, 5.0, "%.1f");
+      }
+
+      int minSamples = static_cast<int>(config_.minSamplesPerBin);
+      if (ImGui::InputInt("Min Samples / Bin", &minSamples)) {
+        if (minSamples < 1) minSamples = 1;
+        config_.minSamplesPerBin = static_cast<size_t>(minSamples);
+        changed = true;
+      }
+
+      ImGui::PopItemWidth();
+
+      if (changed) {
+        computeObservedAfr();
+        if (hasTargetAfr_) computeAfrDelta();
+        if (hasTargetAfr_ && hasCurrentVe_) computeSuggestedVe();
+      }
+      ImGui::Separator();
     }
 
     if (ImGui::Button("Recalculate Observed AFR")) {
@@ -3663,7 +4221,6 @@ namespace ui {
       return;
     }
 
-    // 1. Determine reference grid axes
     const bool useVeAxes = alignAfrDeltaToVeTable_ && hasCurrentVe_;
     const core::Table2D &refTable = useVeAxes ? currentVePanel_.table() : targetAfrPanel_.table();
 
@@ -3681,14 +4238,16 @@ namespace ui {
     std::vector<std::vector<size_t>> countAfr(rows, std::vector<size_t>(cols, 0));
 
     const size_t numSamples = session_->rowCount();
+    engine::VeTransientFilter filter(*session_, config_);
 
-    // 2. Bin log data directly onto the selected reference grid
     for (size_t i = 0; i < numSamples; ++i) {
       double rpm = rpmCh->values()[i];
       double load = loadCh->values()[i];
       double afr = afrCh->values()[i];
 
       if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
+
+      if (filter.shouldIgnoreSample(i, load)) continue;
 
       size_t bestR = 0, bestC = 0;
       double minDist = std::numeric_limits<double>::max();
@@ -3711,13 +4270,10 @@ namespace ui {
       countAfr[bestR][bestC]++;
     }
 
-    // 3. Compute Delta safely
     for (size_t r = 0; r < rows; ++r) {
       for (size_t c = 0; c < cols; ++c) {
         if (countAfr[r][c] >= config_.minSamplesPerBin) {
           double obsAfr = sumAfr[r][c] / static_cast<double>(countAfr[r][c]);
-
-          // Target AFR is a dense grid without zeros, so sample() works flawlessly here
           double tgtAfr = useVeAxes ? targetAfrPanel_.table().sample(xBp[c], yBp[r])
             : targetAfrPanel_.table().value(r, c);
 
@@ -3727,7 +4283,6 @@ namespace ui {
             afrDeltaTable_.setValue(r, c, std::numeric_limits<double>::quiet_NaN());
           }
         } else {
-          // Flag empty bins with NaN to safely ignore them in the renderer
           afrDeltaTable_.setValue(r, c, std::numeric_limits<double>::quiet_NaN());
         }
       }
@@ -4018,20 +4573,85 @@ namespace ui {
   nlohmann::json VeAnalysisPanel::saveState() const
   {
     auto j = PlotPanel::saveState();
+
+    // Persist input flags and view settings
     j["hasTargetAfr"] = hasTargetAfr_;
     j["hasCurrentVe"] = hasCurrentVe_;
+    j["alignAfrDeltaToVeTable"] = alignAfrDeltaToVeTable_;
+
+    // Persist analysis channel / sample thresholds
+    j["config"] = {
+      {"rpmChannel", config_.rpmChannel},
+      {"loadChannel", config_.loadChannel},
+      {"afrChannel", config_.afrChannel},
+      {"tpsDotChannel", config_.tpsDotChannel},
+      {"cltChannel", config_.cltChannel},
+      {"minSamplesPerBin", config_.minSamplesPerBin},
+      {"enableTpsDotFilter", config_.enableTpsDotFilter},
+      {"maxTpsDot", config_.maxTpsDot},
+      {"enableCltFilter", config_.enableCltFilter},
+      {"minCoolantTemp", config_.minCoolantTemp},
+      {"enableOverrunFilter", config_.enableOverrunFilter},
+      {"minLoadThreshold", config_.minLoadThreshold}
+    };
+
+    // Only serialize primary input tables (ignore calculated ones)
     j["targetAfr"] = targetAfrPanel_.saveState();
     j["currentVe"] = currentVePanel_.saveState();
+
     return j;
   }
 
   void VeAnalysisPanel::loadState(const nlohmann::json &state)
   {
     PlotPanel::loadState(state);
-    if (state.contains("hasTargetAfr")) hasTargetAfr_ = state["hasTargetAfr"].get<bool>();
-    if (state.contains("hasCurrentVe")) hasCurrentVe_ = state["hasCurrentVe"].get<bool>();
-    if (state.contains("targetAfr")) targetAfrPanel_.loadState(state["targetAfr"]);
-    if (state.contains("currentVe")) currentVePanel_.loadState(state["currentVe"]);
+
+    if (state.contains("hasTargetAfr") && state["hasTargetAfr"].is_boolean()) {
+      hasTargetAfr_ = state["hasTargetAfr"].get<bool>();
+    }
+    if (state.contains("hasCurrentVe") && state["hasCurrentVe"].is_boolean()) {
+      hasCurrentVe_ = state["hasCurrentVe"].get<bool>();
+    }
+    if (state.contains("alignAfrDeltaToVeTable") && state["alignAfrDeltaToVeTable"].is_boolean()) {
+      alignAfrDeltaToVeTable_ = state["alignAfrDeltaToVeTable"].get<bool>();
+    }
+
+    // Restore analysis config
+    if (state.contains("config") && state["config"].is_object()) {
+      const auto &cfg = state["config"];
+      if (cfg.contains("rpmChannel")) config_.rpmChannel = cfg["rpmChannel"].get<std::string>();
+      if (cfg.contains("loadChannel")) config_.loadChannel = cfg["loadChannel"].get<std::string>();
+      if (cfg.contains("afrChannel")) config_.afrChannel = cfg["afrChannel"].get<std::string>();
+      if (cfg.contains("tpsDotChannel")) config_.tpsDotChannel = cfg["tpsDotChannel"].get<std::string>();
+      if (cfg.contains("cltChannel")) config_.cltChannel = cfg["cltChannel"].get<std::string>();
+      if (cfg.contains("minSamplesPerBin")) config_.minSamplesPerBin = cfg["minSamplesPerBin"].get<size_t>();
+
+      if (cfg.contains("enableTpsDotFilter")) config_.enableTpsDotFilter = cfg["enableTpsDotFilter"].get<bool>();
+      if (cfg.contains("maxTpsDot")) config_.maxTpsDot = cfg["maxTpsDot"].get<double>();
+      if (cfg.contains("enableCltFilter")) config_.enableCltFilter = cfg["enableCltFilter"].get<bool>();
+      if (cfg.contains("minCoolantTemp")) config_.minCoolantTemp = cfg["minCoolantTemp"].get<double>();
+      if (cfg.contains("enableOverrunFilter")) config_.enableOverrunFilter = cfg["enableOverrunFilter"].get<bool>();
+      if (cfg.contains("minLoadThreshold")) config_.minLoadThreshold = cfg["minLoadThreshold"].get<double>();
+    }
+
+    // Restore input tables
+    if (state.contains("targetAfr")) {
+      targetAfrPanel_.loadState(state["targetAfr"]);
+    }
+    if (state.contains("currentVe")) {
+      currentVePanel_.loadState(state["currentVe"]);
+    }
+
+    // Automatically recalculate all derived tables (Observed AFR, AFR Delta, Suggested VE)
+    if (session_ != nullptr) {
+      computeObservedAfr();
+      if (hasTargetAfr_) {
+        computeAfrDelta();
+      }
+      if (hasTargetAfr_ && hasCurrentVe_) {
+        computeSuggestedVe();
+      }
+    }
   }
 
 } // namespace ui

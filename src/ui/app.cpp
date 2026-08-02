@@ -10,6 +10,7 @@
 #include "3rdparty/nlohmann/json.hpp"
 #include "3rdparty/portable-file-dialogs.h"
 #include "core/table2d.h"
+#include "core/formula_evaluator.h"
 #include "imgui.h"
 #include <GLFW/glfw3.h>
 
@@ -158,6 +159,18 @@ namespace ui {
     nlohmann::json root;
     root["logFilePath"] = session_.sourcePath();
 
+    nlohmann::json customChannelsJson = nlohmann::json::array();
+    for (const auto &channel : session_.channels()) {
+      if (channel.isCustom()) {
+        customChannelsJson.push_back({
+          {"name", channel.name()},
+          {"unit", channel.unit()},
+          {"formula", channel.formula()}
+          });
+      }
+    }
+    root["customChannels"] = customChannelsJson;
+
     nlohmann::json panelsJson = nlohmann::json::array();
     for (const auto &panel : panels_) {
       panelsJson.push_back({ {"type", panel->panelTypeId()}, {"state", panel->saveState()} });
@@ -207,83 +220,65 @@ namespace ui {
     currentWorkspacePath_ = path;
     updateWindowTitle();
     
-    // Helper lambda to finish restoring panel states once log session loads
-    auto restorePanelsAndLayout = [this, root]() {
-      panels_.clear();
+    auto restoreWorkspaceState = [this, root]()
+      {
+        // 1. Re-evaluate and append Custom Channels
+        if (root.contains("customChannels") && root["customChannels"].is_array()) {
+          for (const auto &customJson : root["customChannels"]) {
+            if (!customJson.contains("name") || !customJson.contains("formula")) continue;
 
-      if (root.contains("panels") && root["panels"].is_array()) {
-        for (const auto &panelJson : root["panels"]) {
-          if (!panelJson.contains("type") || !panelJson["type"].is_string()) continue;
+            core::CustomChannelDef def;
+            def.name = customJson["name"].get<std::string>();
+            def.unit = customJson.value("unit", "");
+            def.formula = customJson["formula"].get<std::string>();
 
-          std::string type = panelJson["type"].get<std::string>();
-          nlohmann::json state = panelJson.contains("state") ? panelJson["state"] : nlohmann::json::object();
-          PlotPanel *panel = nullptr;
+            std::string err;
+            core::Channel customCh = core::FormulaEvaluator::evaluate(def, session_, err);
+            if (err.empty()) {
+              session_.addChannel(std::move(customCh));
+            }
+          }
+          // Rebind panel session references after adding virtual channels
+          refreshPanelsFromSession();
+        }
 
-          if (type == "TimeSeries") panel = addTimeSeriesPanel({ "RPM" });
-          else if (type == "Scatter") panel = addScatterPanel("RPM", "AFR");
-          else if (type == "Status") panel = addStatusPanel();
-          else if (type == "VeAnalysisPanel") panel = addVeAnalysisPanel();
+        // 2. Restore Panels
+        panels_.clear();
+        if (root.contains("panels") && root["panels"].is_array()) {
+          for (const auto &panelJson : root["panels"]) {
+            if (!panelJson.contains("type") || !panelJson["type"].is_string()) continue;
 
-          if (panel != nullptr) {
-            panel->loadState(state);
+            std::string type = panelJson["type"].get<std::string>();
+            nlohmann::json state = panelJson.contains("state") ? panelJson["state"] : nlohmann::json::object();
+            PlotPanel *panel = nullptr;
+
+            if (type == "TimeSeries") panel = addTimeSeriesPanel({ "RPM" });
+            else if (type == "Scatter") panel = addScatterPanel("RPM", "AFR");
+            else if (type == "Status") panel = addStatusPanel();
+            else if (type == "VeAnalysisPanel") panel = addVeAnalysisPanel();
+
+            if (panel != nullptr) {
+              panel->loadState(state);
+            }
           }
         }
-      }
 
-      if (root.contains("imguiLayout") && root["imguiLayout"].is_string()) {
-        std::string iniData = root["imguiLayout"].get<std::string>();
-        ImGui::LoadIniSettingsFromMemory(iniData.c_str(), iniData.size());
-      }
+        // 3. Restore ImGui Docking Layout
+        if (root.contains("imguiLayout") && root["imguiLayout"].is_string()) {
+          std::string iniData = root["imguiLayout"].get<std::string>();
+          ImGui::LoadIniSettingsFromMemory(iniData.c_str(), iniData.size());
+        }
       };
-    
-    //panels_.clear();
-    //if (root.contains("logFilePath") && root["logFilePath"].is_string()) {
-    //  std::string logPath = root["logFilePath"].get<std::string>();
-    //  if (!logPath.empty()) {
-    //    loadLogFile(logPath); // shows its own error popup on failure
-    //  }
-    //}
-    //if (root.contains("panels") && root["panels"].is_array()) {
-    //  for (const auto &panelJson : root["panels"]) {
-    //    if (!panelJson.contains("type") || !panelJson["type"].is_string()) {
-    //      continue;
-    //    }
-    //    std::string type = panelJson["type"].get<std::string>();
-    //    nlohmann::json state = panelJson.contains("state") ? panelJson["state"] : nlohmann::json::object();
-    //    PlotPanel *panel = nullptr;
-    //    if (type == "TimeSeries") {
-    //      panel = addTimeSeriesPanel({ "RPM" });
-    //    } else if (type == "Scatter") {
-    //      panel = addScatterPanel("RPM", "AFR");
-    //    } else if (type == "Status") {
-    //      panel = addStatusPanel();
-    //    } else if (type == "VeAnalysisPanel") {
-    //      panel = addVeAnalysisPanel();
-    //    }
-    //    if (panel != nullptr) {
-    //      panel->loadState(state);
-    //    }
-    //  }
-    //}
-
-    // Restore ImGui docking / window layout -- must come after the panels
-    // above are (re)created, since it applies by matching each window's
-    // "###panelId" ID against what's in the ini blob.
-    //if (root.contains("imguiLayout") && root["imguiLayout"].is_string()) {
-    //  std::string iniData = root["imguiLayout"].get<std::string>();
-    //  ImGui::LoadIniSettingsFromMemory(iniData.c_str(), iniData.size());
-    //}
 
     if (root.contains("logFilePath") && root["logFilePath"].is_string()) {
       std::string logPath = root["logFilePath"].get<std::string>();
       if (!logPath.empty()) {
-        // Async load log file, then restore panels
-        startAsyncLogLoad(logPath, restorePanelsAndLayout);
+        startAsyncLogLoad(logPath, restoreWorkspaceState);
       } else {
-        restorePanelsAndLayout();
+        restoreWorkspaceState();
       }
     } else {
-      restorePanelsAndLayout();
+      restoreWorkspaceState();
     }
   }
 
@@ -539,6 +534,12 @@ namespace ui {
         }
         ImGui::EndMenu();
       }
+      if (ImGui::BeginMenu("Tools")) {
+        if (ImGui::MenuItem("Custom Channels...")) {
+          showCustomChannelModal_ = true;
+        }
+        ImGui::EndMenu();
+      }
       ImGui::EndMenuBar();
     }
   }
@@ -590,6 +591,156 @@ namespace ui {
     }
   }
 
+  void App::renderCustomChannelModal()
+  {
+    if (showCustomChannelModal_) {
+      ImGui::OpenPopup("Custom Calculated Channels");
+    }
+
+    // Set a comfortable size for the dual-pane modal
+    ImGui::SetNextWindowSize(ImVec2(700, 420), ImGuiCond_FirstUseEver);
+
+    if (ImGui::BeginPopupModal("Custom Calculated Channels", &showCustomChannelModal_, ImGuiWindowFlags_None)) {
+
+      // Track selected index (-1 means "New Channel" mode)
+      static int selectedIndex = -1;
+      static char nameBuf[64] = "";
+      static char unitBuf[32] = "";
+      static char formulaBuf[256] = "";
+
+      // Helper to load selected channel into input buffers
+      auto populateBuffers = [&](const core::Channel &ch) {
+        std::snprintf(nameBuf, sizeof(nameBuf), "%s", ch.name().c_str());
+        std::snprintf(unitBuf, sizeof(unitBuf), "%s", ch.unit().c_str());
+        std::snprintf(formulaBuf, sizeof(formulaBuf), "%s", ch.formula().c_str());
+        };
+
+      auto clearBuffers = [&]() {
+        nameBuf[0] = '\0';
+        unitBuf[0] = '\0';
+        formulaBuf[0] = '\0';
+        customChannelError_.clear();
+        };
+
+      // --- LEFT COLUMN: Custom Channels List ---
+      ImGui::BeginChild("CustomChannelList", ImVec2(220, -ImGui::GetFrameHeightWithSpacing()), true);
+
+      if (ImGui::Selectable("+ New Custom Channel", selectedIndex == -1)) {
+        selectedIndex = -1;
+        clearBuffers();
+      }
+      ImGui::Separator();
+
+      auto &channels = session_.channels();
+      for (int i = 0; i < static_cast<int>(channels.size()); ++i) {
+        if (!channels[i].isCustom()) continue;
+
+        ImGui::PushID(i);
+        std::string label = channels[i].name();
+        if (!channels[i].unit().empty()) {
+          label += " (" + channels[i].unit() + ")";
+        }
+
+        if (ImGui::Selectable(label.c_str(), selectedIndex == i)) {
+          selectedIndex = i;
+          populateBuffers(channels[i]);
+          customChannelError_.clear();
+        }
+        ImGui::PopID();
+      }
+      ImGui::EndChild();
+
+      ImGui::SameLine();
+
+      // --- RIGHT COLUMN: Editor Form ---
+      ImGui::BeginGroup();
+      ImGui::BeginChild("CustomChannelEditor", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()), false);
+
+      if (selectedIndex == -1) {
+        ImGui::TextDisabled("Create New Calculated Channel");
+      } else {
+        ImGui::TextDisabled("Editing Channel: %s", channels[selectedIndex].name().c_str());
+      }
+      ImGui::Separator();
+      ImGui::Spacing();
+
+      ImGui::InputText("Channel Name", nameBuf, sizeof(nameBuf));
+      ImGui::InputText("Unit", unitBuf, sizeof(unitBuf));
+      ImGui::InputText("Formula", formulaBuf, sizeof(formulaBuf));
+
+      ImGui::Spacing();
+      ImGui::TextWrapped("Use [ChannelName] for variables, e.g. [MAP] - 101.3 or ([RPM] * [PW]) / 12000");
+
+      if (!customChannelError_.empty()) {
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", customChannelError_.c_str());
+      }
+
+      ImGui::EndChild();
+      ImGui::EndGroup();
+
+      ImGui::Separator();
+
+      // --- BOTTOM BUTTON BAR ---
+      if (selectedIndex == -1) {
+        // Add Mode
+        if (ImGui::Button("Add Channel", ImVec2(120, 0))) {
+          core::CustomChannelDef def{ nameBuf, unitBuf, formulaBuf };
+          std::string err;
+
+          core::Channel newCh = core::FormulaEvaluator::evaluate(def, session_, err);
+          if (!err.empty()) {
+            customChannelError_ = err;
+          } else {
+            session_.addChannel(std::move(newCh));
+            refreshPanelsFromSession();
+            clearBuffers();
+            selectedIndex = static_cast<int>(session_.channels().size()) - 1;
+          }
+        }
+      } else {
+        // Edit / Update Mode
+        if (ImGui::Button("Update / Re-evaluate", ImVec2(160, 0))) {
+          core::CustomChannelDef def{ nameBuf, unitBuf, formulaBuf };
+          std::string err;
+
+          core::Channel updatedCh = core::FormulaEvaluator::evaluate(def, session_, err);
+          if (!err.empty()) {
+            customChannelError_ = err;
+          } else {
+            // Replace existing channel in-place
+            channels[selectedIndex] = std::move(updatedCh);
+            refreshPanelsFromSession();
+            customChannelError_.clear();
+          }
+        }
+
+        ImGui::SameLine();
+
+        // Delete Mode
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.7f, 0.2f, 0.2f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9f, 0.3f, 0.3f, 1.0f));
+        if (ImGui::Button("Delete Channel", ImVec2(120, 0))) {
+          if (selectedIndex >= 0 && selectedIndex < static_cast<int>(channels.size())) {
+            channels.erase(channels.begin() + selectedIndex);
+            refreshPanelsFromSession(); // Rebind open panels so deleted channel is safely unbound
+            selectedIndex = -1;
+            clearBuffers();
+          }
+        }
+        ImGui::PopStyleColor(2);
+      }
+
+      ImGui::SameLine();
+      if (ImGui::Button("Close", ImVec2(100, 0))) {
+        showCustomChannelModal_ = false;
+        ImGui::CloseCurrentPopup();
+      }
+
+      ImGui::EndPopup();
+    }
+  }
+
   void App::render()
   {
     pollPendingDialogs();
@@ -604,6 +755,7 @@ namespace ui {
 
     renderLoadProgressModal();
     renderLoadErrorPopup();
+    renderCustomChannelModal();
 
     for (auto &panel : panels_) {
       panel->render(cursor_);

@@ -1,8 +1,41 @@
+// src/engine/ve_analyzer.cpp
+
 #include "engine/ve_analyzer.h"
 #include <cmath>
 #include <limits>
 
 namespace engine {
+
+  VeTransientFilter::VeTransientFilter(const core::LogSession &session, const VeAnalysisConfig &config)
+    : config_(config)
+  {
+    if (config_.enableTpsDotFilter) {
+      tpsDotCh_ = session.findChannel(config_.tpsDotChannel);
+    }
+    if (config_.enableCltFilter) {
+      cltCh_ = session.findChannel(config_.cltChannel);
+    }
+  }
+
+  bool VeTransientFilter::shouldIgnoreSample(size_t rowIndex, double load) const
+  {
+    if (config_.enableOverrunFilter && load < config_.minLoadThreshold) {
+      return true;
+    }
+    if (tpsDotCh_ && rowIndex < tpsDotCh_->values().size()) {
+      double tpsDot = tpsDotCh_->values()[rowIndex];
+      if (!std::isnan(tpsDot) && std::abs(tpsDot) > config_.maxTpsDot) {
+        return true;
+      }
+    }
+    if (cltCh_ && rowIndex < cltCh_->values().size()) {
+      double clt = cltCh_->values()[rowIndex];
+      if (!std::isnan(clt) && clt < config_.minCoolantTemp) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   core::Table2D VeAnalyzer::computeCorrectedVe(
     const core::LogSession &session,
@@ -17,8 +50,10 @@ namespace engine {
     const core::Channel *afrCh = session.findChannel(config.afrChannel);
 
     if (!rpmCh || !loadCh || !afrCh) {
-      return correctedVe; // Missing required channels
+      return correctedVe;
     }
+
+    VeTransientFilter filter(session, config);
 
     const size_t rows = currentVe.rowCount();
     const size_t cols = currentVe.columnCount();
@@ -36,13 +71,13 @@ namespace engine {
 
       if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
 
-      // Find nearest cell (Simple Nearest-Neighbor approach)
+      if (filter.shouldIgnoreSample(i, load)) continue;
+
       size_t bestR = 0, bestC = 0;
       double minDist = std::numeric_limits<double>::max();
 
       for (size_t r = 0; r < rows; ++r) {
         for (size_t c = 0; c < cols; ++c) {
-          // Normalize to prevent RPM magnitude from dominating MAP magnitude
           double dRpm = (rpm - currentVe.xBreakpoints()[c]) / 1000.0;
           double dLoad = (load - currentVe.yBreakpoints()[r]) / 10.0;
           double dist = (dRpm * dRpm) + (dLoad * dLoad);
@@ -65,7 +100,6 @@ namespace engine {
         if (countAfr[r][c] >= config.minSamplesPerBin) {
           double avgObservedAfr = sumAfr[r][c] / static_cast<double>(countAfr[r][c]);
 
-          // Sample the target AFR table at this cell's coordinates
           double rpmBp = currentVe.xBreakpoints()[c];
           double loadBp = currentVe.yBreakpoints()[r];
           double tgtAfr = targetAfr.sample(rpmBp, loadBp);

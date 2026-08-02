@@ -42,13 +42,15 @@ namespace ui {
 
   StatusPanel::StatusPanel(std::string title) : PlotPanel(std::move(title)) {}
 
-  void StatusPanel::setSession(const core::LogSession *session) {
+  void StatusPanel::setSession(const core::LogSession *session)
+  {
     session_ = session;
     // Deliberately not clearing visibilityOverrides_ here -- user choices
     // persist across reloads by channel name (see class comment).
   }
 
-  bool StatusPanel::isVisible_(const core::Channel &channel) const {
+  bool StatusPanel::isVisible(const core::Channel &channel) const
+  {
     auto it = visibilityOverrides_.find(channel.name());
     if (it != visibilityOverrides_.end()) {
       return it->second;
@@ -56,7 +58,8 @@ namespace ui {
     return channel.isBoolean();
   }
 
-  void StatusPanel::setVisible_(const std::string &channelName, bool visible) {
+  void StatusPanel::setVisible(const std::string &channelName, bool visible)
+  {
     visibilityOverrides_[channelName] = visible;
   }
 
@@ -84,7 +87,8 @@ namespace ui {
     }
   }
 
-  size_t StatusPanel::nearestIndex_(const std::vector<double> &timeSec, double queryTime) const {
+  size_t StatusPanel::nearestIndex(const std::vector<double> &timeSec, double queryTime) const
+  {
     auto it = std::lower_bound(timeSec.begin(), timeSec.end(), queryTime);
     size_t index = static_cast<size_t>(it - timeSec.begin());
     if (index >= timeSec.size()) {
@@ -99,7 +103,8 @@ namespace ui {
     return index;
   }
 
-  void StatusPanel::renderChannelPickerPopup_() {
+  void StatusPanel::renderChannelPickerPopup()
+  {
     if (ImGui::Button("Channels...")) {
       ImGui::OpenPopup("StatusPanelChannelsPopup");
     }
@@ -113,19 +118,19 @@ namespace ui {
 
       if (ImGui::Button("Select All")) {
         for (const auto &channel : session_->channels()) {
-          setVisible_(channel.name(), true);
+          setVisible(channel.name(), true);
         }
       }
       ImGui::SameLine();
       if (ImGui::Button("Unselect All")) {
         for (const auto &channel : session_->channels()) {
-          setVisible_(channel.name(), false);
+          setVisible(channel.name(), false);
         }
       }
       ImGui::SameLine();
       if (ImGui::Button("Status Channels Only")) {
         for (const auto &channel : session_->channels()) {
-          setVisible_(channel.name(), channel.isBoolean());
+          setVisible(channel.name(), channel.isBoolean());
         }
       }
 
@@ -146,9 +151,9 @@ namespace ui {
         if (!filterLower.empty() && toLower(channel.name()).find(filterLower) == std::string::npos) {
           continue;
         }
-        bool visible = isVisible_(channel);
+        bool visible = isVisible(channel);
         if (ImGui::Checkbox(channel.name().c_str(), &visible)) {
-          setVisible_(channel.name(), visible);
+          setVisible(channel.name(), visible);
         }
       }
       ImGui::EndChild();
@@ -157,7 +162,8 @@ namespace ui {
     }
   }
 
-  void StatusPanel::renderCellGrid_(const PlotCursor &cursor) {
+  void StatusPanel::renderCellGrid(const PlotCursor &cursor)
+  {
     if (session_ == nullptr || session_->channels().empty()) {
       ImGui::TextDisabled("No log loaded yet.");
       return;
@@ -172,14 +178,14 @@ namespace ui {
 
     int col = 0;
     for (const auto &channel : session_->channels()) {
-      if (!isVisible_(channel)) {
+      if (!isVisible(channel)) {
         continue;
       }
 
       bool haveValue = false;
       double value = 0.0;
       if (timeSec != nullptr && !timeSec->empty() && channel.values().size() == timeSec->size()) {
-        size_t index = cursor.active ? nearestIndex_(*timeSec, cursor.timeSec) : timeSec->size() - 1;
+        size_t index = cursor.active ? nearestIndex(*timeSec, cursor.timeSec) : timeSec->size() - 1;
         value = channel.values()[index];
         haveValue = true;
       }
@@ -227,13 +233,14 @@ namespace ui {
     }
   }
 
-  void StatusPanel::render(PlotCursor &cursor) {
+  void StatusPanel::render(PlotCursor &cursor)
+  {
     std::string windowLabel = "Status###" + title();
     ImGui::Begin(windowLabel.c_str(), &open_);
 
-    renderChannelPickerPopup_();
+    renderChannelPickerPopup();
     ImGui::Separator();
-    renderCellGrid_(cursor);
+    renderCellGrid(cursor);
 
     ImGui::End();
   }

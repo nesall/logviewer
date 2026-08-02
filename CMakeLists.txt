@@ -6,12 +6,6 @@ project(logviewer LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Some fetched dependencies (portable-file-dialogs at time of writing)
-# declare an old cmake_minimum_required(). CMake 4.x removed compatibility
-# with policies below 3.5 outright rather than just warning, which breaks
-# their configure step. This tells CMake to treat any dependency's too-old
-# minimum as if it had requested 3.5, instead of erroring.
-#set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
 # =============================================================================
 #  2. Fetch Dependencies
@@ -114,6 +108,8 @@ add_executable(logviewer
   src/ui/tableeditorpanel.cpp
   src/ui/veanalysispanel.h
   src/ui/veanalysispanel.cpp
+  src/core/formula_evaluator.h
+  src/core/formula_evaluator.cpp
 )
 
 # =============================================================================
@@ -132,3 +128,8 @@ target_link_libraries(logviewer PRIVATE
   
   OpenGL::GL
 )
+
+
+if (MSVC)
+  target_compile_options(logviewer PRIVATE /bigobj)
+endif()
