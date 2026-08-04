@@ -72,6 +72,8 @@ int main() {
     glfwSwapBuffers(window);
   }
 
+  app.saveSettings();
+
   ImGui_ImplOpenGL3_Shutdown();
   ImGui_ImplGlfw_Shutdown();
   ImPlot::DestroyContext();

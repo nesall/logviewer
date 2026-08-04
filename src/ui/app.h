@@ -8,8 +8,10 @@
 #include <future>
 
 #include "core/logsession.h"
-#include "io/megasquirtcsvparser.h"
 #include "ui/plotpanel.h"
+#include "io/megasquirtcsvparser.h"
+#include "io/haltechdlparser.h"
+
 
 struct GLFWwindow;
 
@@ -30,6 +32,7 @@ namespace ui {
 
     // Called once per frame, between ImGui::NewFrame() and ImGui::Render().
     void render();
+    void saveSettings() const;
 
   private:
     void renderDockspace();
@@ -53,7 +56,6 @@ namespace ui {
     void loadWorkspaceFile(const std::string &path);
     void addRecentWorkspace(const std::string &path);
     void loadSettings();
-    void saveSettings() const;
     void updateWindowTitle();
 
     void refreshPanelsFromSession();
@@ -84,7 +86,8 @@ namespace ui {
     std::vector<std::unique_ptr<PlotPanel>> panels_;
     int nextPanelId_ = 1;
 
-    io::MegasquirtCsvParser parser_;
+    io::MegasquirtCsvParser mslParser_;
+    io::HaltechDlParser haltechParser_;
     core::LogSession session_;
 
     bool showLoadErrorPopup_ = false;

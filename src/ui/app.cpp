@@ -11,7 +11,9 @@
 #include "3rdparty/portable-file-dialogs.h"
 #include "core/table2d.h"
 #include "core/formula_evaluator.h"
+
 #include "imgui.h"
+#include "imgui_internal.h"
 #include <GLFW/glfw3.h>
 
 #include "ui/scatterpanel.h"
@@ -76,12 +78,15 @@ namespace ui {
 
   void App::beginOpenLogDialog()
   {
-    if (pendingOpenLogDialog_) {
-      return; // one is already open
-    }
+    if (pendingOpenLogDialog_) return;
     pendingOpenLogDialog_ = std::make_unique<pfd::open_file>(
       "Open Log File", ".",
-      std::vector<std::string>{"MegaSquirt Log Files (*.msl)", "*.msl", "All Files", "*"});
+      std::vector<std::string>{
+      "All Supported Logs (*.msl, *.dl)", "*.msl *.dl",
+        "MegaSquirt Log Files (*.msl)", "*.msl",
+        "Haltech Log Files (*.dl)", "*.dl",
+        "All Files", "*"
+    });
   }
 
   void App::beginSaveWorkspaceDialog()
@@ -137,16 +142,6 @@ namespace ui {
 
   void App::loadLogFile(const std::string &path)
   {
-    //core::LogSession newSession;
-    //std::string error;
-    //if (!parser_.parse(path, newSession, error)) {
-    //  loadErrorMessage_ = error;
-    //  showLoadErrorPopup_ = true;
-    //  return;
-    //}
-
-    //session_ = std::move(newSession);
-    //refreshPanelsFromSession();
     startAsyncLogLoad(path);
   }
 
@@ -263,10 +258,19 @@ namespace ui {
           }
         }
 
-        // 3. Restore ImGui Docking Layout
+        // 3. Restore ImGui Docking Layout & Fix Resize Responsiveness
         if (root.contains("imguiLayout") && root["imguiLayout"].is_string()) {
           std::string iniData = root["imguiLayout"].get<std::string>();
           ImGui::LoadIniSettingsFromMemory(iniData.c_str(), iniData.size());
+
+          // Force ImGui to update host viewport dimensions on loaded dock nodes
+          ImGuiID dockspaceId = ImGui::GetID("MainDockSpace");
+          if (ImGuiDockNode *node = ImGui::DockBuilderGetNode(dockspaceId)) {
+            node->WantMouseMove = true;
+            //ImGui::DockBuilderSetNodePos(dockspaceId, ImGui::GetMainViewport()->WorkPos);
+            //ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->WorkSize);
+            ImGui::DockBuilderFinish(dockspaceId);
+          }
         }
       };
 
@@ -309,6 +313,21 @@ namespace ui {
       return; // corrupt/unreadable -- just start fresh rather than error out
     }
 
+    if (window_ != nullptr && root.contains("window") && root["window"].is_object()) {
+      const auto &wJson = root["window"];
+      int width = wJson.value("width", 1280);
+      int height = wJson.value("height", 800);
+      bool maximized = wJson.value("maximized", false);
+
+      if (width > 200 && height > 200) {
+        if (maximized) {
+          glfwMaximizeWindow(window_);
+        } else {
+          glfwSetWindowSize(window_, width, height);
+        }
+      }
+    }
+
     if (root.contains("recentWorkspaces") && root["recentWorkspaces"].is_array()) {
       for (const auto &entry : root["recentWorkspaces"]) {
         if (entry.is_string()) {
@@ -323,7 +342,18 @@ namespace ui {
 
   void App::saveSettings() const
   {
+    if (window_ == nullptr) return;
+
+    int width = 0, height = 0;
+    glfwGetWindowSize(window_, &width, &height);
+    int maximized = glfwGetWindowAttrib(window_, GLFW_MAXIMIZED);
+
     nlohmann::json root;
+    root["window"] = {
+    {"width", width},
+    {"height", height},
+    {"maximized", (maximized != 0)}
+    };
     root["recentWorkspaces"] = recentWorkspacePaths_;
 
     std::ofstream file(kSettingsFilePath);
@@ -424,10 +454,16 @@ namespace ui {
     progressStatusText_ = "Loading " + fileNameOnly(path) + "...";
     pendingOnCompleteCallback_ = std::move(onComplete);
 
-    // Launch thread
     activeLoadTask_ = std::async(std::launch::async, [this, path]() {
       LoadResult res;
-      res.success = parser_.parse(path, res.session, res.error, &loadProgress_);
+
+      // Choose parser based on extension
+      if (path.size() >= 3 && path.substr(path.size() - 3) == ".dl") {
+        res.success = haltechParser_.parse(path, res.session, res.error, &loadProgress_);
+      } else {
+        res.success = mslParser_.parse(path, res.session, res.error, &loadProgress_);
+      }
+
       return res;
       });
   }

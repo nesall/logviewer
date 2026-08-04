@@ -174,20 +174,63 @@ namespace ui {
     }
   }
 
-  void TimeSeriesPanel::renderHeaderControls()
+  void TimeSeriesPanel::renderHeaderControls(PlotCursor &cursor)
   {
     if (ImGui::Button(showSidebar_ ? "< Hide Channels" : "> Show Channels")) {
       showSidebar_ = !showSidebar_;
     }
 
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(100.0f);
+    ImGui::SetNextItemWidth(90.0f);
     if (ImGui::InputInt("Max/Plot", &maxChannelsPerPlot_)) {
       if (maxChannelsPerPlot_ < 1) maxChannelsPerPlot_ = 1;
       if (maxChannelsPerPlot_ > 16) maxChannelsPerPlot_ = 16;
     }
     if (ImGui::IsItemHovered()) {
       ImGui::SetTooltip("Maximum channels displayed per subplot before creating a new subplot.");
+    }
+
+    ImGui::SameLine();
+    ImGui::Text("|");
+    ImGui::SameLine();
+
+    renderCropControls(cursor);
+  }
+
+  void TimeSeriesPanel::renderCropControls(PlotCursor &cursor)
+  {
+    if (session_ == nullptr) {
+      return;
+    }
+
+    bool hasCrop = session_->cropRange().active;
+
+    if (ImGui::Button("Set [Start]")) {
+      double start = cursor.active ? cursor.timeSec : 0.0;
+      double end = hasCrop ? session_->cropRange().endSec
+        : (cachedTimeSec_ && !cachedTimeSec_->empty() ? cachedTimeSec_->back() : 0.0);
+      const_cast<core::LogSession *>(session_)->setCropRange(start, end);
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Set crop start marker at current cursor time");
+
+    ImGui::SameLine();
+    if (ImGui::Button("Set [End]")) {
+      double start = hasCrop ? session_->cropRange().startSec
+        : (cachedTimeSec_ && !cachedTimeSec_->empty() ? cachedTimeSec_->front() : 0.0);
+      double end = cursor.active ? cursor.timeSec : 0.0;
+      const_cast<core::LogSession *>(session_)->setCropRange(start, end);
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Set crop end marker at current cursor time");
+
+    if (hasCrop) {
+      ImGui::SameLine();
+      if (ImGui::Button("Reset Crop")) {
+        const_cast<core::LogSession *>(session_)->resetCropRange();
+      }
+
+      ImGui::SameLine();
+      ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f),
+        "[Crop: %.2f s - %.2f s]", session_->cropRange().startSec, session_->cropRange().endSec);
     }
   }
 
@@ -335,8 +378,18 @@ namespace ui {
 
               ImPlotSpec spec;
               spec.LineColor = channelStates_[ch->name()].color;
-              ImPlot::PlotLine(ch->name().c_str(), timeSec.data(), normVals.data(),
-                static_cast<int>(timeSec.size()), spec);
+              ImPlot::PlotLine(ch->name().c_str(), timeSec.data(), normVals.data(), static_cast<int>(timeSec.size()), spec);
+
+              if (session_ != nullptr && session_->cropRange().active) {
+                double cropStart = session_->cropRange().startSec;
+                double cropEnd = session_->cropRange().endSec;
+
+                ImPlot::DragLineX(101, &cropStart, ImVec4(0.2f, 0.8f, 1.0f, 0.8f), 1.5f, ImPlotDragToolFlags_NoInputs);
+                ImPlot::TagX(cropStart, ImVec4(0.2f, 0.8f, 1.0f, 0.8f), "Start");
+
+                ImPlot::DragLineX(102, &cropEnd, ImVec4(0.2f, 0.8f, 1.0f, 0.8f), 1.5f, ImPlotDragToolFlags_NoInputs);
+                ImPlot::TagX(cropEnd, ImVec4(0.2f, 0.8f, 1.0f, 0.8f), "End");
+              }
             }
           } else {
             ImPlot::PlotLine("Placeholder", timeSec.data(), placeholderValue_.data(),
@@ -500,14 +553,13 @@ namespace ui {
     std::string windowLabel = "Time Series###" + title();
     ImGui::Begin(windowLabel.c_str(), &open_);
 
-    renderHeaderControls();
+    renderHeaderControls(cursor);
     ImGui::Separator();
 
     if (showSidebar_) {
       ImGui::BeginChild("SidebarChild", ImVec2(240, 0), true);
       renderLeftSidebar(cursor);
       ImGui::EndChild();
-
       ImGui::SameLine();
     }
 

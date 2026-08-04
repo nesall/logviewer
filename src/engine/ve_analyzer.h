@@ -30,6 +30,8 @@ namespace engine {
     double minLoadThreshold = 15.0; // Ignore deep overrun / vacuum decel
   };
 
+  void populateDefaultsForSession(VeAnalysisConfig &config, const core::LogSession &session);
+
   // Reusable transient filter to share identical rules across different binning grids
   class VeTransientFilter {
   public:

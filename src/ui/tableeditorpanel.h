@@ -2,10 +2,17 @@
 
 #include <string>
 #include <vector>
+#include <set>
+#include <utility>
+#include <optional>
+#include <functional>
 
 #include "3rdparty/nlohmann/json_fwd.hpp"
 #include "core/table2d.h"
 #include "ui/plotpanel.h"
+
+#include <imgui.h>
+
 
 namespace ui {
 
@@ -27,28 +34,73 @@ namespace ui {
     void copyToClipboard(bool includeHeaders = true) const;
     void pasteFromClipboard();
     bool importTunerStudioXml(const std::string &xmlContent);
-    
+
     void showCopyToast() { copyToastTimer_ = 1.5f; }
     void renderToast();
+
+    // Batch editing API
+    void applyBatchMultiply(double factor);
+    void applyBatchOffset(double delta);
+    void applyBatchSetValue(double value);
+    void interpolateSelectedRegion();
+    void applyExtrapolationPreview();
+
+    void setSelection(const std::set<std::pair<int, int>> &cells);
+    const std::set<std::pair<int, int>> &selectedCells() const { return selectedCells_; }
+
+    void setCustomTextColoring(std::function<std::optional<ImU32>(double, size_t, size_t)> colorFunc) { customTextColorFunc_ = std::move(colorFunc); }
+    void setCustomHeatmapColoring(std::function<ImU32(double, size_t, size_t)> colorFunc) { customHeatmapColorFunc_ = std::move(colorFunc); }
+    void setCustomHoverTooltip(std::function<std::string(double, size_t, size_t)> tooltipFunc) { customHoverTooltipFunc_ = std::move(tooltipFunc); }
 
   private:
     static std::string formatValue(double value, int decimalPlaces);
     void renderValueGrid();
+    void render3DSurfaceMesh();
+    void renderBatchToolbar();
     bool renderAxisEditorPopup(const char *title);
+    void renderExtrapolateModal();
+
+    bool isCellSelected(int r, int c) const;
+    void clearSelection();
+    void selectRectangularRegion(int r1, int c1, int r2, int c2, bool keepExisting = false);
+    void getSelectionBounds(int &minR, int &maxR, int &minC, int &maxC) const;
 
   private:
     std::string panelTypeIdValue_;
     std::string displayName_;
     core::Table2D table_;
     bool open_ = true;
+    bool show3DView_ = false;
     int xDecimalPlaces_ = 0;
     int yDecimalPlaces_ = 2;
 
-    // Fast Cell Selection & Single-Cell Active Editing
-    int selectedRow_ = -1;
-    int selectedCol_ = -1;
+    // 3D camera state
+    float cameraYaw_ = 45.0f;
+    float cameraPitch_ = 30.0f;
+    float cameraZoom_ = 1.0f;
+    ImVec2 cameraPan_ = ImVec2(0.0f, 0.0f);
+
+    // Disjoint multi-cell selection tracking (row, col)
+    std::set<std::pair<int, int>> selectedCells_;
+
+    // Anchor cell for Shift-click and Drag operations
+    int anchorRow_ = -1;
+    int anchorCol_ = -1;
+
+    // Single-cell active text edit mode
     int editingRow_ = -1;
     int editingCol_ = -1;
+
+    // Batch modification buffer
+    double batchValue_ = 1.05;
+
+    core::Table2D tableBackup_;
+    bool showExtrapolateModal_ = false;
+    bool wasExtrapolateModalOpen_ = false;
+    bool showPreview_ = true;
+    int slopeMode_ = 0;
+    float guessTolerance_ = 10.f;
+    float manualSlope_ = 1.f;
 
     std::vector<double> axisEditorValues_;
     int axisEditorBinCount_ = 0;
@@ -60,6 +112,9 @@ namespace ui {
     AxisEditing editingAxis_ = AxisEditing::None;
 
     float copyToastTimer_ = 0.0f;
+    std::function<std::optional<ImU32>(double, size_t, size_t)> customTextColorFunc_;
+    std::function<ImU32(double, size_t, size_t)> customHeatmapColorFunc_;
+    std::function<std::string(double, size_t, size_t)> customHoverTooltipFunc_;
   };
 
 } // namespace ui

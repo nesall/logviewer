@@ -25,12 +25,11 @@ namespace ui {
   private:
     void computeObservedAfr();
     void computeSuggestedVe();
-
     void renderObservedAfrTab();
-    void renderReadOnlyTableTab(const char *tabName, TableEditorPanel &editorPanel,
-      bool &tableSetFlag, const char *popupId);
+    void renderReadOnlyTableTab(const char *tabName, TableEditorPanel &editorPanel, bool &tableSetFlag, const char *popupId);
     void renderSuggestedVeTab();
     void renderReadOnlyTableGrid(const core::Table2D &table);
+    void selectUnvisitedCellsOnSuggestedVe();
 
     void computeAfrDelta();
     void renderAfrDeltaTab();
@@ -48,6 +47,8 @@ namespace ui {
     core::Table2D afrDeltaTable_;
     bool hasAfrDelta_ = false;
     bool alignAfrDeltaToVeTable_ = true;
+    bool scaleDeltaIntensityByHitCount_ = false;
+    std::vector<std::vector<size_t>> afrDeltaSampleCounts_;
 
     // Editing buffers for popups
     core::Table2D targetAfrEditBuffer_;

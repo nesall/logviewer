@@ -45,7 +45,8 @@ namespace ui {
     ArtifactCursor artifactCursor_;
 
     void rebindChannels();
-    void renderHeaderControls();
+    void renderHeaderControls(PlotCursor &cursor);
+    void renderCropControls(PlotCursor &cursor);
     void renderLeftSidebar(PlotCursor &cursor);
     void renderPlotArea(PlotCursor &cursor);
     size_t getCursorIndex(double queryTime) const;

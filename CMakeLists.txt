@@ -94,6 +94,8 @@ add_executable(logviewer
   src/io/logparser.h
   src/io/megasquirtcsvparser.h
   src/io/megasquirtcsvparser.cpp
+  src/io/haltechdlparser.h
+  src/io/haltechdlparser.cpp
   src/ui/app.h
   src/ui/app.cpp
   src/ui/plotpanel.h

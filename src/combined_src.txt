@@ -201,15 +201,18 @@ namespace core {
 
 #include "core/logsession.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace core {
 
-  void LogSession::addChannel(Channel channel) {
+  void LogSession::addChannel(Channel channel)
+  {
     channels_.push_back(std::move(channel));
   }
 
-  const Channel *LogSession::findChannel(const std::string &name) const {
+  const Channel *LogSession::findChannel(const std::string &name) const
+  {
     for (const auto &channel : channels_) {
       if (channel.name() == name) {
         return &channel;
@@ -218,11 +221,48 @@ namespace core {
     return nullptr;
   }
 
-  const std::vector<double> *LogSession::timeSec() const {
+  const std::vector<double> *LogSession::timeSec() const
+  {
     if (!timeChannelIndex_.has_value() || *timeChannelIndex_ >= channels_.size()) {
       return nullptr;
     }
     return &channels_[*timeChannelIndex_].values();
+  }
+
+  void LogSession::setCropRange(double startSec, double endSec)
+  {
+    if (startSec > endSec) std::swap(startSec, endSec);
+    cropRange_.startSec = startSec;
+    cropRange_.endSec = endSec;
+    cropRange_.active = true;
+  }
+
+  void LogSession::resetCropRange()
+  {
+    cropRange_.active = false;
+  }
+
+  size_t LogSession::cropStartIndex() const
+  {
+    const auto *time = timeSec();
+    if (!cropRange_.active || !time || time->empty()) return 0;
+    auto it = std::lower_bound(time->begin(), time->end(), cropRange_.startSec);
+    return static_cast<size_t>(std::distance(time->begin(), it));
+  }
+
+  size_t LogSession::cropEndIndex() const
+  {
+    const auto *time = timeSec();
+    if (!cropRange_.active || !time || time->empty()) return rowCount_ > 0 ? rowCount_ - 1 : 0;
+    auto it = std::upper_bound(time->begin(), time->end(), cropRange_.endSec);
+    size_t idx = static_cast<size_t>(std::distance(time->begin(), it));
+    return (idx > 0) ? idx - 1 : 0;
+  }
+
+  bool LogSession::isRowInCropRange(size_t rowIndex) const
+  {
+    if (!cropRange_.active) return true;
+    return (rowIndex >= cropStartIndex() && rowIndex <= cropEndIndex());
   }
 
 } // namespace core
@@ -240,9 +280,12 @@ namespace core {
 
 namespace core {
 
-  // All channels parsed from one log file, plus a bit of file metadata.
-  // Every Channel's values() vector is the same length (rowCount()), aligned
-  // by row index -- row i across all channels is one sample instant.
+  struct TimeCropRange {
+    double startSec = 0.0;
+    double endSec = 0.0;
+    bool active = false;
+  };
+
   class LogSession {
   public:
     void addChannel(Channel channel);
@@ -253,11 +296,8 @@ namespace core {
     const std::vector<Channel> &channels() const { return channels_; }
     std::vector<Channel> &channels() { return channels_; }
 
-    // Returns nullptr if no channel with this exact name exists.
     const Channel *findChannel(const std::string &name) const;
 
-    // Convenience accessor for the parsed/corrected time channel, if the
-    // parser identified one (e.g. the "Time" column in an MSL file).
     const std::vector<double> *timeSec() const;
     void setTimeChannelIndex(std::optional<size_t> index) { timeChannelIndex_ = index; }
 
@@ -270,6 +310,15 @@ namespace core {
     const std::string &captureDate() const { return captureDate_; }
     void setCaptureDate(std::string date) { captureDate_ = std::move(date); }
 
+    // Log Trimming & Region Cropping API
+    const TimeCropRange &cropRange() const { return cropRange_; }
+    void setCropRange(double startSec, double endSec);
+    void resetCropRange();
+
+    size_t cropStartIndex() const;
+    size_t cropEndIndex() const;
+    bool isRowInCropRange(size_t rowIndex) const;
+
   private:
     std::vector<Channel> channels_;
     size_t rowCount_ = 0;
@@ -278,6 +327,8 @@ namespace core {
     std::string sourcePath_;
     std::string formatInfo_;
     std::string captureDate_;
+
+    TimeCropRange cropRange_;
   };
 
 } // namespace core
@@ -569,7 +620,58 @@ namespace core {
 #include <cmath>
 #include <limits>
 
+
 namespace engine {
+
+  void populateDefaultsForSession(VeAnalysisConfig &config, const core::LogSession &session) {
+    // Helper lambda to find the first channel present in the session from a candidate list
+    auto findFirstMatch = [&session](const std::vector<std::string> &candidates) -> std::string {
+      for (const auto &name : candidates) {
+        if (session.findChannel(name) != nullptr) {
+          return name;
+        }
+      }
+      return "";
+      };
+
+    // Candidate lists ordered by format prevalence
+    config.rpmChannel = findFirstMatch({
+      "RPM",                       // MegaSquirt / Haltech / Standard
+      "Filtered RPM",              // Haltech alternative
+      "Engine Speed"
+      });
+
+    config.loadChannel = findFirstMatch({
+      "MAP",                       // MegaSquirt
+      "Fuel - Load (MAP)",         // Haltech NSP[cite: 2]
+      "Manifold Pressure",         // Haltech raw[cite: 2]
+      "Ignition - Load (MAP)",     // Haltech alternative[cite: 2]
+      "Engine Demand",             // Haltech TPS-based load[cite: 2]
+      "TPS"                        // MegaSquirt Alpha-N
+      });
+
+    config.afrChannel = findFirstMatch({
+      "AFR",                       // MegaSquirt
+      "Wideband O2 1",             // Haltech[cite: 2]
+      "Wideband O2 Overall",       // Haltech[cite: 2]
+      "WBC1 Lambda",               // Haltech[cite: 2]
+      "AFR1",
+      "Lambda1"
+      });
+
+    config.tpsDotChannel = findFirstMatch({
+      "TPSdot",                    // MegaSquirt[cite: 1]
+      "Throttle Position Derivative", // Haltech[cite: 2]
+      "Throttle Position Derivative - Cable", // Haltech[cite: 2]
+      "MAPdot"
+      });
+
+    config.cltChannel = findFirstMatch({
+      "CLT",                       // MegaSquirt[cite: 1]
+      "Coolant Temperature"        // Haltech[cite: 2]
+      });
+  }
+
 
   VeTransientFilter::VeTransientFilter(const core::LogSession &session, const VeAnalysisConfig &config)
     : config_(config)
@@ -630,12 +732,14 @@ namespace engine {
 
     // 1. Binning phase
     for (size_t i = 0; i < numSamples; ++i) {
+      
+      if (!session.isRowInCropRange(i)) continue;
+
       double rpm = rpmCh->values()[i];
       double load = loadCh->values()[i];
       double afr = afrCh->values()[i];
 
       if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
-
       if (filter.shouldIgnoreSample(i, load)) continue;
 
       size_t bestR = 0, bestC = 0;
@@ -718,6 +822,8 @@ namespace engine {
     double minLoadThreshold = 15.0; // Ignore deep overrun / vacuum decel
   };
 
+  void populateDefaultsForSession(VeAnalysisConfig &config, const core::LogSession &session);
+
   // Reusable transient filter to share identical rules across different binning grids
   class VeTransientFilter {
   public:
@@ -744,6 +850,196 @@ namespace engine {
   };
 
 } // namespace engine
+
+
+## File: src/io/haltechdlparser.cpp
+
+#include "io/haltechdlparser.h"
+
+#include <cmath>
+#include <cstdlib>
+#include <fstream>
+#include <limits>
+#include <utility>
+#include <filesystem>
+#include <sstream>
+
+namespace io {
+
+  namespace {
+
+    std::vector<std::string> splitCsvLine(const std::string &line) {
+      std::vector<std::string> tokens;
+      size_t start = 0;
+      while (true) {
+        size_t commaPos = line.find(',', start);
+        if (commaPos == std::string::npos) {
+          tokens.push_back(line.substr(start));
+          break;
+        }
+        tokens.push_back(line.substr(start, commaPos - start));
+        start = commaPos + 1;
+      }
+      return tokens;
+    }
+
+    // Convert 'HH:MM:SS.mmm' timestamp string into total elapsed seconds
+    bool parseHaltechTimeSec(const std::string &token, double &outSec) {
+      int h = 0, m = 0;
+      double s = 0.0;
+      if (std::sscanf(token.c_str(), "%d:%d:%lf", &h, &m, &s) == 3) {
+        outSec = h * 3600.0 + m * 60.0 + s;
+        return true;
+      }
+      return false;
+    }
+
+    // Haltech uses sentinel numbers for invalid / disconnected channels
+    bool isHaltechSentinel(double val) {
+      return val == -2147483647.0 || val == -2147483628.0 ||
+        val == -2147483638.0 || val == 8388607.0;
+    }
+
+  } // namespace
+
+  bool HaltechDlParser::parse(const std::string &path, core::LogSession &outSession,
+    std::string &errorOut, std::atomic<float> *progress) {
+    std::error_code ec;
+    const uint64_t fileSize = std::filesystem::file_size(path, ec);
+    if (ec || fileSize == 0) {
+      errorOut = "Could not determine file size or file is empty: " + path;
+      return false;
+    }
+
+    std::ifstream file(path);
+    if (!file.is_open()) {
+      errorOut = "Could not open file: " + path;
+      return false;
+    }
+
+    std::string line;
+    std::string formatInfo = "Haltech NSP Log";
+    std::string captureDate;
+    std::vector<std::string> channelNames;
+    uint64_t bytesRead = 0;
+    bool inDataBlock = false;
+
+    // Phase 1: Header parsing
+    while (std::getline(file, line)) {
+      bytesRead += line.size() + 1;
+      if (line.empty()) continue;
+
+      if (line.rfind("Software :", 0) == 0) {
+        formatInfo = line;
+      } else if (line.rfind("DownloadDateTime :", 0) == 0) {
+        captureDate = line.substr(19);
+      } else if (line.rfind("Channel :", 0) == 0) {
+        std::string chName = line.substr(10);
+        // Trim trailing CR if Windows line endings
+        if (!chName.empty() && chName.back() == '\r') chName.pop_back();
+        channelNames.push_back(chName);
+      } else if (line.rfind("Log :", 0) == 0) {
+        inDataBlock = true;
+        break; // Reached data payload
+      }
+    }
+
+    if (!inDataBlock || channelNames.empty()) {
+      errorOut = "Failed to find 'Log :' data header or no channels defined in: " + path;
+      return false;
+    }
+
+    // Build session channels (1 Time channel + N Data channels)
+    std::vector<core::Channel> channels;
+    channels.reserve(channelNames.size() + 1);
+    channels.emplace_back("Time", "s"); // Injected calculated time channel
+
+    for (const auto &name : channelNames) {
+      channels.emplace_back(name, "");
+    }
+
+    size_t rowCount = 0;
+    double initialTimeSec = -1.0;
+
+    // Phase 2: Parse CSV rows
+    while (std::getline(file, line)) {
+      bytesRead += line.size() + 1;
+      if (line.empty()) continue;
+
+      if (progress && (rowCount % 500 == 0)) {
+        float p = static_cast<float>(bytesRead) / static_cast<float>(fileSize);
+        progress->store(std::min(p, 1.0f));
+      }
+
+      std::vector<std::string> tokens = splitCsvLine(line);
+      if (tokens.empty()) continue;
+
+      // Token 0: Timestamp (HH:MM:SS.mmm)
+      double absTime = 0.0;
+      if (!parseHaltechTimeSec(tokens[0], absTime)) {
+        continue;
+      }
+
+      if (initialTimeSec < 0.0) {
+        initialTimeSec = absTime;
+      }
+      double relativeTimeSec = absTime - initialTimeSec;
+      channels[0].values().push_back(relativeTimeSec);
+
+      // Tokens 1..N: Data channels
+      for (size_t i = 0; i < channelNames.size(); ++i) {
+        double val = std::numeric_limits<double>::quiet_NaN();
+        size_t tokenIdx = i + 1;
+
+        if (tokenIdx < tokens.size() && !tokens[tokenIdx].empty()) {
+          char *end = nullptr;
+          double parsed = std::strtod(tokens[tokenIdx].c_str(), &end);
+          if (end != tokens[tokenIdx].c_str() && !isHaltechSentinel(parsed)) {
+            val = parsed;
+          }
+        }
+        channels[i + 1].values().push_back(val);
+      }
+      ++rowCount;
+    }
+
+    if (progress) progress->store(1.0f);
+
+    outSession = core::LogSession();
+    outSession.setSourcePath(path);
+    outSession.setFormatInfo(formatInfo);
+    outSession.setCaptureDate(captureDate);
+    outSession.setRowCount(rowCount);
+    outSession.setTimeChannelIndex(0); // Injected time channel is at index 0
+
+    for (auto &channel : channels) {
+      outSession.addChannel(std::move(channel));
+    }
+
+    return true;
+  }
+
+} // namespace io
+
+
+## File: src/io/haltechdlparser.h
+
+#pragma once
+
+#include "io/logparser.h"
+
+namespace io {
+
+  // Parses Haltech NSP / Elite .dl text logs.
+  // Extract channel metadata from 'Channel : <Name>' tags and parses
+  // comma-delimited time and data rows in the 'Log :' block.
+  class HaltechDlParser : public LogParser {
+  public:
+    bool parse(const std::string &path, core::LogSession &outSession,
+      std::string &errorOut, std::atomic<float> *progress = nullptr) override;
+  };
+
+} // namespace io
 
 
 ## File: src/io/logparser.h
@@ -1093,6 +1389,8 @@ int main() {
     glfwSwapBuffers(window);
   }
 
+  app.saveSettings();
+
   ImGui_ImplOpenGL3_Shutdown();
   ImGui_ImplGlfw_Shutdown();
   ImPlot::DestroyContext();
@@ -1120,7 +1418,9 @@ int main() {
 #include "3rdparty/portable-file-dialogs.h"
 #include "core/table2d.h"
 #include "core/formula_evaluator.h"
+
 #include "imgui.h"
+#include "imgui_internal.h"
 #include <GLFW/glfw3.h>
 
 #include "ui/scatterpanel.h"
@@ -1185,12 +1485,15 @@ namespace ui {
 
   void App::beginOpenLogDialog()
   {
-    if (pendingOpenLogDialog_) {
-      return; // one is already open
-    }
+    if (pendingOpenLogDialog_) return;
     pendingOpenLogDialog_ = std::make_unique<pfd::open_file>(
       "Open Log File", ".",
-      std::vector<std::string>{"MegaSquirt Log Files (*.msl)", "*.msl", "All Files", "*"});
+      std::vector<std::string>{
+      "All Supported Logs (*.msl, *.dl)", "*.msl *.dl",
+        "MegaSquirt Log Files (*.msl)", "*.msl",
+        "Haltech Log Files (*.dl)", "*.dl",
+        "All Files", "*"
+    });
   }
 
   void App::beginSaveWorkspaceDialog()
@@ -1246,16 +1549,6 @@ namespace ui {
 
   void App::loadLogFile(const std::string &path)
   {
-    //core::LogSession newSession;
-    //std::string error;
-    //if (!parser_.parse(path, newSession, error)) {
-    //  loadErrorMessage_ = error;
-    //  showLoadErrorPopup_ = true;
-    //  return;
-    //}
-
-    //session_ = std::move(newSession);
-    //refreshPanelsFromSession();
     startAsyncLogLoad(path);
   }
 
@@ -1372,10 +1665,19 @@ namespace ui {
           }
         }
 
-        // 3. Restore ImGui Docking Layout
+        // 3. Restore ImGui Docking Layout & Fix Resize Responsiveness
         if (root.contains("imguiLayout") && root["imguiLayout"].is_string()) {
           std::string iniData = root["imguiLayout"].get<std::string>();
           ImGui::LoadIniSettingsFromMemory(iniData.c_str(), iniData.size());
+
+          // Force ImGui to update host viewport dimensions on loaded dock nodes
+          ImGuiID dockspaceId = ImGui::GetID("MainDockSpace");
+          if (ImGuiDockNode *node = ImGui::DockBuilderGetNode(dockspaceId)) {
+            node->WantMouseMove = true;
+            //ImGui::DockBuilderSetNodePos(dockspaceId, ImGui::GetMainViewport()->WorkPos);
+            //ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->WorkSize);
+            ImGui::DockBuilderFinish(dockspaceId);
+          }
         }
       };
 
@@ -1418,6 +1720,21 @@ namespace ui {
       return; // corrupt/unreadable -- just start fresh rather than error out
     }
 
+    if (window_ != nullptr && root.contains("window") && root["window"].is_object()) {
+      const auto &wJson = root["window"];
+      int width = wJson.value("width", 1280);
+      int height = wJson.value("height", 800);
+      bool maximized = wJson.value("maximized", false);
+
+      if (width > 200 && height > 200) {
+        if (maximized) {
+          glfwMaximizeWindow(window_);
+        } else {
+          glfwSetWindowSize(window_, width, height);
+        }
+      }
+    }
+
     if (root.contains("recentWorkspaces") && root["recentWorkspaces"].is_array()) {
       for (const auto &entry : root["recentWorkspaces"]) {
         if (entry.is_string()) {
@@ -1432,7 +1749,18 @@ namespace ui {
 
   void App::saveSettings() const
   {
+    if (window_ == nullptr) return;
+
+    int width = 0, height = 0;
+    glfwGetWindowSize(window_, &width, &height);
+    int maximized = glfwGetWindowAttrib(window_, GLFW_MAXIMIZED);
+
     nlohmann::json root;
+    root["window"] = {
+    {"width", width},
+    {"height", height},
+    {"maximized", (maximized != 0)}
+    };
     root["recentWorkspaces"] = recentWorkspacePaths_;
 
     std::ofstream file(kSettingsFilePath);
@@ -1533,10 +1861,16 @@ namespace ui {
     progressStatusText_ = "Loading " + fileNameOnly(path) + "...";
     pendingOnCompleteCallback_ = std::move(onComplete);
 
-    // Launch thread
     activeLoadTask_ = std::async(std::launch::async, [this, path]() {
       LoadResult res;
-      res.success = parser_.parse(path, res.session, res.error, &loadProgress_);
+
+      // Choose parser based on extension
+      if (path.size() >= 3 && path.substr(path.size() - 3) == ".dl") {
+        res.success = haltechParser_.parse(path, res.session, res.error, &loadProgress_);
+      } else {
+        res.success = mslParser_.parse(path, res.session, res.error, &loadProgress_);
+      }
+
       return res;
       });
   }
@@ -1897,8 +2231,10 @@ namespace ui {
 #include <future>
 
 #include "core/logsession.h"
-#include "io/megasquirtcsvparser.h"
 #include "ui/plotpanel.h"
+#include "io/megasquirtcsvparser.h"
+#include "io/haltechdlparser.h"
+
 
 struct GLFWwindow;
 
@@ -1919,6 +2255,7 @@ namespace ui {
 
     // Called once per frame, between ImGui::NewFrame() and ImGui::Render().
     void render();
+    void saveSettings() const;
 
   private:
     void renderDockspace();
@@ -1942,7 +2279,6 @@ namespace ui {
     void loadWorkspaceFile(const std::string &path);
     void addRecentWorkspace(const std::string &path);
     void loadSettings();
-    void saveSettings() const;
     void updateWindowTitle();
 
     void refreshPanelsFromSession();
@@ -1973,7 +2309,8 @@ namespace ui {
     std::vector<std::unique_ptr<PlotPanel>> panels_;
     int nextPanelId_ = 1;
 
-    io::MegasquirtCsvParser parser_;
+    io::MegasquirtCsvParser mslParser_;
+    io::HaltechDlParser haltechParser_;
     core::LogSession session_;
 
     bool showLoadErrorPopup_ = false;
@@ -2764,6 +3101,7 @@ namespace ui {
 #include "ui/tableeditorpanel.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -2796,29 +3134,219 @@ namespace ui {
     return std::string(buffer);
   }
 
+  void TableEditorPanel::clearSelection()
+  {
+    selectedCells_.clear();
+  }
+
+  bool TableEditorPanel::isCellSelected(int r, int c) const
+  {
+    return selectedCells_.count({ r, c }) > 0;
+  }
+
+  void TableEditorPanel::selectRectangularRegion(int r1, int c1, int r2, int c2, bool keepExisting)
+  {
+    if (!keepExisting) {
+      clearSelection();
+    }
+    int minR = (std::min)(r1, r2);
+    int maxR = (std::max)(r1, r2);
+    int minC = (std::min)(c1, c2);
+    int maxC = (std::max)(c1, c2);
+
+    for (int r = minR; r <= maxR; ++r) {
+      for (int c = minC; c <= maxC; ++c) {
+        selectedCells_.insert({ r, c });
+      }
+    }
+  }
+
+  void TableEditorPanel::getSelectionBounds(int &minR, int &maxR, int &minC, int &maxC) const
+  {
+    if (selectedCells_.empty()) {
+      minR = maxR = minC = maxC = -1;
+      return;
+    }
+    minR = 1e9; maxR = -1;
+    minC = 1e9; maxC = -1;
+    for (const auto &[r, c] : selectedCells_) {
+      if (r < minR) minR = r;
+      if (r > maxR) maxR = r;
+      if (c < minC) minC = c;
+      if (c > maxC) maxC = c;
+    }
+  }
+
+  void TableEditorPanel::setSelection(const std::set<std::pair<int, int>> &cells)
+  {
+    selectedCells_ = cells;
+  }
+
+  void TableEditorPanel::applyBatchMultiply(double factor)
+  {
+    for (const auto &[r, c] : selectedCells_) {
+      double v = table_.value(r, c);
+      table_.setValue(r, c, v * factor);
+    }
+  }
+
+  void TableEditorPanel::applyBatchOffset(double delta)
+  {
+    for (const auto &[r, c] : selectedCells_) {
+      double v = table_.value(r, c);
+      table_.setValue(r, c, v + delta);
+    }
+  }
+
+  void TableEditorPanel::applyBatchSetValue(double value)
+  {
+    for (const auto &[r, c] : selectedCells_) {
+      table_.setValue(r, c, value);
+    }
+  }
+
+  void TableEditorPanel::interpolateSelectedRegion()
+  {
+    int minR, maxR, minC, maxC;
+    getSelectionBounds(minR, maxR, minC, maxC);
+    if (minR < 0 || (minR == maxR && minC == maxC)) return;
+
+    double vTopLeft = table_.value(maxR, minC);
+    double vTopRight = table_.value(maxR, maxC);
+    double vBottomLeft = table_.value(minR, minC);
+    double vBottomRight = table_.value(minR, maxC);
+
+    int numRows = maxR - minR;
+    int numCols = maxC - minC;
+
+    for (int r = minR; r <= maxR; ++r) {
+      double tY = (numRows > 0) ? static_cast<double>(r - minR) / numRows : 0.0;
+      for (int c = minC; c <= maxC; ++c) {
+        double tX = (numCols > 0) ? static_cast<double>(c - minC) / numCols : 0.0;
+
+        double top = vBottomLeft + (vBottomRight - vBottomLeft) * tX;
+        double bottom = vTopLeft + (vTopRight - vTopLeft) * tX;
+        double interpolated = top + (bottom - top) * tY;
+
+        table_.setValue(r, c, interpolated);
+      }
+    }
+  }
+
+  void TableEditorPanel::renderBatchToolbar()
+  {
+    bool hasSelection = !selectedCells_.empty();
+
+    ImGui::BeginDisabled(!hasSelection);
+
+    ImGui::SetNextItemWidth(80.0f);
+    ImGui::InputDouble("##batchVal", &batchValue_, 0.0, 0.0, "%.2f");
+
+    ImGui::SameLine();
+    if (ImGui::Button("* Scale")) {
+      applyBatchMultiply(batchValue_);
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Multiply selected cells by factor");
+
+    ImGui::SameLine();
+    if (ImGui::Button("+ Offset")) {
+      applyBatchOffset(batchValue_);
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add offset to selected cells");
+
+    ImGui::SameLine();
+    if (ImGui::Button("= Set")) {
+      applyBatchSetValue(batchValue_);
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Set all selected cells to value");
+
+    ImGui::SameLine();
+    if (ImGui::Button("Interpolate")) {
+      interpolateSelectedRegion();
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bilinear interpolation between bounding corners");
+
+    ImGui::SameLine();
+    if (ImGui::Button("Extrapolate VE")) {
+      showExtrapolateModal_ = true;
+      wasExtrapolateModalOpen_ = true;
+      ImGui::OpenPopup("Extrapolate VE");
+    }
+    renderExtrapolateModal();
+
+    ImGui::EndDisabled();
+
+    if (hasSelection) {
+      ImGui::SameLine();
+      ImGui::TextDisabled("(%zu cells selected)", selectedCells_.size());
+    }
+  }
+
+  void TableEditorPanel::applyExtrapolationPreview()
+  {
+    // Store a backup of the current table for the "Discard" action
+    tableBackup_ = table_;
+    showPreview_ = true;
+
+    float tolMultiplier = guessTolerance_ / 100.0f;
+
+    for (const auto &[r, c] : selectedCells_) {
+      double oldVe = table_.value(r, c);
+      double stepDelta = 0.0;
+
+      if (slopeMode_ == 0) {
+        // Auto: Use slope of previous two cells (assuming horizontal/RPM extrapolation)
+        if (c >= 2) {
+          stepDelta = table_.value(r, c - 1) - table_.value(r, c - 2);
+        }
+      } else {
+        // Manual: Use user's exact input
+        stepDelta = manualSlope_;
+      }
+
+      // Base guess
+      double guessVe = (c >= 1 ? table_.value(r, c - 1) : oldVe) + stepDelta;
+
+      // Clamp to tolerance limits
+      double minVe = oldVe * (1.0 - tolMultiplier);
+      double maxVe = oldVe * (1.0 + tolMultiplier);
+      double finalVe = std::clamp(guessVe, minVe, maxVe);
+
+      table_.setValue(r, c, finalVe);
+    }
+  }
+
   void TableEditorPanel::copyToClipboard(bool includeHeaders) const
   {
-    const auto &xBp = table_.xBreakpoints(); 
-      const auto &yBp = table_.yBreakpoints(); 
-      std::string result;
+    const auto &xBp = table_.xBreakpoints();
+    const auto &yBp = table_.yBreakpoints();
+    std::string result;
+
+    int minR, maxR, minC, maxC;
+    getSelectionBounds(minR, maxR, minC, maxC);
+
+    bool filterSelection = (minR >= 0);
+    if (!filterSelection) {
+      minR = 0; maxR = static_cast<int>(yBp.size()) - 1;
+      minC = 0; maxC = static_cast<int>(xBp.size()) - 1;
+    }
 
     if (includeHeaders) {
       result += "\t";
-      for (size_t c = 0; c < xBp.size(); ++c) {
-        result += formatValue(xBp[c], xDecimalPlaces_); 
-          if (c + 1 < xBp.size()) result += "\t";
+      for (int c = minC; c <= maxC; ++c) {
+        result += formatValue(xBp[c], xDecimalPlaces_);
+        if (c < maxC) result += "\t";
       }
       result += "\n";
     }
 
-    // Top-to-bottom matching TunerStudio layout (highest Y breakpoint first)
-    for (size_t r = yBp.size(); r-- > 0; ) {
+    for (int r = maxR; r >= minR; --r) {
       if (includeHeaders) {
-        result += formatValue(yBp[r], yDecimalPlaces_) + "\t"; 
+        result += formatValue(yBp[r], yDecimalPlaces_) + "\t";
       }
-      for (size_t c = 0; c < xBp.size(); ++c) {
-        result += formatValue(table_.value(r, c), 2); 
-          if (c + 1 < xBp.size()) result += "\t";
+      for (int c = minC; c <= maxC; ++c) {
+        result += formatValue(table_.value(r, c), 2);
+        if (c < maxC) result += "\t";
       }
       result += "\n";
     }
@@ -2850,7 +3378,6 @@ namespace ui {
 
     if (grid.empty()) return;
 
-    // Header detection: row 0 starts with empty token or tab
     bool hasHeaders = grid[0][0].empty();
 
     if (hasHeaders && grid.size() > 1) {
@@ -2876,23 +3403,32 @@ namespace ui {
       std::reverse(newYBp.begin(), newYBp.end());
       std::reverse(newValues.begin(), newValues.end());
 
-      table_.setXBreakpoints(newXBp); 
-        table_.setYBreakpoints(newYBp); 
-        for (size_t r = 0; r < newValues.size() && r < table_.rowCount(); ++r) {
-          
-          for (size_t c = 0; c < newValues[r].size() && c < table_.columnCount(); ++c) {
-            
-            table_.setValue(r, c, newValues[r][c]); 
-          }
+      table_.setXBreakpoints(newXBp);
+      table_.setYBreakpoints(newYBp);
+      for (size_t r = 0; r < newValues.size() && r < table_.rowCount(); ++r) {
+        for (size_t c = 0; c < newValues[r].size() && c < table_.columnCount(); ++c) {
+          table_.setValue(r, c, newValues[r][c]);
         }
+      }
     } else {
-      // Plain cell grid paste (preserving existing axes)
-      for (size_t r = 0; r < grid.size() && r < table_.rowCount(); ++r) {
-        
-        size_t targetRow = table_.rowCount() - 1 - r;
-        for (size_t c = 0; c < grid[r].size() && c < table_.columnCount(); ++c) {
-          
-          try { table_.setValue(targetRow, c, std::stod(grid[r][c])); } catch (...) {}
+      int startR = static_cast<int>(table_.rowCount()) - 1;
+      int startC = 0;
+      if (!selectedCells_.empty()) {
+        int minR, maxR, minC, maxC;
+        getSelectionBounds(minR, maxR, minC, maxC);
+        startR = maxR;
+        startC = minC;
+      }
+
+      for (size_t r = 0; r < grid.size(); ++r) {
+        int targetRow = startR - static_cast<int>(r);
+        if (targetRow < 0 || targetRow >= static_cast<int>(table_.rowCount())) continue;
+
+        for (size_t c = 0; c < grid[r].size(); ++c) {
+          int targetCol = startC + static_cast<int>(c);
+          if (targetCol >= static_cast<int>(table_.columnCount())) break;
+
+          try { table_.setValue(targetRow, targetCol, std::stod(grid[r][c])); } catch (...) {}
         }
       }
     }
@@ -2918,24 +3454,24 @@ namespace ui {
       };
 
     std::vector<double> xBp = extractVector(xmlContent, "xAxis");
-      std::vector<double> yBp = extractVector(xmlContent, "yAxis");
-      std::vector<double> zVals = extractVector(xmlContent, "zValues");
+    std::vector<double> yBp = extractVector(xmlContent, "yAxis");
+    std::vector<double> zVals = extractVector(xmlContent, "zValues");
 
-      if (xBp.empty() || yBp.empty() || zVals.empty()) {
-        return false;
-      }
+    if (xBp.empty() || yBp.empty() || zVals.empty()) {
+      return false;
+    }
 
-    table_.setXBreakpoints(xBp); 
-      table_.setYBreakpoints(yBp); 
+    table_.setXBreakpoints(xBp);
+    table_.setYBreakpoints(yBp);
 
-      size_t rows = yBp.size();
+    size_t rows = yBp.size();
     size_t cols = xBp.size();
 
     if (zVals.size() < rows * cols) return false;
 
     for (size_t r = 0; r < rows; ++r) {
       for (size_t c = 0; c < cols; ++c) {
-        table_.setValue(r, c, zVals[r * cols + c]); 
+        table_.setValue(r, c, zVals[r * cols + c]);
       }
     }
 
@@ -2953,7 +3489,6 @@ namespace ui {
       ImVec2 winSize = ImGui::GetWindowSize();
 
       ImVec2 toastSize(160.0f, 30.0f);
-      // Anchor to top-right of the current panel
       ImVec2 pMin(winPos.x + winSize.x - toastSize.x - 20.0f, winPos.y + 35.0f);
       ImVec2 pMax(pMin.x + toastSize.x, pMin.y + toastSize.y);
 
@@ -2961,7 +3496,6 @@ namespace ui {
       ImU32 textCol = ImGui::ColorConvertFloat4ToU32(ImVec4(0.4f, 1.0f, 0.4f, alpha));
       ImU32 borderCol = ImGui::ColorConvertFloat4ToU32(ImVec4(0.2f, 0.6f, 0.2f, 0.9f * alpha));
 
-      // Paint directly to the screen overlay (immune to ImGui window state bugs)
       ImDrawList *drawList = ImGui::GetForegroundDrawList();
       drawList->AddRectFilled(pMin, pMax, bgCol, 4.0f);
       drawList->AddRect(pMin, pMax, borderCol, 4.0f);
@@ -3025,24 +3559,115 @@ namespace ui {
     if (ImGui::Button("Cancel")) {
       ImGui::CloseCurrentPopup();
       if (editingAxis_ == AxisEditing::X)
-        axisEditorValues_ = table_.xBreakpoints(); 
+        axisEditorValues_ = table_.xBreakpoints();
       else if (editingAxis_ == AxisEditing::Y)
-        axisEditorValues_ = table_.yBreakpoints(); 
+        axisEditorValues_ = table_.yBreakpoints();
     }
     return accepted;
   }
 
+  void TableEditorPanel::renderExtrapolateModal()
+  {
+    // Pass &showExtrapolateModal_ so ImGui can toggle it if 'X' or Escape is pressed
+    bool isOpen = ImGui::BeginPopupModal("Extrapolate VE", &showExtrapolateModal_, ImGuiWindowFlags_AlwaysAutoResize);
+
+    if (isOpen) {
+      wasExtrapolateModalOpen_ = true; // Mark as open this frame
+
+      ImGui::InputFloat("Tolerance (%)", &guessTolerance_, 1.0f, 5.0f, "%.1f");
+
+      ImGui::SeparatorText("Slope Calculation");
+      ImGui::RadioButton("Auto (Nearest Neighbor)", &slopeMode_, 0);
+      ImGui::SameLine();
+      ImGui::RadioButton("Manual Slope", &slopeMode_, 1);
+
+      ImGui::BeginDisabled(slopeMode_ == 0);
+      ImGui::InputFloat("Manual Delta", &manualSlope_, 0.5f, 1.0f, "%.2f");
+      ImGui::EndDisabled();
+
+      ImGui::Separator();
+
+      // Dynamically compute preview while modal is active
+      applyExtrapolationPreview();
+
+      if (ImGui::Button("Apply", ImVec2(100, 0))) {
+        showPreview_ = false;            // Commit the extrapolated values
+        showExtrapolateModal_ = false;  // Close flag
+        wasExtrapolateModalOpen_ = false;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Cancel", ImVec2(100, 0))) {
+        if (showPreview_) {
+          table_ = tableBackup_;      // Revert changes
+          showPreview_ = false;
+        }
+        showExtrapolateModal_ = false;  // Close flag
+        wasExtrapolateModalOpen_ = false;
+        ImGui::CloseCurrentPopup();
+      }
+
+      ImGui::EndPopup();
+    } else if (wasExtrapolateModalOpen_) {
+      // ONLY triggers on the frame IMMEDIATELY AFTER the popup was closed 
+      // via ImGui close button ('X') or Escape key.
+      if (showPreview_) {
+        table_ = tableBackup_;          // Safely revert changes
+        showPreview_ = false;
+      }
+      wasExtrapolateModalOpen_ = false;   // Reset transition state
+    }
+  }
+
   void TableEditorPanel::renderValueGrid()
   {
-    const auto &xBreakpoints = table_.xBreakpoints(); 
-      const auto &yBreakpoints = table_.yBreakpoints(); 
-      const size_t cols = xBreakpoints.size();
+    const auto &xBreakpoints = table_.xBreakpoints();
+    const auto &yBreakpoints = table_.yBreakpoints();
+    const size_t cols = xBreakpoints.size();
     const size_t rows = yBreakpoints.size();
 
     if (cols == 0 || rows == 0) {
       ImGui::TextDisabled("No breakpoints defined yet.");
       return;
     }
+
+    // --- 1. Compute Min/Max for Table Heatmap Normalization ---
+    double minVal = (std::numeric_limits<double>::max)();
+    double maxVal = -(std::numeric_limits<double>::max)();
+
+    for (size_t r = 0; r < rows; ++r) {
+      for (size_t c = 0; c < cols; ++c) {
+        double v = table_.value(r, c);
+        if (v < minVal) minVal = v;
+        if (v > maxVal) maxVal = v;
+      }
+    }
+    if (maxVal <= minVal) maxVal = minVal + 1.0;
+
+    // Thermal Heatmap Gradient Generator (Cool Blue -> Green -> Yellow -> Orange -> Red)
+    auto getHeatmapColor = [&](double value) -> ImU32 {
+      float t = static_cast<float>((value - minVal) / (maxVal - minVal));
+      if (t < 0.0f) t = 0.0f;
+      if (t > 1.0f) t = 1.0f;
+
+      float r = 0.0f, g = 0.0f, b = 0.0f;
+      if (t < 0.25f) {
+        float f = t / 0.25f;
+        b = 0.8f; g = 0.2f + 0.6f * f; r = 0.1f;
+      } else if (t < 0.50f) {
+        float f = (t - 0.25f) / 0.25f;
+        g = 0.8f; b = 0.8f * (1.0f - f); r = 0.1f + 0.7f * f;
+      } else if (t < 0.75f) {
+        float f = (t - 0.50f) / 0.25f;
+        r = 0.8f + 0.2f * f; g = 0.8f * (1.0f - 0.5f * f); b = 0.0f;
+      } else {
+        float f = (t - 0.75f) / 0.25f;
+        r = 1.0f; g = 0.4f * (1.0f - f); b = 0.0f;
+      }
+
+      // Use alpha = 0.35f so cell text and selections remain crisp and readable
+      return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, 0.35f));
+      };
 
     const ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
       ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
@@ -3053,65 +3678,342 @@ namespace ui {
       ImGui::TableSetupColumn("Load \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
 
       for (size_t c = 0; c < cols; ++c) {
-        std::string header = formatValue(xBreakpoints[c], xDecimalPlaces_); 
-          ImGui::TableSetupColumn(header.c_str(), ImGuiTableColumnFlags_WidthFixed, 60.0f);
+        std::string header = formatValue(xBreakpoints[c], xDecimalPlaces_);
+        ImGui::TableSetupColumn(header.c_str(), ImGuiTableColumnFlags_WidthFixed, 60.0f);
       }
       ImGui::TableHeadersRow();
+
+      ImGuiIO &io = ImGui::GetIO();
 
       for (size_t r = rows; r-- > 0; ) {
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0);
-        ImGui::Text("%s", formatValue(yBreakpoints[r], yDecimalPlaces_).c_str()); 
+        ImGui::Text("%s", formatValue(yBreakpoints[r], yDecimalPlaces_).c_str());
 
-          for (size_t c = 0; c < cols; ++c) {
-            ImGui::TableSetColumnIndex(static_cast<int>(c + 1));
-            ImGui::PushID(static_cast<int>(r * cols + c));
+        for (size_t c = 0; c < cols; ++c) {
+          ImGui::TableSetColumnIndex(static_cast<int>(c + 1));
+          ImGui::PushID(static_cast<int>(r * cols + c));
 
-            double v = table_.value(r, c); 
+          double v = table_.value(r, c);
 
-              if (editingRow_ == static_cast<int>(r) && editingCol_ == static_cast<int>(c)) {
-                ImGui::SetNextItemWidth(55.0f);
-                // Auto-focus the input widget on the frame it opens
-                ImGui::SetKeyboardFocusHere();
+          const bool isPreviewingExtrapolation = showPreview_ && showExtrapolateModal_;
 
-                bool committed = ImGui::InputDouble("##cell_edit", &v, 0.0, 0.0, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue);
+          if (isPreviewingExtrapolation && selectedCells_.count({ static_cast<int>(r), static_cast<int>(c) })) {
+            // Highlight extrapolated cells in purple/magenta
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, IM_COL32(180, 50, 200, 150));
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%.2f", v); // Yellow text for changes
+          } else {
 
-                // 1. Commit on Enter
-                if (committed) {
-                  table_.setValue(r, c, v);
-                  editingRow_ = -1;
-                  editingCol_ = -1;
-                }
-                // 2. Cancel on Escape key or when clicking away (deactivated without committing)
-                else if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsItemDeactivated()) {
-                  editingRow_ = -1;
-                  editingCol_ = -1;
-                }
+            bool selected = isCellSelected(static_cast<int>(r), static_cast<int>(c));
+
+            // --- 2. Apply Cell Heatmap Background ---
+            if (selected) {
+              ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImGuiCol_HeaderActive));
+            } else {
+              //ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, getHeatmapColor(v));
+              if (customHeatmapColorFunc_) {
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, customHeatmapColorFunc_(v, r, c));
               } else {
-                char cellText[32];
-                std::snprintf(cellText, sizeof(cellText), "%.2f", v);
-                bool isSelected = (selectedRow_ == static_cast<int>(r) && selectedCol_ == static_cast<int>(c));
-                if (ImGui::Selectable(cellText, isSelected, ImGuiSelectableFlags_AllowDoubleClick)) {
-                  selectedRow_ = static_cast<int>(r);
-                  selectedCol_ = static_cast<int>(c);
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, getHeatmapColor(v));
+              }
+            }
+
+            if (editingRow_ == static_cast<int>(r) && editingCol_ == static_cast<int>(c)) {
+              ImGui::SetNextItemWidth(55.0f);
+              ImGui::SetKeyboardFocusHere();
+
+              bool committed = ImGui::InputDouble("##cell_edit", &v, 0.0, 0.0, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue);
+
+              if (committed) {
+                table_.setValue(r, c, v);
+                editingRow_ = -1;
+                editingCol_ = -1;
+              } else if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsItemDeactivated()) {
+                editingRow_ = -1;
+                editingCol_ = -1;
+              }
+            } else {
+              char cellText[32];
+              std::snprintf(cellText, sizeof(cellText), "%.2f", v);
+
+              ImGuiSelectableFlags selFlags = ImGuiSelectableFlags_AllowDoubleClick;
+              ImGui::Selectable(cellText, selected, selFlags);
+
+              bool isHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+              bool isSelectionLogic = false;
+              if (isHovered) {
+                // 1. Drag Select
+                if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && anchorRow_ >= 0 && !io.KeyCtrl && !io.KeyShift) {
+                  selectRectangularRegion(anchorRow_, anchorCol_, static_cast<int>(r), static_cast<int>(c));
+                  isSelectionLogic = true;
+                }
+
+                // 2. Initial Click Down
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                  if (io.KeyCtrl) {
+                    std::pair<int, int> cellKey = { static_cast<int>(r), static_cast<int>(c) };
+                    if (selectedCells_.count(cellKey)) {
+                      selectedCells_.erase(cellKey);
+                    } else {
+                      selectedCells_.insert(cellKey);
+                    }
+                    anchorRow_ = static_cast<int>(r);
+                    anchorCol_ = static_cast<int>(c);
+                  } else if (io.KeyShift && anchorRow_ >= 0) {
+                    selectRectangularRegion(anchorRow_, anchorCol_, static_cast<int>(r), static_cast<int>(c));
+                  } else {
+                    clearSelection();
+                    anchorRow_ = static_cast<int>(r);
+                    anchorCol_ = static_cast<int>(c);
+                    selectedCells_.insert({ anchorRow_, anchorCol_ });
+                  }
+
                   if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                     editingRow_ = static_cast<int>(r);
                     editingCol_ = static_cast<int>(c);
                   }
+                  isSelectionLogic = true;
                 }
               }
 
-            ImGui::PopID();
+              if (ImGui::IsItemHovered() && customHoverTooltipFunc_) {
+                auto tooltip = customHoverTooltipFunc_(v, r, c);
+                if (!tooltip.empty()) {
+                  ImGui::BeginTooltip();
+                  ImGui::TextUnformatted(tooltip.c_str());
+                  ImGui::EndTooltip();
+                }
+              }
+            }
           }
+          ImGui::PopID();
+        }
       }
       ImGui::EndTable();
     }
   }
 
+  void TableEditorPanel::render3DSurfaceMesh()
+  {
+    const size_t rows = table_.rowCount();
+    const size_t cols = table_.columnCount();
+
+    if (rows < 2 || cols < 2) {
+      ImGui::TextDisabled("Table must have at least 2x2 dimensions for 3D surface rendering.");
+      return;
+    }
+
+    ImGui::TextDisabled("LMB Drag: Rotate | RMB Drag: Pan | Mouse Wheel: Zoom");
+    ImGui::SameLine();
+    if (ImGui::Button("Reset View##3d_reset")) {
+      cameraYaw_ = 45.0f;
+      cameraPitch_ = 30.0f;
+      cameraZoom_ = 1.0f;
+      cameraPan_ = ImVec2(0.0f, 0.0f);
+    }
+
+    ImVec2 canvasSize = ImGui::GetContentRegionAvail();
+    if (canvasSize.x < 100.0f) canvasSize.x = 100.0f;
+    if (canvasSize.y < 200.0f) canvasSize.y = 200.0f;
+
+    ImVec2 canvasPos = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##3d_surface_canvas", canvasSize,
+      ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+
+    bool isHovered = ImGui::IsItemHovered();
+    bool isActive = ImGui::IsItemActive();
+    ImGuiIO &io = ImGui::GetIO();
+
+    if (isActive && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+      cameraYaw_ += io.MouseDelta.x * 0.5f;
+      cameraPitch_ += io.MouseDelta.y * 0.5f;
+      if (cameraPitch_ < -89.0f) cameraPitch_ = -89.0f;
+      if (cameraPitch_ > 89.0f) cameraPitch_ = 89.0f;
+    }
+
+    if (isActive && ImGui::IsMouseDragging(ImGuiMouseButton_Right)) {
+      cameraPan_.x += io.MouseDelta.x;
+      cameraPan_.y += io.MouseDelta.y;
+    }
+
+    if (isHovered && io.MouseWheel != 0.0f) {
+      cameraZoom_ += io.MouseWheel * 0.1f;
+      if (cameraZoom_ < 0.2f) cameraZoom_ = 0.2f;
+      if (cameraZoom_ > 5.0f) cameraZoom_ = 5.0f;
+    }
+
+    ImDrawList *drawList = ImGui::GetWindowDrawList();
+    drawList->PushClipRect(canvasPos, ImVec2(canvasPos.x + canvasSize.x, canvasPos.y + canvasSize.y), true);
+
+    // Canvas background
+    drawList->AddRectFilled(canvasPos, ImVec2(canvasPos.x + canvasSize.x, canvasPos.y + canvasSize.y), IM_COL32(20, 22, 28, 255));
+    drawList->AddRect(canvasPos, ImVec2(canvasPos.x + canvasSize.x, canvasPos.y + canvasSize.y), IM_COL32(60, 65, 80, 255));
+
+    // Find table value bounds
+    double minZ = (std::numeric_limits<double>::max)();
+    double maxZ = -(std::numeric_limits<double>::max)();
+    for (size_t r = 0; r < rows; ++r) {
+      for (size_t c = 0; c < cols; ++c) {
+        double v = table_.value(r, c);
+        if (v < minZ) minZ = v;
+        if (v > maxZ) maxZ = v;
+      }
+    }
+    if (maxZ <= minZ) maxZ = minZ + 1.0;
+
+    const float radYaw = cameraYaw_ * 0.0174532925f;
+    const float radPitch = cameraPitch_ * 0.0174532925f;
+    const float cosY = std::cos(radYaw), sinY = std::sin(radYaw);
+    const float cosP = std::cos(radPitch), sinP = std::sin(radPitch);
+
+    const ImVec2 centerPos(canvasPos.x + canvasSize.x * 0.5f + cameraPan_.x, canvasPos.y + canvasSize.y * 0.5f + cameraPan_.y);
+    const float scale = (std::min)(canvasSize.x, canvasSize.y) * 0.35f * cameraZoom_;
+
+    auto project3D = [&](float x, float y, float z, float &outDepth) -> ImVec2 {
+      float x1 = x * cosY - y * sinY;
+      float y1 = x * sinY + y * cosY;
+      float z1 = z;
+
+      float y2 = y1 * cosP - z1 * sinP;
+      float z2 = y1 * sinP + z1 * cosP;
+
+      outDepth = y2;
+      return ImVec2(centerPos.x + x1 * scale, centerPos.y - z2 * scale);
+      };
+
+    auto getColor = [](float t) -> ImU32 {
+      if (t < 0.0f) t = 0.0f;
+      if (t > 1.0f) t = 1.0f;
+      float r = 0.0f, g = 0.0f, b = 0.0f;
+      if (t < 0.25f) {
+        float f = t / 0.25f; b = 1.0f; g = f;
+      } else if (t < 0.50f) {
+        float f = (t - 0.25f) / 0.25f; g = 1.0f; b = 1.0f - f;
+      } else if (t < 0.75f) {
+        float f = (t - 0.50f) / 0.25f; g = 1.0f; r = f;
+      } else {
+        float f = (t - 0.75f) / 0.25f; r = 1.0f; g = 1.0f - f;
+      }
+      return IM_COL32(static_cast<int>(r * 255), static_cast<int>(g * 255), static_cast<int>(b * 255), 180);
+      };
+
+    // --- 1. Draw Bounding Axis Lines & Labels ---
+    float dummyD = 0.0f;
+    ImVec2 boxMin = project3D(-1.0f, -1.0f, -0.75f, dummyD);
+    ImVec2 boxMaxX = project3D(1.0f, -1.0f, -0.75f, dummyD);
+    ImVec2 boxMaxY = project3D(-1.0f, 1.0f, -0.75f, dummyD);
+    ImVec2 boxMaxZ = project3D(-1.0f, -1.0f, 0.75f, dummyD);
+
+    // Draw base axis wireframe
+    drawList->AddLine(boxMin, boxMaxX, IM_COL32(200, 80, 80, 200), 2.0f);  // X axis (Red)
+    drawList->AddLine(boxMin, boxMaxY, IM_COL32(80, 200, 80, 200), 2.0f);  // Y axis (Green)
+    drawList->AddLine(boxMin, boxMaxZ, IM_COL32(80, 150, 255, 200), 2.0f); // Z axis (Blue)
+
+    // Render Axis Labels
+    const auto &xBp = table_.xBreakpoints();
+    const auto &yBp = table_.yBreakpoints();
+
+    std::string xLabel = "RPM (" + formatValue(xBp.front(), xDecimalPlaces_) + " .. " + formatValue(xBp.back(), xDecimalPlaces_) + ")";
+    std::string yLabel = "Load (" + formatValue(yBp.front(), yDecimalPlaces_) + " .. " + formatValue(yBp.back(), yDecimalPlaces_) + ")";
+    std::string zLabel = "Value (" + formatValue(minZ, 1) + " .. " + formatValue(maxZ, 1) + ")";
+
+    drawList->AddText(boxMaxX, IM_COL32(240, 120, 120, 255), xLabel.c_str());
+    drawList->AddText(boxMaxY, IM_COL32(120, 240, 120, 255), yLabel.c_str());
+    drawList->AddText(boxMaxZ, IM_COL32(120, 180, 255, 255), zLabel.c_str());
+
+    // --- 2. Build 3D Mesh Grid & Raycast Tooltip Search ---
+    std::vector<std::vector<ImVec2>> screenPts(rows, std::vector<ImVec2>(cols));
+    std::vector<std::vector<float>> depths(rows, std::vector<float>(cols));
+    std::vector<std::vector<float>> normZ(rows, std::vector<float>(cols));
+
+    ImVec2 mousePos = io.MousePos;
+    int hoveredRow = -1;
+    int hoveredCol = -1;
+    float minHitDistSq = 400.0f; // 20px hover radius limit
+
+    for (size_t r = 0; r < rows; ++r) {
+      float ny = (rows > 1) ? (2.0f * static_cast<float>(r) / static_cast<float>(rows - 1) - 1.0f) : 0.0f;
+      for (size_t c = 0; c < cols; ++c) {
+        float nx = (cols > 1) ? (2.0f * static_cast<float>(c) / static_cast<float>(cols - 1) - 1.0f) : 0.0f;
+        double val = table_.value(r, c);
+        float nz = static_cast<float>((val - minZ) / (maxZ - minZ) * 1.5 - 0.75);
+        normZ[r][c] = static_cast<float>((val - minZ) / (maxZ - minZ));
+
+        ImVec2 pt = project3D(nx, ny, nz, depths[r][c]);
+        screenPts[r][c] = pt;
+
+        if (isHovered) {
+          float dx = mousePos.x - pt.x;
+          float dy = mousePos.y - pt.y;
+          float distSq = dx * dx + dy * dy;
+          if (distSq < minHitDistSq) {
+            minHitDistSq = distSq;
+            hoveredRow = static_cast<int>(r);
+            hoveredCol = static_cast<int>(c);
+          }
+        }
+      }
+    }
+
+    struct MeshQuad {
+      size_t r, c;
+      float avgDepth;
+    };
+
+    std::vector<MeshQuad> quads;
+    quads.reserve((rows - 1) * (cols - 1));
+    for (size_t r = 0; r < rows - 1; ++r) {
+      for (size_t c = 0; c < cols - 1; ++c) {
+        float avgD = (depths[r][c] + depths[r + 1][c] + depths[r][c + 1] + depths[r + 1][c + 1]) * 0.25f;
+        quads.push_back({ r, c, avgD });
+      }
+    }
+
+    std::sort(quads.begin(), quads.end(), [](const MeshQuad &a, const MeshQuad &b) {
+      return a.avgDepth < b.avgDepth; // Painter's algorithm
+      });
+
+    for (const auto &q : quads) {
+      size_t r = q.r;
+      size_t c = q.c;
+      ImVec2 p0 = screenPts[r][c];
+      ImVec2 p1 = screenPts[r][c + 1];
+      ImVec2 p2 = screenPts[r + 1][c + 1];
+      ImVec2 p3 = screenPts[r + 1][c];
+
+      float avgNormZ = (normZ[r][c] + normZ[r][c + 1] + normZ[r + 1][c + 1] + normZ[r + 1][c]) * 0.25f;
+      drawList->AddQuadFilled(p0, p1, p2, p3, getColor(avgNormZ));
+      drawList->AddQuad(p0, p1, p2, p3, IM_COL32(255, 255, 255, 50), 1.0f);
+    }
+
+    // --- 3. Render Hover Highlight & Tooltip ---
+    if (hoveredRow >= 0 && hoveredCol >= 0) {
+      ImVec2 hPt = screenPts[hoveredRow][hoveredCol];
+
+      // Draw outer glowing ring on hovered node
+      drawList->AddCircleFilled(hPt, 6.0f, IM_COL32(255, 255, 0, 220));
+      drawList->AddCircle(hPt, 8.0f, IM_COL32(255, 255, 255, 255), 0, 2.0f);
+
+      double xBpVal = (static_cast<size_t>(hoveredCol) < xBp.size()) ? xBp[hoveredCol] : 0.0;
+      double yBpVal = (static_cast<size_t>(hoveredRow) < yBp.size()) ? yBp[hoveredRow] : 0.0;
+      double cellVal = table_.value(hoveredRow, hoveredCol);
+
+      ImGui::BeginTooltip();
+      ImGui::Text("Cell [%d, %d]", hoveredRow, hoveredCol);
+      ImGui::Separator();
+      ImGui::Text("X (RPM):  %s", formatValue(xBpVal, xDecimalPlaces_).c_str());
+      ImGui::Text("Y (Load): %s", formatValue(yBpVal, yDecimalPlaces_).c_str());
+      ImGui::TextColored(ImVec4(0.4f, 0.9f, 1.0f, 1.0f), "Value:    %.2f", cellVal);
+      ImGui::EndTooltip();
+    }
+
+    drawList->PopClipRect();
+  }
+
   void TableEditorPanel::render(PlotCursor & /*cursor*/)
   {
     if (ImGui::Button("Edit vertical axis")) {
-      axisEditorValues_ = table_.yBreakpoints(); 
+      axisEditorValues_ = table_.yBreakpoints();
       axisEditorBinCount_ = static_cast<int>(axisEditorValues_.size());
       editingAxis_ = AxisEditing::Y;
       ImGui::OpenPopup("Axis Editor");
@@ -3120,7 +4022,7 @@ namespace ui {
     ImGui::SameLine();
 
     if (ImGui::Button("Edit horizontal axis")) {
-      axisEditorValues_ = table_.xBreakpoints(); 
+      axisEditorValues_ = table_.xBreakpoints();
       axisEditorBinCount_ = static_cast<int>(axisEditorValues_.size());
       editingAxis_ = AxisEditing::X;
       ImGui::OpenPopup("Axis Editor");
@@ -3132,12 +4034,18 @@ namespace ui {
       ImGui::OpenPopup("TableImportExportMenu");
     }
 
+    ImGui::SameLine();
+
+    if (ImGui::Button(show3DView_ ? "Show 2D Table Grid" : "Show 3D Surface View")) {
+      show3DView_ = !show3DView_;
+    }
+
     if (ImGui::BeginPopup("TableImportExportMenu")) {
-      if (ImGui::MenuItem("Copy Table")) {
+      if (ImGui::MenuItem("Copy Table / Selection")) {
         copyToClipboard(false);
         showCopyToast();
       }
-      if (ImGui::MenuItem("Copy Table + Headers (Clipboard)")) {
+      if (ImGui::MenuItem("Copy + Headers (Clipboard)")) {
         copyToClipboard(true);
         showCopyToast();
       }
@@ -3164,27 +4072,31 @@ namespace ui {
     if (ImGui::BeginPopupModal("Axis Editor")) {
       if (renderAxisEditorPopup("Axis Editor")) {
         if (editingAxis_ == AxisEditing::X)
-          table_.setXBreakpoints(axisEditorValues_); 
+          table_.setXBreakpoints(axisEditorValues_);
         else
-          table_.setYBreakpoints(axisEditorValues_); 
+          table_.setYBreakpoints(axisEditorValues_);
 
-          editingAxis_ = AxisEditing::None;
+        editingAxis_ = AxisEditing::None;
       }
       ImGui::EndPopup();
     }
 
     ImGui::Separator();
 
-    renderValueGrid();
-
-    renderToast();
+    if (show3DView_) {
+      render3DSurfaceMesh();
+    } else {
+      renderBatchToolbar();
+      ImGui::Separator();
+      renderValueGrid();
+      renderToast();
+    }
   }
 
   nlohmann::json TableEditorPanel::saveState() const
   {
     nlohmann::json j = PlotPanel::saveState();
 
-    // Construct a 2D JSON array for the matrix values
     nlohmann::json valuesGrid = nlohmann::json::array();
     for (size_t r = 0; r < table_.rowCount(); ++r) {
       nlohmann::json rowJson = nlohmann::json::array();
@@ -3215,7 +4127,6 @@ namespace ui {
       yBp = state["yBreakpoints"].get<std::vector<double>>();
     }
 
-    // Updating breakpoints automatically resizes internal table values matrix
     table_.setXBreakpoints(xBp);
     table_.setYBreakpoints(yBp);
 
@@ -3243,10 +4154,16 @@ namespace ui {
 
 #include <string>
 #include <vector>
+#include <set>
+#include <utility>
+#include <functional>
 
 #include "3rdparty/nlohmann/json_fwd.hpp"
 #include "core/table2d.h"
 #include "ui/plotpanel.h"
+
+#include <imgui.h>
+
 
 namespace ui {
 
@@ -3268,28 +4185,72 @@ namespace ui {
     void copyToClipboard(bool includeHeaders = true) const;
     void pasteFromClipboard();
     bool importTunerStudioXml(const std::string &xmlContent);
-    
+
     void showCopyToast() { copyToastTimer_ = 1.5f; }
     void renderToast();
+
+    // Batch editing API
+    void applyBatchMultiply(double factor);
+    void applyBatchOffset(double delta);
+    void applyBatchSetValue(double value);
+    void interpolateSelectedRegion();
+    void applyExtrapolationPreview();
+
+    void setSelection(const std::set<std::pair<int, int>> &cells);
+    const std::set<std::pair<int, int>> &selectedCells() const { return selectedCells_; }
+
+    void setCustomHeatmapColoring(std::function<ImU32(double, size_t, size_t)> colorFunc) { customHeatmapColorFunc_ = std::move(colorFunc); }
+    void setCustomHoverTooltip(std::function<std::string(double, size_t, size_t)> tooltipFunc) { customHoverTooltipFunc_ = std::move(tooltipFunc); }
 
   private:
     static std::string formatValue(double value, int decimalPlaces);
     void renderValueGrid();
+    void render3DSurfaceMesh();
+    void renderBatchToolbar();
     bool renderAxisEditorPopup(const char *title);
+    void renderExtrapolateModal();
+
+    bool isCellSelected(int r, int c) const;
+    void clearSelection();
+    void selectRectangularRegion(int r1, int c1, int r2, int c2, bool keepExisting = false);
+    void getSelectionBounds(int &minR, int &maxR, int &minC, int &maxC) const;
 
   private:
     std::string panelTypeIdValue_;
     std::string displayName_;
     core::Table2D table_;
     bool open_ = true;
+    bool show3DView_ = false;
     int xDecimalPlaces_ = 0;
     int yDecimalPlaces_ = 2;
 
-    // Fast Cell Selection & Single-Cell Active Editing
-    int selectedRow_ = -1;
-    int selectedCol_ = -1;
+    // 3D camera state
+    float cameraYaw_ = 45.0f;
+    float cameraPitch_ = 30.0f;
+    float cameraZoom_ = 1.0f;
+    ImVec2 cameraPan_ = ImVec2(0.0f, 0.0f);
+
+    // Disjoint multi-cell selection tracking (row, col)
+    std::set<std::pair<int, int>> selectedCells_;
+
+    // Anchor cell for Shift-click and Drag operations
+    int anchorRow_ = -1;
+    int anchorCol_ = -1;
+
+    // Single-cell active text edit mode
     int editingRow_ = -1;
     int editingCol_ = -1;
+
+    // Batch modification buffer
+    double batchValue_ = 1.05;
+
+    core::Table2D tableBackup_;
+    bool showExtrapolateModal_ = false;
+    bool wasExtrapolateModalOpen_ = false;
+    bool showPreview_ = true;
+    int slopeMode_ = 0;
+    float guessTolerance_ = 10.f;
+    float manualSlope_ = 1.f;
 
     std::vector<double> axisEditorValues_;
     int axisEditorBinCount_ = 0;
@@ -3301,6 +4262,8 @@ namespace ui {
     AxisEditing editingAxis_ = AxisEditing::None;
 
     float copyToastTimer_ = 0.0f;
+    std::function<ImU32(double, size_t, size_t)> customHeatmapColorFunc_;
+    std::function<std::string(double, size_t, size_t)> customHoverTooltipFunc_;
   };
 
 } // namespace ui
@@ -3484,20 +4447,63 @@ namespace ui {
     }
   }
 
-  void TimeSeriesPanel::renderHeaderControls()
+  void TimeSeriesPanel::renderHeaderControls(PlotCursor &cursor)
   {
     if (ImGui::Button(showSidebar_ ? "< Hide Channels" : "> Show Channels")) {
       showSidebar_ = !showSidebar_;
     }
 
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(100.0f);
+    ImGui::SetNextItemWidth(90.0f);
     if (ImGui::InputInt("Max/Plot", &maxChannelsPerPlot_)) {
       if (maxChannelsPerPlot_ < 1) maxChannelsPerPlot_ = 1;
       if (maxChannelsPerPlot_ > 16) maxChannelsPerPlot_ = 16;
     }
     if (ImGui::IsItemHovered()) {
       ImGui::SetTooltip("Maximum channels displayed per subplot before creating a new subplot.");
+    }
+
+    ImGui::SameLine();
+    ImGui::Text("|");
+    ImGui::SameLine();
+
+    renderCropControls(cursor);
+  }
+
+  void TimeSeriesPanel::renderCropControls(PlotCursor &cursor)
+  {
+    if (session_ == nullptr) {
+      return;
+    }
+
+    bool hasCrop = session_->cropRange().active;
+
+    if (ImGui::Button("Set [Start]")) {
+      double start = cursor.active ? cursor.timeSec : 0.0;
+      double end = hasCrop ? session_->cropRange().endSec
+        : (cachedTimeSec_ && !cachedTimeSec_->empty() ? cachedTimeSec_->back() : 0.0);
+      const_cast<core::LogSession *>(session_)->setCropRange(start, end);
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Set crop start marker at current cursor time");
+
+    ImGui::SameLine();
+    if (ImGui::Button("Set [End]")) {
+      double start = hasCrop ? session_->cropRange().startSec
+        : (cachedTimeSec_ && !cachedTimeSec_->empty() ? cachedTimeSec_->front() : 0.0);
+      double end = cursor.active ? cursor.timeSec : 0.0;
+      const_cast<core::LogSession *>(session_)->setCropRange(start, end);
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Set crop end marker at current cursor time");
+
+    if (hasCrop) {
+      ImGui::SameLine();
+      if (ImGui::Button("Reset Crop")) {
+        const_cast<core::LogSession *>(session_)->resetCropRange();
+      }
+
+      ImGui::SameLine();
+      ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f),
+        "[Crop: %.2f s - %.2f s]", session_->cropRange().startSec, session_->cropRange().endSec);
     }
   }
 
@@ -3645,8 +4651,18 @@ namespace ui {
 
               ImPlotSpec spec;
               spec.LineColor = channelStates_[ch->name()].color;
-              ImPlot::PlotLine(ch->name().c_str(), timeSec.data(), normVals.data(),
-                static_cast<int>(timeSec.size()), spec);
+              ImPlot::PlotLine(ch->name().c_str(), timeSec.data(), normVals.data(), static_cast<int>(timeSec.size()), spec);
+
+              if (session_ != nullptr && session_->cropRange().active) {
+                double cropStart = session_->cropRange().startSec;
+                double cropEnd = session_->cropRange().endSec;
+
+                ImPlot::DragLineX(101, &cropStart, ImVec4(0.2f, 0.8f, 1.0f, 0.8f), 1.5f, ImPlotDragToolFlags_NoInputs);
+                ImPlot::TagX(cropStart, ImVec4(0.2f, 0.8f, 1.0f, 0.8f), "Start");
+
+                ImPlot::DragLineX(102, &cropEnd, ImVec4(0.2f, 0.8f, 1.0f, 0.8f), 1.5f, ImPlotDragToolFlags_NoInputs);
+                ImPlot::TagX(cropEnd, ImVec4(0.2f, 0.8f, 1.0f, 0.8f), "End");
+              }
             }
           } else {
             ImPlot::PlotLine("Placeholder", timeSec.data(), placeholderValue_.data(),
@@ -3810,14 +4826,13 @@ namespace ui {
     std::string windowLabel = "Time Series###" + title();
     ImGui::Begin(windowLabel.c_str(), &open_);
 
-    renderHeaderControls();
+    renderHeaderControls(cursor);
     ImGui::Separator();
 
     if (showSidebar_) {
       ImGui::BeginChild("SidebarChild", ImVec2(240, 0), true);
       renderLeftSidebar(cursor);
       ImGui::EndChild();
-
       ImGui::SameLine();
     }
 
@@ -3880,7 +4895,8 @@ namespace ui {
     ArtifactCursor artifactCursor_;
 
     void rebindChannels();
-    void renderHeaderControls();
+    void renderHeaderControls(PlotCursor &cursor);
+    void renderCropControls(PlotCursor &cursor);
     void renderLeftSidebar(PlotCursor &cursor);
     void renderPlotArea(PlotCursor &cursor);
     size_t getCursorIndex(double queryTime) const;
@@ -3917,6 +4933,7 @@ namespace ui {
 #include <cmath>
 #include <limits>
 #include "imgui.h"
+#include "imgui_internal.h"
 
 namespace ui {
 
@@ -3939,6 +4956,9 @@ namespace ui {
   void VeAnalysisPanel::setSession(const core::LogSession *session)
   {
     session_ = session;
+    if (session_ != nullptr) {
+      engine::populateDefaultsForSession(config_, *session_);
+    }
     computeObservedAfr();
   }
 
@@ -4003,6 +5023,9 @@ namespace ui {
     engine::VeTransientFilter filter(*session_, config_);
 
     for (size_t i = 0; i < numSamples; ++i) {
+      
+      if (!session_->isRowInCropRange(i)) continue; // Respect active crop range
+
       double rpm = rpmCh->values()[i];
       double load = loadCh->values()[i];
       double afr = afrCh->values()[i];
@@ -4059,10 +5082,76 @@ namespace ui {
   void VeAnalysisPanel::computeSuggestedVe()
   {
     if (!session_ || !hasTargetAfr_ || !hasCurrentVe_) return;
-    core::Table2D result = engine::VeAnalyzer::computeCorrectedVe(
-      *session_, currentVePanel_.table(), targetAfrPanel_.table(), config_);
+
+    auto customHeatmap = [this](double value, size_t row, size_t col) -> ImU32 {
+      auto getVeChangeHeatMapColor = [](double diff) -> ImU32 {
+        float norm = static_cast<float>(diff / 10.0); // Scale across +/- 10 VE points
+        if (norm > 1.0f) norm = 1.0f;
+        if (norm < -1.0f) norm = -1.0f;
+
+        float r = 0.0f, g = 0.0f, b = 0.0f, a = 0.35f;
+
+        if (norm > 0.0f) {
+          // Adding fuel (Engine was lean) -> Red/Orange
+          r = norm;
+          g = 0.3f * norm;
+          b = 0.1f * (1.0f - norm);
+        } else {
+          // Pulling fuel (Engine was rich) -> Green/Cyan
+          float negNorm = -norm;
+          r = 0.1f * (1.0f - negNorm);
+          g = negNorm;
+          b = 0.8f * negNorm;
+        }
+        return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a));
+        };
+      double sugVe = suggestedVePanel_.table().value(row, col);
+      double curVe = currentVePanel_.table().value(row, col);
+      double diff = sugVe - curVe;
+      return getVeChangeHeatMapColor(diff);
+      };
+
+    auto customTooltip = [this](double value, size_t row, size_t col) -> std::string {
+      double curVe = currentVePanel_.table().value(row, col);
+      double diff = value - curVe;
+      if (std::abs(diff) < 1e-5) return {};
+      char buffer[64];
+      snprintf(buffer, sizeof(buffer), "Current: %.2f\nChange: %+0.2f", curVe, diff);
+      return std::string(buffer);
+      };
+
+    core::Table2D result = engine::VeAnalyzer::computeCorrectedVe(*session_, currentVePanel_.table(), targetAfrPanel_.table(), config_);
+    suggestedVePanel_.setCustomHeatmapColoring(customHeatmap);
+    suggestedVePanel_.setCustomHoverTooltip(customTooltip);
     suggestedVePanel_.setTable(result);
     hasSuggestedVe_ = true;
+  }
+
+  void VeAnalysisPanel::selectUnvisitedCellsOnSuggestedVe()
+  {
+    if (!hasSuggestedVe_ || !hasCurrentVe_) return;
+    std::set<std::pair<int, int>> unvisited;
+    const size_t rows = suggestedVePanel_.table().rowCount();
+    const size_t cols = suggestedVePanel_.table().columnCount();
+    for (size_t r = 0; r < rows; ++r) {
+      for (size_t c = 0; c < cols; ++c) {
+        // Unvisited cells are those below minSamplesPerBin 
+        // (or where observed hit count was 0 during computeObservedAfr/SuggestedVe)
+        if (c < afrDeltaSampleCounts_.size() && r < afrDeltaSampleCounts_[c].size()) {
+          if (afrDeltaSampleCounts_[r][c] < config_.minSamplesPerBin) {
+            unvisited.insert({ static_cast<int>(r), static_cast<int>(c) });
+          }
+        } else {
+          // Fallback: check if suggested value is identical to current VE (un-analyzed)
+          double sug = suggestedVePanel_.table().value(r, c);
+          double cur = currentVePanel_.table().value(r, c);
+          if (std::abs(sug - cur) < 1e-5) {
+            unvisited.insert({ static_cast<int>(r), static_cast<int>(c) });
+          }
+        }
+      }
+    }
+    suggestedVePanel_.setSelection(unvisited);
   }
 
   void VeAnalysisPanel::renderObservedAfrTab()
@@ -4078,33 +5167,72 @@ namespace ui {
 
       bool changed = false;
 
-      changed |= ImGui::Checkbox("Filter Acceleration Transients (TPSdot)", &config_.enableTpsDotFilter);
-      if (config_.enableTpsDotFilter) {
-        ImGui::SameLine();
-        changed |= ImGui::InputDouble("Max |TPSdot| (%/s)##max_tpsdot", &config_.maxTpsDot, 5.0, 10.0, "%.0f");
+      auto renderChannelCombo = [this, &changed](const char *label, std::string &selectedChannel) {
+        if (ImGui::BeginCombo(label, selectedChannel.empty() ? "None" : selectedChannel.c_str())) {
+          if (ImGui::Selectable("None", selectedChannel.empty())) {
+            selectedChannel.clear();
+            changed = true;
+          }
+          for (const auto &ch : session_->channels()) {
+            bool isSelected = (ch.name() == selectedChannel);
+            if (ImGui::Selectable(ch.name().c_str(), isSelected)) {
+              selectedChannel = ch.name();
+              changed = true;
+            }
+            if (isSelected) ImGui::SetItemDefaultFocus();
+          }
+          ImGui::EndCombo();
+        }
+        };
+
+      if (ImGui::BeginTabBar("ObservedAfrSettingsTabBar")) {
+
+        if (ImGui::BeginTabItem("Filter Thresholds")) {
+          ImGui::Spacing();
+          ImGui::PushItemWidth(120.0f);
+
+          changed |= ImGui::Checkbox("Filter Acceleration Transients (TPSdot)", &config_.enableTpsDotFilter);
+          if (config_.enableTpsDotFilter) {
+            ImGui::SameLine();
+            changed |= ImGui::InputDouble("Max |TPSdot| (%/s)##max_tpsdot", &config_.maxTpsDot, 5.0, 10.0, "%.0f");
+          }
+
+          changed |= ImGui::Checkbox("Filter Cold Warmup (CLT)", &config_.enableCltFilter);
+          if (config_.enableCltFilter) {
+            ImGui::SameLine();
+            changed |= ImGui::InputDouble("Min Coolant Temp##min_clt", &config_.minCoolantTemp, 5.0, 10.0, "%.0f");
+          }
+
+          changed |= ImGui::Checkbox("Filter Overrun Decel", &config_.enableOverrunFilter);
+          if (config_.enableOverrunFilter) {
+            ImGui::SameLine();
+            changed |= ImGui::InputDouble("Min Load Threshold##min_load", &config_.minLoadThreshold, 1.0, 5.0, "%.1f");
+          }
+
+          int minSamples = static_cast<int>(config_.minSamplesPerBin);
+          if (ImGui::InputInt("Min Samples / Bin", &minSamples)) {
+            if (minSamples < 1) minSamples = 1;
+            config_.minSamplesPerBin = static_cast<size_t>(minSamples);
+            changed = true;
+          }
+
+          ImGui::PopItemWidth();
+          ImGui::EndTabItem();
+        }
+
+
+        if (ImGui::BeginTabItem("Channel Mapping")) {
+          ImGui::Spacing();
+          renderChannelCombo("RPM Channel", config_.rpmChannel);
+          renderChannelCombo("Load Channel", config_.loadChannel);
+          renderChannelCombo("AFR Channel", config_.afrChannel);
+          renderChannelCombo("TPSdot Channel", config_.tpsDotChannel);
+          renderChannelCombo("CLT Channel", config_.cltChannel);
+          ImGui::EndTabItem();
+        }
+
+        ImGui::EndTabBar();
       }
-
-      changed |= ImGui::Checkbox("Filter Cold Warmup (CLT)", &config_.enableCltFilter);
-      if (config_.enableCltFilter) {
-        ImGui::SameLine();
-        changed |= ImGui::InputDouble("Min Coolant Temp##min_clt", &config_.minCoolantTemp, 5.0, 10.0, "%.0f");
-      }
-
-      changed |= ImGui::Checkbox("Filter Overrun Decel", &config_.enableOverrunFilter);
-      if (config_.enableOverrunFilter) {
-        ImGui::SameLine();
-        changed |= ImGui::InputDouble("Min Load Threshold##min_load", &config_.minLoadThreshold, 1.0, 5.0, "%.1f");
-      }
-
-      int minSamples = static_cast<int>(config_.minSamplesPerBin);
-      if (ImGui::InputInt("Min Samples / Bin", &minSamples)) {
-        if (minSamples < 1) minSamples = 1;
-        config_.minSamplesPerBin = static_cast<size_t>(minSamples);
-        changed = true;
-      }
-
-      ImGui::PopItemWidth();
-
       if (changed) {
         computeObservedAfr();
         if (hasTargetAfr_) computeAfrDelta();
@@ -4235,7 +5363,9 @@ namespace ui {
     if (rows == 0 || cols == 0) return;
 
     std::vector<std::vector<double>> sumAfr(rows, std::vector<double>(cols, 0.0));
-    std::vector<std::vector<size_t>> countAfr(rows, std::vector<size_t>(cols, 0));
+
+    // Resize sample count matrix to match grid dimensions
+    afrDeltaSampleCounts_.assign(rows, std::vector<size_t>(cols, 0));
 
     const size_t numSamples = session_->rowCount();
     engine::VeTransientFilter filter(*session_, config_);
@@ -4246,7 +5376,6 @@ namespace ui {
       double afr = afrCh->values()[i];
 
       if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
-
       if (filter.shouldIgnoreSample(i, load)) continue;
 
       size_t bestR = 0, bestC = 0;
@@ -4267,16 +5396,15 @@ namespace ui {
       }
 
       sumAfr[bestR][bestC] += afr;
-      countAfr[bestR][bestC]++;
+      afrDeltaSampleCounts_[bestR][bestC]++;
     }
 
     for (size_t r = 0; r < rows; ++r) {
       for (size_t c = 0; c < cols; ++c) {
-        if (countAfr[r][c] >= config_.minSamplesPerBin) {
-          double obsAfr = sumAfr[r][c] / static_cast<double>(countAfr[r][c]);
-          double tgtAfr = useVeAxes ? targetAfrPanel_.table().sample(xBp[c], yBp[r])
-            : targetAfrPanel_.table().value(r, c);
-
+        size_t count = afrDeltaSampleCounts_[r][c];
+        if (count >= config_.minSamplesPerBin) {
+          double obsAfr = sumAfr[r][c] / static_cast<double>(count);
+          double tgtAfr = useVeAxes ? targetAfrPanel_.table().sample(xBp[c], yBp[r]) : targetAfrPanel_.table().value(r, c);
           if (tgtAfr > 0.0) {
             afrDeltaTable_.setValue(r, c, obsAfr - tgtAfr);
           } else {
@@ -4304,17 +5432,17 @@ namespace ui {
 
     ImGui::SameLine();
 
-    // Checkbox toggle to enable/disable Current VE alignment
     ImGui::BeginDisabled(!hasCurrentVe_);
-    if (!hasCurrentVe_)
-      alignAfrDeltaToVeTable_ = false;
+    if (!hasCurrentVe_) alignAfrDeltaToVeTable_ = false;
     if (ImGui::Checkbox("Align grid to Current VE Table", &alignAfrDeltaToVeTable_)) {
-      computeAfrDelta(); // Immediately recalculate on toggle change
+      computeAfrDelta();
     }
     ImGui::EndDisabled();
 
+    ImGui::SameLine();
+    ImGui::Checkbox("Scale intensity by sample count", &scaleDeltaIntensityByHitCount_);
+
     if (!hasCurrentVe_) {
-      ImGui::SameLine();
       ImGui::TextDisabled("(Target AFR axes used - load Current VE to enable VE alignment)");
     }
 
@@ -4330,13 +5458,27 @@ namespace ui {
         ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
 
-      // Helper lambda for heat map background color based on delta (+ = lean/red, - = rich/blue)
-      auto getDeltaHeatMapColor = [](double delta) -> ImU32 {
-        float norm = static_cast<float>(delta / 2.0); // scale across +/- 2 AFR units
+      // Heat map generator with optional sample-density alpha scaling
+      auto getDeltaHeatMapColor = [this](double delta, size_t sampleCount) -> ImU32 {
+        float norm = static_cast<float>(delta / 2.0); // Scale across +/- 2 AFR units
         if (norm > 1.0f) norm = 1.0f;
         if (norm < -1.0f) norm = -1.0f;
 
-        float r = 0.0f, g = 0.0f, b = 0.0f, a = 0.35f; // alpha for subtle shading
+        float baseAlpha = 0.35f;
+
+        if (scaleDeltaIntensityByHitCount_) {
+          // Scale alpha from 0.10 (at min samples) up to 0.60 (at 50+ samples)
+          size_t minThreshold = config_.minSamplesPerBin;
+          size_t maxThreshold = minThreshold + 40; // Full intensity saturates after 40 additional samples
+          float countFactor = 0.0f;
+          if (sampleCount > minThreshold) {
+            countFactor = static_cast<float>(sampleCount - minThreshold) / static_cast<float>(maxThreshold - minThreshold);
+            if (countFactor > 1.0f) countFactor = 1.0f;
+          }
+          baseAlpha = 0.10f + (0.50f * countFactor);
+        }
+
+        float r = 0.0f, g = 0.0f, b = 0.0f;
         if (norm > 0.0f) {
           r = norm;
           g = 0.1f * (1.0f - norm);
@@ -4347,15 +5489,13 @@ namespace ui {
           g = 0.1f * (1.0f - negNorm);
           b = negNorm;
         }
-        return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a));
+        return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, baseAlpha));
         };
 
       if (ImGui::BeginTable("AfrDeltaGrid", static_cast<int>(cols + 1), flags, ImVec2(0.0f, 380.0f))) {
         ImGui::TableSetupScrollFreeze(1, 1);
         ImGui::TableSetupColumn("MAP \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-        //for (size_t c = 0; c < cols; ++c) {
-        //  ImGui::TableSetupColumn(std::to_string(static_cast<int>(xBp[c])).c_str(), ImGuiTableColumnFlags_WidthFixed, 65.0f);
-        //}
+
         for (size_t c = 0; c < cols; ++c) {
           std::string header = std::to_string(static_cast<int>(xBp[c])) + "##col" + std::to_string(c);
           ImGui::TableSetupColumn(header.c_str(), ImGuiTableColumnFlags_WidthFixed, 65.0f);
@@ -4371,10 +5511,11 @@ namespace ui {
             ImGui::TableSetColumnIndex(static_cast<int>(c + 1));
 
             double delta = afrDeltaTable_.value(r, c);
+            size_t hitCount = (r < afrDeltaSampleCounts_.size() && c < afrDeltaSampleCounts_[r].size())
+              ? afrDeltaSampleCounts_[r][c] : 0;
 
-            // Render only if the bin actually captured log samples (is not NaN)
             if (!std::isnan(delta)) {
-              ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, getDeltaHeatMapColor(delta));
+              ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, getDeltaHeatMapColor(delta, hitCount));
 
               if (delta > 0.3) {
                 ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "+%.2f", delta); // Lean
@@ -4383,8 +5524,16 @@ namespace ui {
               } else {
                 ImGui::Text("%.2f", delta);
               }
+
+              // Hit count tooltip on cell hover
+              if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Samples: %zu\nDelta: %+.2f AFR", hitCount, delta);
+              }
             } else {
               ImGui::TextDisabled(" - ");
+              if (ImGui::IsItemHovered() && hitCount > 0) {
+                ImGui::SetTooltip("Samples: %zu (Below min threshold %zu)", hitCount, config_.minSamplesPerBin);
+              }
             }
           }
         }
@@ -4437,6 +5586,7 @@ namespace ui {
     }
   }
 
+#if 0
   void VeAnalysisPanel::renderSuggestedVeTab()
   {
     ImGui::BeginDisabled(!hasTargetAfr_ || !hasCurrentVe_ || session_ == nullptr);
@@ -4517,13 +5667,13 @@ namespace ui {
             if (std::abs(diff) > 0.01) {
               ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, getVeChangeHeatMapColor(diff));
               // Color text pale blue for changed cells
-              ImGui::TextColored(ImVec4(0.6f, 0.85f, 1.0f, 1.0f), "%.1f", sugVe);
+              ImGui::TextColored(ImVec4(0.6f, 0.85f, 1.0f, 1.0f), "%.2f", sugVe);
             } else {
-              ImGui::Text("%.1f", sugVe);
+              ImGui::Text("%.2f", sugVe);
             }
 
             if (ImGui::IsItemHovered() && std::abs(diff) > 0.01) {
-              ImGui::SetTooltip("Current: %.1f | Change: %+.1f", curVe, diff);
+              ImGui::SetTooltip("Current: %.2f | Change: %+.2f", curVe, diff);
             }
           }
         }
@@ -4531,6 +5681,39 @@ namespace ui {
       }
     }
   }
+#else
+  void VeAnalysisPanel::renderSuggestedVeTab()
+  {
+    ImGui::BeginDisabled(!hasTargetAfr_ || !hasCurrentVe_ || session_ == nullptr);
+    if (ImGui::Button("Reset to Calculated VE")) {
+      computeSuggestedVe();
+    }
+    if (ImGui::IsItemHovered()) {
+      ImGui::SetTooltip("Recomputes Suggested VE from log data, discarding any manual edits, interpolations, or extrapolations.");
+    }
+    ImGui::EndDisabled();
+
+    if (hasSuggestedVe_) {
+      ImGui::SameLine();
+      if (ImGui::Button("Select Unvisited Cells")) {
+        selectUnvisitedCellsOnSuggestedVe();
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Highlights cells that lacked enough log samples for direct AFR analysis.");
+      }
+
+      ImGui::SameLine();
+      ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+      ImGui::SameLine();
+
+      // Render standard TableEditorPanel batch toolbar & grid directly
+      // gives Extrapolate, Interpolate, Offset, Scale, and click-and-drag selections for free
+      PlotCursor dummyCursor;
+      suggestedVePanel_.render(dummyCursor);
+    }
+  }
+#endif
+
   void VeAnalysisPanel::render(PlotCursor &cursor)
   {
     std::string windowLabel = "VE Analyzer###" + title();
@@ -4686,12 +5869,11 @@ namespace ui {
   private:
     void computeObservedAfr();
     void computeSuggestedVe();
-
     void renderObservedAfrTab();
-    void renderReadOnlyTableTab(const char *tabName, TableEditorPanel &editorPanel,
-      bool &tableSetFlag, const char *popupId);
+    void renderReadOnlyTableTab(const char *tabName, TableEditorPanel &editorPanel, bool &tableSetFlag, const char *popupId);
     void renderSuggestedVeTab();
     void renderReadOnlyTableGrid(const core::Table2D &table);
+    void selectUnvisitedCellsOnSuggestedVe();
 
     void computeAfrDelta();
     void renderAfrDeltaTab();
@@ -4709,6 +5891,8 @@ namespace ui {
     core::Table2D afrDeltaTable_;
     bool hasAfrDelta_ = false;
     bool alignAfrDeltaToVeTable_ = true;
+    bool scaleDeltaIntensityByHitCount_ = false;
+    std::vector<std::vector<size_t>> afrDeltaSampleCounts_;
 
     // Editing buffers for popups
     core::Table2D targetAfrEditBuffer_;

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <limits>
 #include "imgui.h"
+#include "imgui_internal.h"
 
 namespace ui {
 
@@ -27,6 +28,9 @@ namespace ui {
   void VeAnalysisPanel::setSession(const core::LogSession *session)
   {
     session_ = session;
+    if (session_ != nullptr) {
+      engine::populateDefaultsForSession(config_, *session_);
+    }
     computeObservedAfr();
   }
 
@@ -91,6 +95,9 @@ namespace ui {
     engine::VeTransientFilter filter(*session_, config_);
 
     for (size_t i = 0; i < numSamples; ++i) {
+      
+      if (!session_->isRowInCropRange(i)) continue; // Respect active crop range
+
       double rpm = rpmCh->values()[i];
       double load = loadCh->values()[i];
       double afr = afrCh->values()[i];
@@ -147,10 +154,119 @@ namespace ui {
   void VeAnalysisPanel::computeSuggestedVe()
   {
     if (!session_ || !hasTargetAfr_ || !hasCurrentVe_) return;
-    core::Table2D result = engine::VeAnalyzer::computeCorrectedVe(
-      *session_, currentVePanel_.table(), targetAfrPanel_.table(), config_);
+
+    auto customHeatmap = [this](double value, size_t row, size_t col) -> ImU32 {
+      auto getVeChangeHeatMapColor = [](double diff) -> ImU32 {
+        float norm = static_cast<float>(diff / 10.0); // Scale across +/- 10 VE points
+        if (norm > 1.0f) norm = 1.0f;
+        if (norm < -1.0f) norm = -1.0f;
+
+        float r = 0.0f, g = 0.0f, b = 0.0f, a = 0.35f;
+
+        if (norm > 0.0f) {
+          // Adding fuel (Engine was lean) -> Red/Orange
+          r = norm;
+          g = 0.3f * norm;
+          b = 0.1f * (1.0f - norm);
+        } else {
+          // Pulling fuel (Engine was rich) -> Green/Cyan
+          float negNorm = -norm;
+          r = 0.1f * (1.0f - negNorm);
+          g = negNorm;
+          b = 0.8f * negNorm;
+        }
+        return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a));
+        };
+      double sugVe = suggestedVePanel_.table().value(row, col);
+      double curVe = currentVePanel_.table().value(row, col);
+      double diff = sugVe - curVe;
+      return getVeChangeHeatMapColor(diff);
+      };
+
+    auto customTooltip = [this](double value, size_t row, size_t col) -> std::string {
+      double curVe = currentVePanel_.table().value(row, col);
+      double diff = value - curVe;
+      if (std::abs(diff) < 1e-5) return {};
+      char buffer[64];
+      snprintf(buffer, sizeof(buffer), "Current: %.2f\nChange: %+0.2f", curVe, diff);
+      return std::string(buffer);
+      };
+
+    auto customTextColor = [this](double value, size_t row, size_t col) -> std::optional<ImU32> {
+      double curVe = currentVePanel_.table().value(row, col);
+      double diff = value - curVe;
+      if (std::abs(diff) < 1e-5) return std::nullopt; // No change, use default text color
+      return ImGui::ColorConvertFloat4ToU32(ImVec4{ 0.6f, 0.85f, 1.0f, 1.0f });
+      };
+
+    core::Table2D result = engine::VeAnalyzer::computeCorrectedVe(*session_, currentVePanel_.table(), targetAfrPanel_.table(), config_);
+    suggestedVePanel_.setCustomHeatmapColoring(customHeatmap);
+    suggestedVePanel_.setCustomHoverTooltip(customTooltip);
+    suggestedVePanel_.setCustomTextColoring(customTextColor);
     suggestedVePanel_.setTable(result);
     hasSuggestedVe_ = true;
+  }
+
+  void VeAnalysisPanel::selectUnvisitedCellsOnSuggestedVe()
+  {
+    if (!hasSuggestedVe_ || !hasCurrentVe_ || !session_) return;
+
+    const core::Table2D &veTable = currentVePanel_.table();
+    const size_t rows = veTable.rowCount();
+    const size_t cols = veTable.columnCount();
+    if (rows == 0 || cols == 0) return;
+
+    const core::Channel *rpmCh = session_->findChannel(config_.rpmChannel);
+    const core::Channel *loadCh = session_->findChannel(config_.loadChannel);
+    const core::Channel *afrCh = session_->findChannel(config_.afrChannel);
+
+    std::vector<std::vector<size_t>> sampleCounts(rows, std::vector<size_t>(cols, 0));
+
+    if (rpmCh && loadCh && afrCh) {
+      const auto &xBp = veTable.xBreakpoints();
+      const auto &yBp = veTable.yBreakpoints();
+      const size_t numSamples = session_->rowCount();
+      engine::VeTransientFilter filter(*session_, config_);
+
+      for (size_t i = 0; i < numSamples; ++i) {
+        if (!session_->isRowInCropRange(i)) continue;
+
+        double rpm = rpmCh->values()[i];
+        double load = loadCh->values()[i];
+        double afr = afrCh->values()[i];
+
+        if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
+        if (filter.shouldIgnoreSample(i, load)) continue;
+
+        size_t bestR = 0, bestC = 0;
+        double minDist = std::numeric_limits<double>::max();
+
+        for (size_t r = 0; r < rows; ++r) {
+          for (size_t c = 0; c < cols; ++c) {
+            double dRpm = (rpm - xBp[c]) / 1000.0;
+            double dLoad = (load - yBp[r]) / 10.0;
+            double dist = (dRpm * dRpm) + (dLoad * dLoad);
+
+            if (dist < minDist) {
+              minDist = dist;
+              bestR = r;
+              bestC = c;
+            }
+          }
+        }
+        sampleCounts[bestR][bestC]++;
+      }
+    }
+
+    std::set<std::pair<int, int>> unvisited;
+    for (size_t r = 0; r < rows; ++r) {
+      for (size_t c = 0; c < cols; ++c) {
+        if (sampleCounts[r][c] < config_.minSamplesPerBin) {
+          unvisited.insert({ static_cast<int>(r), static_cast<int>(c) });
+        }
+      }
+    }
+    suggestedVePanel_.setSelection(unvisited);
   }
 
   void VeAnalysisPanel::renderObservedAfrTab()
@@ -166,33 +282,72 @@ namespace ui {
 
       bool changed = false;
 
-      changed |= ImGui::Checkbox("Filter Acceleration Transients (TPSdot)", &config_.enableTpsDotFilter);
-      if (config_.enableTpsDotFilter) {
-        ImGui::SameLine();
-        changed |= ImGui::InputDouble("Max |TPSdot| (%/s)##max_tpsdot", &config_.maxTpsDot, 5.0, 10.0, "%.0f");
+      auto renderChannelCombo = [this, &changed](const char *label, std::string &selectedChannel) {
+        if (ImGui::BeginCombo(label, selectedChannel.empty() ? "None" : selectedChannel.c_str())) {
+          if (ImGui::Selectable("None", selectedChannel.empty())) {
+            selectedChannel.clear();
+            changed = true;
+          }
+          for (const auto &ch : session_->channels()) {
+            bool isSelected = (ch.name() == selectedChannel);
+            if (ImGui::Selectable(ch.name().c_str(), isSelected)) {
+              selectedChannel = ch.name();
+              changed = true;
+            }
+            if (isSelected) ImGui::SetItemDefaultFocus();
+          }
+          ImGui::EndCombo();
+        }
+        };
+
+      if (ImGui::BeginTabBar("ObservedAfrSettingsTabBar")) {
+
+        if (ImGui::BeginTabItem("Filter Thresholds")) {
+          ImGui::Spacing();
+          ImGui::PushItemWidth(120.0f);
+
+          changed |= ImGui::Checkbox("Filter Acceleration Transients (TPSdot)", &config_.enableTpsDotFilter);
+          if (config_.enableTpsDotFilter) {
+            ImGui::SameLine();
+            changed |= ImGui::InputDouble("Max |TPSdot| (%/s)##max_tpsdot", &config_.maxTpsDot, 5.0, 10.0, "%.0f");
+          }
+
+          changed |= ImGui::Checkbox("Filter Cold Warmup (CLT)", &config_.enableCltFilter);
+          if (config_.enableCltFilter) {
+            ImGui::SameLine();
+            changed |= ImGui::InputDouble("Min Coolant Temp##min_clt", &config_.minCoolantTemp, 5.0, 10.0, "%.0f");
+          }
+
+          changed |= ImGui::Checkbox("Filter Overrun Decel", &config_.enableOverrunFilter);
+          if (config_.enableOverrunFilter) {
+            ImGui::SameLine();
+            changed |= ImGui::InputDouble("Min Load Threshold##min_load", &config_.minLoadThreshold, 1.0, 5.0, "%.1f");
+          }
+
+          int minSamples = static_cast<int>(config_.minSamplesPerBin);
+          if (ImGui::InputInt("Min Samples / Bin", &minSamples)) {
+            if (minSamples < 1) minSamples = 1;
+            config_.minSamplesPerBin = static_cast<size_t>(minSamples);
+            changed = true;
+          }
+
+          ImGui::PopItemWidth();
+          ImGui::EndTabItem();
+        }
+
+
+        if (ImGui::BeginTabItem("Channel Mapping")) {
+          ImGui::Spacing();
+          renderChannelCombo("RPM Channel", config_.rpmChannel);
+          renderChannelCombo("Load Channel", config_.loadChannel);
+          renderChannelCombo("AFR Channel", config_.afrChannel);
+          renderChannelCombo("TPSdot Channel", config_.tpsDotChannel);
+          renderChannelCombo("CLT Channel", config_.cltChannel);
+          ImGui::EndTabItem();
+        }
+
+        ImGui::EndTabBar();
       }
-
-      changed |= ImGui::Checkbox("Filter Cold Warmup (CLT)", &config_.enableCltFilter);
-      if (config_.enableCltFilter) {
-        ImGui::SameLine();
-        changed |= ImGui::InputDouble("Min Coolant Temp##min_clt", &config_.minCoolantTemp, 5.0, 10.0, "%.0f");
-      }
-
-      changed |= ImGui::Checkbox("Filter Overrun Decel", &config_.enableOverrunFilter);
-      if (config_.enableOverrunFilter) {
-        ImGui::SameLine();
-        changed |= ImGui::InputDouble("Min Load Threshold##min_load", &config_.minLoadThreshold, 1.0, 5.0, "%.1f");
-      }
-
-      int minSamples = static_cast<int>(config_.minSamplesPerBin);
-      if (ImGui::InputInt("Min Samples / Bin", &minSamples)) {
-        if (minSamples < 1) minSamples = 1;
-        config_.minSamplesPerBin = static_cast<size_t>(minSamples);
-        changed = true;
-      }
-
-      ImGui::PopItemWidth();
-
       if (changed) {
         computeObservedAfr();
         if (hasTargetAfr_) computeAfrDelta();
@@ -323,7 +478,9 @@ namespace ui {
     if (rows == 0 || cols == 0) return;
 
     std::vector<std::vector<double>> sumAfr(rows, std::vector<double>(cols, 0.0));
-    std::vector<std::vector<size_t>> countAfr(rows, std::vector<size_t>(cols, 0));
+
+    // Resize sample count matrix to match grid dimensions
+    afrDeltaSampleCounts_.assign(rows, std::vector<size_t>(cols, 0));
 
     const size_t numSamples = session_->rowCount();
     engine::VeTransientFilter filter(*session_, config_);
@@ -334,7 +491,6 @@ namespace ui {
       double afr = afrCh->values()[i];
 
       if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
-
       if (filter.shouldIgnoreSample(i, load)) continue;
 
       size_t bestR = 0, bestC = 0;
@@ -355,16 +511,15 @@ namespace ui {
       }
 
       sumAfr[bestR][bestC] += afr;
-      countAfr[bestR][bestC]++;
+      afrDeltaSampleCounts_[bestR][bestC]++;
     }
 
     for (size_t r = 0; r < rows; ++r) {
       for (size_t c = 0; c < cols; ++c) {
-        if (countAfr[r][c] >= config_.minSamplesPerBin) {
-          double obsAfr = sumAfr[r][c] / static_cast<double>(countAfr[r][c]);
-          double tgtAfr = useVeAxes ? targetAfrPanel_.table().sample(xBp[c], yBp[r])
-            : targetAfrPanel_.table().value(r, c);
-
+        size_t count = afrDeltaSampleCounts_[r][c];
+        if (count >= config_.minSamplesPerBin) {
+          double obsAfr = sumAfr[r][c] / static_cast<double>(count);
+          double tgtAfr = useVeAxes ? targetAfrPanel_.table().sample(xBp[c], yBp[r]) : targetAfrPanel_.table().value(r, c);
           if (tgtAfr > 0.0) {
             afrDeltaTable_.setValue(r, c, obsAfr - tgtAfr);
           } else {
@@ -392,17 +547,17 @@ namespace ui {
 
     ImGui::SameLine();
 
-    // Checkbox toggle to enable/disable Current VE alignment
     ImGui::BeginDisabled(!hasCurrentVe_);
-    if (!hasCurrentVe_)
-      alignAfrDeltaToVeTable_ = false;
+    if (!hasCurrentVe_) alignAfrDeltaToVeTable_ = false;
     if (ImGui::Checkbox("Align grid to Current VE Table", &alignAfrDeltaToVeTable_)) {
-      computeAfrDelta(); // Immediately recalculate on toggle change
+      computeAfrDelta();
     }
     ImGui::EndDisabled();
 
+    ImGui::SameLine();
+    ImGui::Checkbox("Scale intensity by sample count", &scaleDeltaIntensityByHitCount_);
+
     if (!hasCurrentVe_) {
-      ImGui::SameLine();
       ImGui::TextDisabled("(Target AFR axes used - load Current VE to enable VE alignment)");
     }
 
@@ -418,13 +573,27 @@ namespace ui {
         ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
 
-      // Helper lambda for heat map background color based on delta (+ = lean/red, - = rich/blue)
-      auto getDeltaHeatMapColor = [](double delta) -> ImU32 {
-        float norm = static_cast<float>(delta / 2.0); // scale across +/- 2 AFR units
+      // Heat map generator with optional sample-density alpha scaling
+      auto getDeltaHeatMapColor = [this](double delta, size_t sampleCount) -> ImU32 {
+        float norm = static_cast<float>(delta / 2.0); // Scale across +/- 2 AFR units
         if (norm > 1.0f) norm = 1.0f;
         if (norm < -1.0f) norm = -1.0f;
 
-        float r = 0.0f, g = 0.0f, b = 0.0f, a = 0.35f; // alpha for subtle shading
+        float baseAlpha = 0.35f;
+
+        if (scaleDeltaIntensityByHitCount_) {
+          // Scale alpha from 0.10 (at min samples) up to 0.60 (at 50+ samples)
+          size_t minThreshold = config_.minSamplesPerBin;
+          size_t maxThreshold = minThreshold + 40; // Full intensity saturates after 40 additional samples
+          float countFactor = 0.0f;
+          if (sampleCount > minThreshold) {
+            countFactor = static_cast<float>(sampleCount - minThreshold) / static_cast<float>(maxThreshold - minThreshold);
+            if (countFactor > 1.0f) countFactor = 1.0f;
+          }
+          baseAlpha = 0.10f + (0.50f * countFactor);
+        }
+
+        float r = 0.0f, g = 0.0f, b = 0.0f;
         if (norm > 0.0f) {
           r = norm;
           g = 0.1f * (1.0f - norm);
@@ -435,15 +604,13 @@ namespace ui {
           g = 0.1f * (1.0f - negNorm);
           b = negNorm;
         }
-        return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a));
+        return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, baseAlpha));
         };
 
       if (ImGui::BeginTable("AfrDeltaGrid", static_cast<int>(cols + 1), flags, ImVec2(0.0f, 380.0f))) {
         ImGui::TableSetupScrollFreeze(1, 1);
         ImGui::TableSetupColumn("MAP \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-        //for (size_t c = 0; c < cols; ++c) {
-        //  ImGui::TableSetupColumn(std::to_string(static_cast<int>(xBp[c])).c_str(), ImGuiTableColumnFlags_WidthFixed, 65.0f);
-        //}
+
         for (size_t c = 0; c < cols; ++c) {
           std::string header = std::to_string(static_cast<int>(xBp[c])) + "##col" + std::to_string(c);
           ImGui::TableSetupColumn(header.c_str(), ImGuiTableColumnFlags_WidthFixed, 65.0f);
@@ -459,10 +626,11 @@ namespace ui {
             ImGui::TableSetColumnIndex(static_cast<int>(c + 1));
 
             double delta = afrDeltaTable_.value(r, c);
+            size_t hitCount = (r < afrDeltaSampleCounts_.size() && c < afrDeltaSampleCounts_[r].size())
+              ? afrDeltaSampleCounts_[r][c] : 0;
 
-            // Render only if the bin actually captured log samples (is not NaN)
             if (!std::isnan(delta)) {
-              ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, getDeltaHeatMapColor(delta));
+              ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, getDeltaHeatMapColor(delta, hitCount));
 
               if (delta > 0.3) {
                 ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "+%.2f", delta); // Lean
@@ -471,8 +639,16 @@ namespace ui {
               } else {
                 ImGui::Text("%.2f", delta);
               }
+
+              // Hit count tooltip on cell hover
+              if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Samples: %zu\nDelta: %+.2f AFR", hitCount, delta);
+              }
             } else {
               ImGui::TextDisabled(" - ");
+              if (ImGui::IsItemHovered() && hitCount > 0) {
+                ImGui::SetTooltip("Samples: %zu (Below min threshold %zu)", hitCount, config_.minSamplesPerBin);
+              }
             }
           }
         }
@@ -525,6 +701,7 @@ namespace ui {
     }
   }
 
+#if 0
   void VeAnalysisPanel::renderSuggestedVeTab()
   {
     ImGui::BeginDisabled(!hasTargetAfr_ || !hasCurrentVe_ || session_ == nullptr);
@@ -605,13 +782,13 @@ namespace ui {
             if (std::abs(diff) > 0.01) {
               ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, getVeChangeHeatMapColor(diff));
               // Color text pale blue for changed cells
-              ImGui::TextColored(ImVec4(0.6f, 0.85f, 1.0f, 1.0f), "%.1f", sugVe);
+              ImGui::TextColored(ImVec4(0.6f, 0.85f, 1.0f, 1.0f), "%.2f", sugVe);
             } else {
-              ImGui::Text("%.1f", sugVe);
+              ImGui::Text("%.2f", sugVe);
             }
 
             if (ImGui::IsItemHovered() && std::abs(diff) > 0.01) {
-              ImGui::SetTooltip("Current: %.1f | Change: %+.1f", curVe, diff);
+              ImGui::SetTooltip("Current: %.2f | Change: %+.2f", curVe, diff);
             }
           }
         }
@@ -619,6 +796,39 @@ namespace ui {
       }
     }
   }
+#else
+  void VeAnalysisPanel::renderSuggestedVeTab()
+  {
+    ImGui::BeginDisabled(!hasTargetAfr_ || !hasCurrentVe_ || session_ == nullptr);
+    if (ImGui::Button("Reset to Calculated VE")) {
+      computeSuggestedVe();
+    }
+    if (ImGui::IsItemHovered()) {
+      ImGui::SetTooltip("Recomputes Suggested VE from log data, discarding any manual edits, interpolations, or extrapolations.");
+    }
+    ImGui::EndDisabled();
+
+    if (hasSuggestedVe_) {
+      ImGui::SameLine();
+      if (ImGui::Button("Select Unvisited Cells")) {
+        selectUnvisitedCellsOnSuggestedVe();
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Highlights cells that lacked enough log samples for direct AFR analysis.");
+      }
+
+      ImGui::SameLine();
+      ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+      ImGui::SameLine();
+
+      // Render standard TableEditorPanel batch toolbar & grid directly
+      // gives Extrapolate, Interpolate, Offset, Scale, and click-and-drag selections for free
+      PlotCursor dummyCursor;
+      suggestedVePanel_.render(dummyCursor);
+    }
+  }
+#endif
+
   void VeAnalysisPanel::render(PlotCursor &cursor)
   {
     std::string windowLabel = "VE Analyzer###" + title();
