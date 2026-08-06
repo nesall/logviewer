@@ -1,4 +1,5 @@
 #include "ui/scatterpanel.h"
+#include "ui/ui_helpers.h"
 
 #include <algorithm>
 #include <cmath>
@@ -140,66 +141,69 @@ namespace ui {
 
   void ScatterPanel::render(PlotCursor &cursor)
   {
-    std::string windowLabel = selectedXChannel_ + " vs " + selectedYChannel_;
+    std::string legendLabel = selectedXChannel_ + " vs " + selectedYChannel_;
     if (!selectedColorChannel_.empty()) {
-      windowLabel += " vs " + selectedColorChannel_;
+      legendLabel += " vs " + selectedColorChannel_;
     }
-    windowLabel += "###" + title();
+    std::string windowLabel = legendLabel + "###" + title();
     ImGui::Begin(windowLabel.c_str(), &open_);
 
     const bool haveSession = (session_ != nullptr && !session_->channels().empty());
 
     if (haveSession) {
-      if (ImGui::BeginCombo("X Channel", selectedXChannel_.c_str())) {
-        for (const auto &channel : session_->channels()) {
-          bool isSelected = (channel.name() == selectedXChannel_);
-          if (ImGui::Selectable(channel.name().c_str(), isSelected)) {
-            selectedXChannel_ = channel.name();
-            rebindChannels();
-          }
-          if (isSelected) {
-            ImGui::SetItemDefaultFocus();
-          }
-        }
-        ImGui::EndCombo();
+      if (ui::UI::Button("Channels...", {}, {}, "Open channel selection popup")) {
+        ImGui::OpenPopup(ui::popups::ScatterPanelChannels);
       }
-      if (ImGui::BeginCombo("Y Channel", selectedYChannel_.c_str())) {
-        for (const auto &channel : session_->channels()) {
-          bool isSelected = (channel.name() == selectedYChannel_);
-          if (ImGui::Selectable(channel.name().c_str(), isSelected)) {
-            selectedYChannel_ = channel.name();
-            rebindChannels();
+
+      if (ImGui::BeginPopup(ui::popups::ScatterPanelChannels)) {
+        ImGui::SetNextItemWidth(180.0f);
+        if (ImGui::BeginCombo("X Axis", selectedXChannel_.c_str())) {
+          for (const auto &channel : session_->channels()) {
+            bool isSelected = (channel.name() == selectedXChannel_);
+            if (ImGui::Selectable(channel.name().c_str(), isSelected)) {
+              selectedXChannel_ = channel.name();
+              rebindChannels();
+            }
+            if (isSelected) ImGui::SetItemDefaultFocus();
           }
-          if (isSelected) {
-            ImGui::SetItemDefaultFocus();
-          }
+          ImGui::EndCombo();
         }
-        ImGui::EndCombo();
-      }
-      {
-        const char *colorComboLabel =
-          selectedColorChannel_.empty() ? "None" : selectedColorChannel_.c_str();
-        if (ImGui::BeginCombo("Color Channel", colorComboLabel)) {
+
+        ImGui::SetNextItemWidth(180.0f);
+        if (ImGui::BeginCombo("Y Axis", selectedYChannel_.c_str())) {
+          for (const auto &channel : session_->channels()) {
+            bool isSelected = (channel.name() == selectedYChannel_);
+            if (ImGui::Selectable(channel.name().c_str(), isSelected)) {
+              selectedYChannel_ = channel.name();
+              rebindChannels();
+            }
+            if (isSelected) ImGui::SetItemDefaultFocus();
+          }
+          ImGui::EndCombo();
+        }
+
+        ImGui::SetNextItemWidth(180.0f);
+        const char *colorComboLabel = selectedColorChannel_.empty() ? "None" : selectedColorChannel_.c_str();
+        if (ImGui::BeginCombo("Color (Z)", colorComboLabel)) {
           bool noneSelected = selectedColorChannel_.empty();
           if (ImGui::Selectable("None", noneSelected)) {
             selectedColorChannel_.clear();
             rebuildColorData();
           }
-          if (noneSelected) {
-            ImGui::SetItemDefaultFocus();
-          }
+          if (noneSelected) ImGui::SetItemDefaultFocus();
+
           for (const auto &channel : session_->channels()) {
             bool isSelected = (channel.name() == selectedColorChannel_);
             if (ImGui::Selectable(channel.name().c_str(), isSelected)) {
               selectedColorChannel_ = channel.name();
               rebuildColorData();
             }
-            if (isSelected) {
-              ImGui::SetItemDefaultFocus();
-            }
+            if (isSelected) ImGui::SetItemDefaultFocus();
           }
           ImGui::EndCombo();
         }
+
+        ImGui::EndPopup();
       }
     } else {
       ImGui::TextDisabled("No log loaded yet.");
@@ -227,8 +231,7 @@ namespace ui {
 
     if (haveColorData) {
       ImPlot::PushColormap(ImPlotColormap_Viridis);
-      ImPlot::ColormapScale(selectedColorChannel_.c_str(), colorChannelMin_, colorChannelMax_,
-        ImVec2(80, -1));
+      ImPlot::ColormapScale(selectedColorChannel_.c_str(), colorChannelMin_, colorChannelMax_, ImVec2(80, -1));
       ImGui::SameLine();
     }
 
@@ -237,16 +240,14 @@ namespace ui {
 
       if (haveColorData) {
         ImPlotSpec spec;
+        spec.MarkerSize = 2.f;
         spec.MarkerFillColors = cachedPointColors_.data();
-        ImPlot::PlotScatter("Samples", xValues.data(), yValues.data(),
-          static_cast<int>(xValues.size()), spec);
+        ImPlot::PlotScatter(legendLabel.c_str(), xValues.data(), yValues.data(), static_cast<int>(xValues.size()), spec);
       } else {
-        ImPlot::PlotScatter("Samples", xValues.data(), yValues.data(),
-          static_cast<int>(xValues.size()));
+        ImPlot::PlotScatter(legendLabel.c_str(), xValues.data(), yValues.data(), static_cast<int>(xValues.size()));
       }
 
-      // Highlight the sample nearest the shared cursor time -- only
-      // meaningful with real, time-aligned data.
+      // Highlight the sample nearest the shared cursor time
       if (haveRealData && cursor.active && cachedTimeSec_ != nullptr && !cachedTimeSec_->empty()) {
         auto it = std::lower_bound(cachedTimeSec_->begin(), cachedTimeSec_->end(), cursor.timeSec);
         size_t index = static_cast<size_t>(it - cachedTimeSec_->begin());

@@ -26,13 +26,17 @@ namespace ui {
     void computeObservedAfr();
     void computeSuggestedVe();
     void renderObservedAfrTab();
-    void renderReadOnlyTableTab(const char *tabName, TableEditorPanel &editorPanel, bool &tableSetFlag, const char *popupId);
+    void renderTargetAfrTab();
+    void renderBaselineVeTab();
     void renderSuggestedVeTab();
     void renderReadOnlyTableGrid(const core::Table2D &table);
     void selectUnvisitedCellsOnSuggestedVe();
 
     void computeAfrDelta();
     void renderAfrDeltaTab();
+
+    bool hasBaselineVe() const;
+    bool hasTargetAfr() const;
 
     const core::LogSession *session_ = nullptr;
     bool open_ = true;
@@ -42,7 +46,7 @@ namespace ui {
     // Core tables
     core::Table2D observedAfrTable_;
     TableEditorPanel targetAfrPanel_;
-    TableEditorPanel currentVePanel_;
+    TableEditorPanel baselineVePanel_;
     TableEditorPanel suggestedVePanel_;
     core::Table2D afrDeltaTable_;
     bool hasAfrDelta_ = false;
@@ -52,10 +56,8 @@ namespace ui {
 
     // Editing buffers for popups
     core::Table2D targetAfrEditBuffer_;
-    core::Table2D currentVeEditBuffer_;
+    core::Table2D baselineVeEditBuffer_;
 
-    bool hasTargetAfr_ = false;
-    bool hasCurrentVe_ = false;
     bool hasSuggestedVe_ = false;
 
     // Cropped axis bounds for Observed AFR

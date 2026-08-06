@@ -110,6 +110,7 @@ add_executable(logviewer
   src/ui/tableeditorpanel.cpp
   src/ui/veanalysispanel.h
   src/ui/veanalysispanel.cpp
+  src/ui/ui_helpers.h
   src/core/formula_evaluator.h
   src/core/formula_evaluator.cpp
 )

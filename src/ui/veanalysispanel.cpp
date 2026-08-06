@@ -1,4 +1,5 @@
 #include "ui/veanalysispanel.h"
+#include "ui/ui_helpers.h"
 #include "3rdparty/nlohmann/json.hpp"
 
 #include <algorithm>
@@ -14,15 +15,36 @@ namespace ui {
     , targetAfrPanel_("Target AFR Editor", "TargetAfrTable", "Target AFR",
       core::Table2D(core::generateEvenBreakpoints(500, 7000, 16),
         core::generateEvenBreakpoints(20, 100, 16)))
-    , currentVePanel_("Current VE Editor", "VeTable", "Current VE",
+    , baselineVePanel_("Baseline VE Editor", "VeTable", "Baseline VE",
       core::Table2D(core::generateEvenBreakpoints(500, 7000, 16),
         core::generateEvenBreakpoints(20, 100, 16)))
     , suggestedVePanel_("Suggested VE", "SuggestedVeTable", "Suggested VE",
       core::Table2D(core::generateEvenBreakpoints(500, 7000, 16),
         core::generateEvenBreakpoints(20, 100, 16)))
   {
-    observedAfrTable_ = core::Table2D(core::generateEvenBreakpoints(500, 7000, 16),
-      core::generateEvenBreakpoints(20, 100, 16));
+    observedAfrTable_ = core::Table2D(core::generateEvenBreakpoints(500, 7000, 16), core::generateEvenBreakpoints(20, 100, 16));
+
+    auto recalcCallback = [this]() {
+      computeObservedAfr();
+      computeAfrDelta();
+      computeSuggestedVe();
+      };
+    targetAfrPanel_.setOnDataChangedCallback(recalcCallback);
+    baselineVePanel_.setOnDataChangedCallback(recalcCallback);
+    targetAfrPanel_.setCustomToolbarCallback([this, recalcCallback] {
+      ImGui::BeginDisabled(!hasBaselineVe() || session_ == nullptr);
+      if (ui::UI::ButtonPrimary("Apply Changes", {}, "Recomputes AFR Delta and Suggested VE.")) {
+        recalcCallback();
+      }
+      ImGui::EndDisabled();
+      });
+    baselineVePanel_.setCustomToolbarCallback([this, recalcCallback] {
+      ImGui::BeginDisabled(!hasTargetAfr() || session_ == nullptr);
+      if (ui::UI::ButtonPrimary("Apply Changes", {}, "Recomputes AFR Delta and Suggested VE.")) {
+        recalcCallback();
+      }
+      ImGui::EndDisabled();
+      });
   }
 
   void VeAnalysisPanel::setSession(const core::LogSession *session)
@@ -53,10 +75,10 @@ namespace ui {
     std::vector<double> xBp;
     std::vector<double> yBp;
 
-    if (hasCurrentVe_) {
-      xBp = currentVePanel_.table().xBreakpoints();
-      yBp = currentVePanel_.table().yBreakpoints();
-    } else if (hasTargetAfr_) {
+    if (hasBaselineVe()) {
+      xBp = baselineVePanel_.table().xBreakpoints();
+      yBp = baselineVePanel_.table().yBreakpoints();
+    } else if (hasTargetAfr()) {
       xBp = targetAfrPanel_.table().xBreakpoints();
       yBp = targetAfrPanel_.table().yBreakpoints();
     } else {
@@ -153,7 +175,7 @@ namespace ui {
 
   void VeAnalysisPanel::computeSuggestedVe()
   {
-    if (!session_ || !hasTargetAfr_ || !hasCurrentVe_) return;
+    if (!session_ || !hasTargetAfr() || !hasBaselineVe()) return;
 
     auto customHeatmap = [this](double value, size_t row, size_t col) -> ImU32 {
       auto getVeChangeHeatMapColor = [](double diff) -> ImU32 {
@@ -178,40 +200,60 @@ namespace ui {
         return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a));
         };
       double sugVe = suggestedVePanel_.table().value(row, col);
-      double curVe = currentVePanel_.table().value(row, col);
+      double curVe = baselineVePanel_.table().value(row, col);
       double diff = sugVe - curVe;
       return getVeChangeHeatMapColor(diff);
       };
 
     auto customTooltip = [this](double value, size_t row, size_t col) -> std::string {
-      double curVe = currentVePanel_.table().value(row, col);
+      double curVe = baselineVePanel_.table().value(row, col);
       double diff = value - curVe;
       if (std::abs(diff) < 1e-5) return {};
+      double percentChange = (curVe != 0.0) ? (diff / curVe) * 100.0 : 0.0;
       char buffer[64];
-      snprintf(buffer, sizeof(buffer), "Current: %.2f\nChange: %+0.2f", curVe, diff);
+      snprintf(buffer, sizeof(buffer), "Baseline: %.2f\nChange: %+0.2f (%+0.2f%%)", curVe, diff, percentChange);
       return std::string(buffer);
       };
 
     auto customTextColor = [this](double value, size_t row, size_t col) -> std::optional<ImU32> {
-      double curVe = currentVePanel_.table().value(row, col);
+      double curVe = baselineVePanel_.table().value(row, col);
       double diff = value - curVe;
-      if (std::abs(diff) < 1e-5) return std::nullopt; // No change, use default text color
-      return ImGui::ColorConvertFloat4ToU32(ImVec4{ 0.6f, 0.85f, 1.0f, 1.0f });
+      if (std::abs(diff) < 1e-5) {
+        return ImGui::ColorConvertFloat4ToU32(ImVec4{ 0.6f, 0.6f, 0.6f, 1.0f }); // Gray for unchanged
+      }
+      return ImGui::ColorConvertFloat4ToU32(ImVec4{ 0.2f, 0.8f, 1.0f, 1.0f });      
       };
 
-    core::Table2D result = engine::VeAnalyzer::computeCorrectedVe(*session_, currentVePanel_.table(), targetAfrPanel_.table(), config_);
+    auto customToolbar = [this]() {
+      if (ui::UI::ButtonSecondary("Select Unvisited Cells", {}, "Highlights cells that lacked enough log samples for direct AFR analysis.")) {
+        selectUnvisitedCellsOnSuggestedVe();
+      }
+
+      ImGui::SameLine();
+
+      ImGui::BeginDisabled(!hasTargetAfr() || !hasBaselineVe() || session_ == nullptr);
+      if (ui::UI::ButtonDanger("Reset to Calculated VE", {}, "Recomputes Suggested VE from log data, discarding any manual edits.")) {
+        
+        computeSuggestedVe();
+      }
+      ImGui::EndDisabled();
+      };
+
+    core::Table2D result = engine::VeAnalyzer::computeCorrectedVe(*session_, baselineVePanel_.table(), targetAfrPanel_.table(), config_);
     suggestedVePanel_.setCustomHeatmapColoring(customHeatmap);
     suggestedVePanel_.setCustomHoverTooltip(customTooltip);
     suggestedVePanel_.setCustomTextColoring(customTextColor);
+    // In VeAnalysisPanel constructor or initialization:
+    suggestedVePanel_.setCustomToolbarCallback(customToolbar);
     suggestedVePanel_.setTable(result);
     hasSuggestedVe_ = true;
   }
 
   void VeAnalysisPanel::selectUnvisitedCellsOnSuggestedVe()
   {
-    if (!hasSuggestedVe_ || !hasCurrentVe_ || !session_) return;
+    if (!hasSuggestedVe_ || !hasBaselineVe() || !session_) return;
 
-    const core::Table2D &veTable = currentVePanel_.table();
+    const core::Table2D &veTable = baselineVePanel_.table();
     const size_t rows = veTable.rowCount();
     const size_t cols = veTable.columnCount();
     if (rows == 0 || cols == 0) return;
@@ -350,13 +392,13 @@ namespace ui {
       }
       if (changed) {
         computeObservedAfr();
-        if (hasTargetAfr_) computeAfrDelta();
-        if (hasTargetAfr_ && hasCurrentVe_) computeSuggestedVe();
+        if (hasTargetAfr()) computeAfrDelta();
+        if (hasTargetAfr() && hasBaselineVe()) computeSuggestedVe();
       }
       ImGui::Separator();
     }
 
-    if (ImGui::Button("Recalculate Observed AFR")) {
+    if (ui::UI::ButtonPrimary("Recalculate Observed AFR")) {
       computeObservedAfr();
     }
 
@@ -450,7 +492,7 @@ namespace ui {
 
   void VeAnalysisPanel::computeAfrDelta()
   {
-    if (!session_ || !hasTargetAfr_) {
+    if (!session_ || !hasTargetAfr()) {
       hasAfrDelta_ = false;
       return;
     }
@@ -464,8 +506,8 @@ namespace ui {
       return;
     }
 
-    const bool useVeAxes = alignAfrDeltaToVeTable_ && hasCurrentVe_;
-    const core::Table2D &refTable = useVeAxes ? currentVePanel_.table() : targetAfrPanel_.table();
+    const bool useVeAxes = alignAfrDeltaToVeTable_ && hasBaselineVe();
+    const core::Table2D &refTable = useVeAxes ? baselineVePanel_.table() : targetAfrPanel_.table();
 
     const auto &xBp = refTable.xBreakpoints();
     const auto &yBp = refTable.yBreakpoints();
@@ -536,20 +578,20 @@ namespace ui {
 
   void VeAnalysisPanel::renderAfrDeltaTab()
   {
-    if (!hasTargetAfr_) {
+    if (!hasTargetAfr()) {
       ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.2f, 1.0f), "Please set the 'Target AFR' table first.");
       return;
     }
 
-    if (ImGui::Button("Recalculate AFR Delta")) {
+    if (ui::UI::ButtonPrimary("Recalculate AFR Delta")) {
       computeAfrDelta();
     }
 
     ImGui::SameLine();
 
-    ImGui::BeginDisabled(!hasCurrentVe_);
-    if (!hasCurrentVe_) alignAfrDeltaToVeTable_ = false;
-    if (ImGui::Checkbox("Align grid to Current VE Table", &alignAfrDeltaToVeTable_)) {
+    ImGui::BeginDisabled(!hasBaselineVe());
+    if (!hasBaselineVe()) alignAfrDeltaToVeTable_ = false;
+    if (ImGui::Checkbox("Align grid to Baseline VE Table", &alignAfrDeltaToVeTable_)) {
       computeAfrDelta();
     }
     ImGui::EndDisabled();
@@ -557,8 +599,8 @@ namespace ui {
     ImGui::SameLine();
     ImGui::Checkbox("Scale intensity by sample count", &scaleDeltaIntensityByHitCount_);
 
-    if (!hasCurrentVe_) {
-      ImGui::TextDisabled("(Target AFR axes used - load Current VE to enable VE alignment)");
+    if (!hasBaselineVe()) {
+      ImGui::TextDisabled("(Target AFR axes used - load Baseline VE to enable VE alignment)");
     }
 
     if (hasAfrDelta_) {
@@ -659,175 +701,51 @@ namespace ui {
     }
   }
 
-  void VeAnalysisPanel::renderReadOnlyTableTab(const char *tabName, TableEditorPanel &editorPanel, bool &tableSetFlag, const char *popupId)
+  bool VeAnalysisPanel::hasTargetAfr() const
   {
-    std::string editBtnLabel = std::string("Edit / Change ") + tabName + "...";
-    if (ImGui::Button(editBtnLabel.c_str())) {
-      ImGui::OpenPopup(popupId);
-    }
-
-    if (tableSetFlag) {
-      ImGui::SameLine();
-      if (ImGui::Button("Copy to Clipboard")) {
-        editorPanel.copyToClipboard(false);
-        suggestedVePanel_.showCopyToast();
+    const auto &tbl = targetAfrPanel_.table();
+    if (tbl.rowCount() == 0 || tbl.columnCount() == 0) return false;
+    for (size_t r = 0; r < tbl.rowCount(); ++r) {
+      for (size_t c = 0; c < tbl.columnCount(); ++c) {
+        if (0 < tbl.value(r, c)) return true;
       }
-      suggestedVePanel_.renderToast();
-
-      renderReadOnlyTableGrid(editorPanel.table());
-    } else {
-      ImGui::Separator();
-      ImGui::TextDisabled("No %s data set yet. Click '%s' to enter or paste values.", tabName, editBtnLabel.c_str());
     }
-
-    // Modal Editor Window
-    ImGui::SetNextWindowSize(ImVec2(800, 600), ImGuiCond_FirstUseEver);
-    if (ImGui::BeginPopupModal(popupId, nullptr, ImGuiWindowFlags_NoDocking)) {
-      PlotCursor dummyCursor;
-      editorPanel.render(dummyCursor);
-
-      ImGui::Separator();
-      if (ImGui::Button("OK", ImVec2(120, 0))) {
-        tableSetFlag = true;
-        computeObservedAfr(); // Re-bins log
-        computeAfrDelta();    // Re-syncs AFR Delta grid[cite: 2]
-        ImGui::CloseCurrentPopup();
-      }
-      ImGui::SameLine();
-      if (ImGui::Button("Cancel", ImVec2(120, 0))) {
-        ImGui::CloseCurrentPopup();
-      }
-      ImGui::EndPopup();
-    }
+    return false;
   }
 
-#if 0
+  bool VeAnalysisPanel::hasBaselineVe() const
+  {
+    const auto &tbl = baselineVePanel_.table();
+    if (tbl.rowCount() == 0 || tbl.columnCount() == 0) return false;
+    for (size_t r = 0; r < tbl.rowCount(); ++r) {
+      for (size_t c = 0; c < tbl.columnCount(); ++c) {
+        if (0 < tbl.value(r, c)) return true;
+      }
+    }
+    return false;
+  }
+
+  void VeAnalysisPanel::renderTargetAfrTab()
+  {
+    PlotCursor dummyCursor;
+    targetAfrPanel_.render(dummyCursor);
+  }
+
+  void VeAnalysisPanel::renderBaselineVeTab()
+  {
+    PlotCursor dummyCursor;
+    baselineVePanel_.render(dummyCursor);
+  }
+
   void VeAnalysisPanel::renderSuggestedVeTab()
   {
-    ImGui::BeginDisabled(!hasTargetAfr_ || !hasCurrentVe_ || session_ == nullptr);
-    if (ImGui::Button("Calculate Suggested VE")) {
-      computeSuggestedVe();
-    }
-    ImGui::EndDisabled();
-
-    if (!hasTargetAfr_ || !hasCurrentVe_) {
-      ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.2f, 1.0f),
-        "Please enter both 'Target AFR' and 'Current VE' tables before calculating.");
+    if (!hasSuggestedVe_) {
+      ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.2f, 1.0f), "Please set the 'Baseline VE' table first.");
       return;
     }
-
-    if (hasSuggestedVe_) {
-      ImGui::SameLine();
-      if (ImGui::Button("Copy to Clipboard")) {
-        suggestedVePanel_.copyToClipboard(false);
-        suggestedVePanel_.showCopyToast();
-      }
-      suggestedVePanel_.renderToast();
-
-      const auto &xBp = suggestedVePanel_.table().xBreakpoints();
-      const auto &yBp = suggestedVePanel_.table().yBreakpoints();
-      const size_t cols = xBp.size();
-      const size_t rows = yBp.size();
-
-      if (cols == 0 || rows == 0) return;
-
-      // Heat map generator (Red/Orange = adding fuel, Green/Cyan = pulling fuel)
-      auto getVeChangeHeatMapColor = [](double diff) -> ImU32 {
-        float norm = static_cast<float>(diff / 10.0); // Scale across +/- 10 VE points
-        if (norm > 1.0f) norm = 1.0f;
-        if (norm < -1.0f) norm = -1.0f;
-
-        float r = 0.0f, g = 0.0f, b = 0.0f, a = 0.35f;
-
-        if (norm > 0.0f) {
-          // Adding fuel (Engine was lean) -> Red/Orange
-          r = norm;
-          g = 0.3f * norm;
-          b = 0.1f * (1.0f - norm);
-        } else {
-          // Pulling fuel (Engine was rich) -> Green/Cyan
-          float negNorm = -norm;
-          r = 0.1f * (1.0f - negNorm);
-          g = negNorm;
-          b = 0.8f * negNorm;
-        }
-        return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a));
-        };
-
-      const ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-        ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
-        ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
-
-      if (ImGui::BeginTable("SuggestedVeGrid", static_cast<int>(cols + 1), flags, ImVec2(0.0f, 380.0f))) {
-        ImGui::TableSetupScrollFreeze(1, 1);
-        ImGui::TableSetupColumn("MAP \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-        for (size_t c = 0; c < cols; ++c) {
-          std::string header = std::to_string(static_cast<int>(xBp[c])) + "##col" + std::to_string(c);
-          ImGui::TableSetupColumn(header.c_str(), ImGuiTableColumnFlags_WidthFixed, 65.0f);
-        }
-        ImGui::TableHeadersRow();
-
-        for (size_t r = rows; r-- > 0; ) {
-          ImGui::TableNextRow();
-          ImGui::TableSetColumnIndex(0);
-          ImGui::Text("%.1f", yBp[r]);
-
-          for (size_t c = 0; c < cols; ++c) {
-            ImGui::TableSetColumnIndex(static_cast<int>(c + 1));
-            double sugVe = suggestedVePanel_.table().value(r, c);
-            double curVe = currentVePanel_.table().value(r, c);
-            double diff = sugVe - curVe;
-
-            // Apply cell background heatmap if changed
-            if (std::abs(diff) > 0.01) {
-              ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, getVeChangeHeatMapColor(diff));
-              // Color text pale blue for changed cells
-              ImGui::TextColored(ImVec4(0.6f, 0.85f, 1.0f, 1.0f), "%.2f", sugVe);
-            } else {
-              ImGui::Text("%.2f", sugVe);
-            }
-
-            if (ImGui::IsItemHovered() && std::abs(diff) > 0.01) {
-              ImGui::SetTooltip("Current: %.2f | Change: %+.2f", curVe, diff);
-            }
-          }
-        }
-        ImGui::EndTable();
-      }
-    }
+    PlotCursor dummyCursor;
+    suggestedVePanel_.render(dummyCursor);
   }
-#else
-  void VeAnalysisPanel::renderSuggestedVeTab()
-  {
-    ImGui::BeginDisabled(!hasTargetAfr_ || !hasCurrentVe_ || session_ == nullptr);
-    if (ImGui::Button("Reset to Calculated VE")) {
-      computeSuggestedVe();
-    }
-    if (ImGui::IsItemHovered()) {
-      ImGui::SetTooltip("Recomputes Suggested VE from log data, discarding any manual edits, interpolations, or extrapolations.");
-    }
-    ImGui::EndDisabled();
-
-    if (hasSuggestedVe_) {
-      ImGui::SameLine();
-      if (ImGui::Button("Select Unvisited Cells")) {
-        selectUnvisitedCellsOnSuggestedVe();
-      }
-      if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Highlights cells that lacked enough log samples for direct AFR analysis.");
-      }
-
-      ImGui::SameLine();
-      ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-      ImGui::SameLine();
-
-      // Render standard TableEditorPanel batch toolbar & grid directly
-      // gives Extrapolate, Interpolate, Offset, Scale, and click-and-drag selections for free
-      PlotCursor dummyCursor;
-      suggestedVePanel_.render(dummyCursor);
-    }
-  }
-#endif
 
   void VeAnalysisPanel::render(PlotCursor &cursor)
   {
@@ -842,7 +760,12 @@ namespace ui {
       }
 
       if (ImGui::BeginTabItem("Target AFR")) {
-        renderReadOnlyTableTab("Target AFR", targetAfrPanel_, hasTargetAfr_, "EditTargetAfrModal");
+        renderTargetAfrTab();
+        ImGui::EndTabItem();
+      }
+
+      if (ImGui::BeginTabItem("Baseline VE")) {
+        renderBaselineVeTab();
         ImGui::EndTabItem();
       }
 
@@ -852,15 +775,14 @@ namespace ui {
         ImGui::EndTabItem();
       }
 
-      if (ImGui::BeginTabItem("Current VE")) {
-        renderReadOnlyTableTab("Current VE", currentVePanel_, hasCurrentVe_, "EditCurrentVeModal");
-        ImGui::EndTabItem();
-      }
-
+      ImGui::PushStyleColor(ImGuiCol_Tab, ImVec4(0.15f, 0.45f, 0.25f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_TabHovered, ImVec4(0.25f, 0.65f, 0.35f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_TabActive, ImVec4(0.20f, 0.55f, 0.30f, 1.0f));
       if (ImGui::BeginTabItem("Suggested VE")) {
         renderSuggestedVeTab();
         ImGui::EndTabItem();
       }
+      ImGui::PopStyleColor(3);
 
       ImGui::EndTabBar();
     }
@@ -873,8 +795,6 @@ namespace ui {
     auto j = PlotPanel::saveState();
 
     // Persist input flags and view settings
-    j["hasTargetAfr"] = hasTargetAfr_;
-    j["hasCurrentVe"] = hasCurrentVe_;
     j["alignAfrDeltaToVeTable"] = alignAfrDeltaToVeTable_;
 
     // Persist analysis channel / sample thresholds
@@ -895,7 +815,7 @@ namespace ui {
 
     // Only serialize primary input tables (ignore calculated ones)
     j["targetAfr"] = targetAfrPanel_.saveState();
-    j["currentVe"] = currentVePanel_.saveState();
+    j["baselineVe"] = baselineVePanel_.saveState();
 
     return j;
   }
@@ -904,12 +824,6 @@ namespace ui {
   {
     PlotPanel::loadState(state);
 
-    if (state.contains("hasTargetAfr") && state["hasTargetAfr"].is_boolean()) {
-      hasTargetAfr_ = state["hasTargetAfr"].get<bool>();
-    }
-    if (state.contains("hasCurrentVe") && state["hasCurrentVe"].is_boolean()) {
-      hasCurrentVe_ = state["hasCurrentVe"].get<bool>();
-    }
     if (state.contains("alignAfrDeltaToVeTable") && state["alignAfrDeltaToVeTable"].is_boolean()) {
       alignAfrDeltaToVeTable_ = state["alignAfrDeltaToVeTable"].get<bool>();
     }
@@ -936,19 +850,15 @@ namespace ui {
     if (state.contains("targetAfr")) {
       targetAfrPanel_.loadState(state["targetAfr"]);
     }
-    if (state.contains("currentVe")) {
-      currentVePanel_.loadState(state["currentVe"]);
+    if (state.contains("baselineVe")) {
+      baselineVePanel_.loadState(state["baselineVe"]);
     }
 
     // Automatically recalculate all derived tables (Observed AFR, AFR Delta, Suggested VE)
     if (session_ != nullptr) {
       computeObservedAfr();
-      if (hasTargetAfr_) {
-        computeAfrDelta();
-      }
-      if (hasTargetAfr_ && hasCurrentVe_) {
-        computeSuggestedVe();
-      }
+      computeAfrDelta();
+      computeSuggestedVe();
     }
   }
 

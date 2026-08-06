@@ -1,4 +1,5 @@
 #include "ui/timeseriespanel.h"
+#include "ui/ui_helpers.h"
 
 #include <algorithm>
 #include <cctype>
@@ -102,10 +103,16 @@ namespace ui {
     for (const auto &[name, state] : channelStates_) {
       channelsJson[name] = {
         {"enabled", state.enabled},
-        {"color", {state.color.x, state.color.y, state.color.z, state.color.w}}
+        {"color", {state.color.x, state.color.y, state.color.z, state.color.w}},
+        { "selectionOrder", state.selectionOrder }
       };
     }
     j["channels"] = channelsJson;
+    j["xAxisMin"] = xAxisMin_;
+    j["xAxisMax"] = xAxisMax_;
+    j["yAxisMin"] = yAxisMin_;
+    j["yAxisMax"] = yAxisMax_;
+    j["sidebarWidth"] = sidebarWidth_;
     return j;
   }
 
@@ -117,6 +124,30 @@ namespace ui {
     }
     if (state.contains("maxChannelsPerPlot") && state["maxChannelsPerPlot"].is_number_integer()) {
       maxChannelsPerPlot_ = state["maxChannelsPerPlot"].get<int>();
+    }
+    int nofSavedLimits = 0;
+    if (state.contains("xAxisMin") && state["xAxisMin"].is_number()) {
+      xAxisMin_ = state["xAxisMin"].get<double>();
+      nofSavedLimits++;
+    }
+    if (state.contains("xAxisMax") && state["xAxisMax"].is_number()) {
+      xAxisMax_ = state["xAxisMax"].get<double>();
+      nofSavedLimits++;
+    }
+    if (state.contains("yAxisMin") && state["yAxisMin"].is_number()) {
+      yAxisMin_ = state["yAxisMin"].get<double>();
+      nofSavedLimits++;
+    }
+    if (state.contains("yAxisMax") && state["yAxisMax"].is_number()) {
+      yAxisMax_ = state["yAxisMax"].get<double>();
+      nofSavedLimits++;
+    }
+    bPendingAfterLoad_ = false;
+    if (nofSavedLimits == 4)
+      bPendingAfterLoad_ = true;
+
+    if (state.contains("sidebarWidth") && state["sidebarWidth"].is_number()) {
+      sidebarWidth_ = state["sidebarWidth"].get<float>();
     }
 
     if (state.contains("channels") && state["channels"].is_object()) {
@@ -130,6 +161,10 @@ namespace ui {
             it.value()["color"][2],
             it.value()["color"][3]
           );
+        }
+        if (it.value().contains("selectionOrder")) {
+          cs.selectionOrder = it.value()["selectionOrder"].get<uint64_t>();
+          nextSelectionOrder_ = std::max(nextSelectionOrder_, cs.selectionOrder + 1);
         }
         channelStates_[it.key()] = cs;
       }
@@ -176,7 +211,7 @@ namespace ui {
 
   void TimeSeriesPanel::renderHeaderControls(PlotCursor &cursor)
   {
-    if (ImGui::Button(showSidebar_ ? "< Hide Channels" : "> Show Channels")) {
+    if (ui::UI::Button(showSidebar_ ? "< Hide Channels" : "> Show Channels")) {
       showSidebar_ = !showSidebar_;
     }
 
@@ -185,6 +220,7 @@ namespace ui {
     if (ImGui::InputInt("Max/Plot", &maxChannelsPerPlot_)) {
       if (maxChannelsPerPlot_ < 1) maxChannelsPerPlot_ = 1;
       if (maxChannelsPerPlot_ > 16) maxChannelsPerPlot_ = 16;
+      bPendingAfterLoad_ = true; // ensure ranges are reset on next render
     }
     if (ImGui::IsItemHovered()) {
       ImGui::SetTooltip("Maximum channels displayed per subplot before creating a new subplot.");
@@ -205,7 +241,7 @@ namespace ui {
 
     bool hasCrop = session_->cropRange().active;
 
-    if (ImGui::Button("Set [Start]")) {
+    if (ui::UI::Button("Set [Start]")) {
       double start = cursor.active ? cursor.timeSec : 0.0;
       double end = hasCrop ? session_->cropRange().endSec
         : (cachedTimeSec_ && !cachedTimeSec_->empty() ? cachedTimeSec_->back() : 0.0);
@@ -214,7 +250,7 @@ namespace ui {
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Set crop start marker at current cursor time");
 
     ImGui::SameLine();
-    if (ImGui::Button("Set [End]")) {
+    if (ui::UI::Button("Set [End]")) {
       double start = hasCrop ? session_->cropRange().startSec
         : (cachedTimeSec_ && !cachedTimeSec_->empty() ? cachedTimeSec_->front() : 0.0);
       double end = cursor.active ? cursor.timeSec : 0.0;
@@ -224,7 +260,7 @@ namespace ui {
 
     if (hasCrop) {
       ImGui::SameLine();
-      if (ImGui::Button("Reset Crop")) {
+      if (ui::UI::Button("Reset Crop")) {
         const_cast<core::LogSession *>(session_)->resetCropRange();
       }
 
@@ -266,7 +302,14 @@ namespace ui {
         ImGui::PushID(name.c_str());
 
         // [checkbox] color-picker channel-name
-        ImGui::Checkbox("##check", &state.enabled);
+        if (ImGui::Checkbox("##check", &state.enabled)) {
+          if (state.enabled) {
+            state.selectionOrder = nextSelectionOrder_++;
+          } else {
+            state.selectionOrder = 0;
+          }
+          bPendingAfterLoad_ = true; // ensure ranges are reset on next render
+        }
         ImGui::SameLine();
 
         ImGui::ColorEdit4("##color", (float *)&state.color,
@@ -324,6 +367,11 @@ namespace ui {
           activeChannels.push_back(&channel);
         }
       }
+
+      std::sort(activeChannels.begin(), activeChannels.end(),
+        [this](const core::Channel *a, const core::Channel *b) {
+          return channelStates_[a->name()].selectionOrder < channelStates_[b->name()].selectionOrder;
+        });
     }
 
     int numActive = static_cast<int>(activeChannels.size());
@@ -353,10 +401,20 @@ namespace ui {
         // Set next axis limits for the plot before BeginPlot
         if (pendingXAxisCenter_) {
           ImPlot::SetNextAxisLimits(ImAxis_X1, newMinX, newMaxX, ImGuiCond_Always);
+        } else if (bPendingAfterLoad_) {
+          ImPlot::SetNextAxisLimits(ImAxis_X1, xAxisMin_, xAxisMax_, ImGuiCond_Always);
+          ImPlot::SetNextAxisLimits(ImAxis_Y1, yAxisMin_, yAxisMax_, ImGuiCond_Always);
+          bPendingAfterLoad_ = false;
         }
 
         if (ImPlot::BeginPlot(plotID.c_str(), ImVec2(-1, -1))) {
           ImPlot::SetupAxes("Time (s)", "Normalized", ImPlotAxisFlags_None, ImPlotAxisFlags_NoTickLabels);
+
+          auto plotLimits = ImPlot::GetPlotLimits();
+          xAxisMin_ = plotLimits.X.Min;
+          xAxisMax_ = plotLimits.X.Max;
+          yAxisMin_ = plotLimits.Y.Min;
+          yAxisMax_ = plotLimits.Y.Max;
 
           if (hasRealData && numActive > 0) {
             int startIdx = plotIdx * maxPerPlot;
@@ -557,13 +615,43 @@ namespace ui {
     ImGui::Separator();
 
     if (showSidebar_) {
-      ImGui::BeginChild("SidebarChild", ImVec2(240, 0), true);
+      // 1. Enforce min/max sidebar width bounds
+      const float minWidth = 120.0f;
+      const float maxWidth = ImGui::GetContentRegionAvail().x - 150.0f; // Leave space for plot
+      sidebarWidth_ = std::clamp(sidebarWidth_, minWidth, std::max(minWidth, maxWidth));
+
+      // 2. Render Sidebar Child Window
+      ImGui::BeginChild("SidebarChild", ImVec2(sidebarWidth_, 0.0f), true);
       renderLeftSidebar(cursor);
       ImGui::EndChild();
+
+      ImGui::SameLine();
+
+      // 3. Render Resizable Splitter
+      const float splitterThickness = 4.0f;
+      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImGui::GetStyleColorVec4(ImGuiCol_SeparatorActive));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_SeparatorHovered));
+
+      ImGui::Button("##Splitter", ImVec2(splitterThickness, -1.0f));
+
+      ImGui::PopStyleColor(3);
+
+      // Set resize cursor on hover/active
+      if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+      }
+
+      // Handle drag movement
+      if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        sidebarWidth_ += ImGui::GetIO().MouseDelta.x;
+      }
+
       ImGui::SameLine();
     }
 
-    ImGui::BeginChild("PlotChild", ImVec2(0, 0), false);
+    // 4. Render Main Plot Region with remaining width
+    ImGui::BeginChild("PlotChild", ImVec2(0.0f, 0.0f), false);
     renderPlotArea(cursor);
     ImGui::EndChild();
 

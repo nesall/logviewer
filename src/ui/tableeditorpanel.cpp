@@ -1,4 +1,5 @@
 #include "ui/tableeditorpanel.h"
+#include "ui/ui_helpers.h"
 
 #include <algorithm>
 #include <cmath>
@@ -10,6 +11,7 @@
 #include "3rdparty/nlohmann/json.hpp"
 #include "3rdparty/portable-file-dialogs.h"
 #include "imgui.h"
+#include "imgui_internal.h"
 
 namespace ui {
 
@@ -88,6 +90,7 @@ namespace ui {
       double v = table_.value(r, c);
       table_.setValue(r, c, v * factor);
     }
+    notifyDataChanged();
   }
 
   void TableEditorPanel::applyBatchOffset(double delta)
@@ -96,6 +99,7 @@ namespace ui {
       double v = table_.value(r, c);
       table_.setValue(r, c, v + delta);
     }
+    notifyDataChanged();
   }
 
   void TableEditorPanel::applyBatchSetValue(double value)
@@ -103,6 +107,7 @@ namespace ui {
     for (const auto &[r, c] : selectedCells_) {
       table_.setValue(r, c, value);
     }
+    notifyDataChanged();
   }
 
   void TableEditorPanel::interpolateSelectedRegion()
@@ -131,6 +136,7 @@ namespace ui {
         table_.setValue(r, c, interpolated);
       }
     }
+    notifyDataChanged();
   }
 
   void TableEditorPanel::renderBatchToolbar()
@@ -143,38 +149,41 @@ namespace ui {
     ImGui::InputDouble("##batchVal", &batchValue_, 0.0, 0.0, "%.2f");
 
     ImGui::SameLine();
-    if (ImGui::Button("* Scale")) {
+    if (ui::UI::Button("* Scale", {}, {}, "Multiply selected cells by factor")) {
       applyBatchMultiply(batchValue_);
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Multiply selected cells by factor");
 
     ImGui::SameLine();
-    if (ImGui::Button("+ Offset")) {
+    if (ui::UI::Button("+ Offset", {}, {}, "Add offset to selected cells")) {
       applyBatchOffset(batchValue_);
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add offset to selected cells");
 
     ImGui::SameLine();
-    if (ImGui::Button("= Set")) {
+    if (ui::UI::Button("= Set", {}, {}, "Set all selected cells to value")) {
       applyBatchSetValue(batchValue_);
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Set all selected cells to value");
 
     ImGui::SameLine();
-    if (ImGui::Button("Interpolate")) {
+    if (ui::UI::Button("Interpolate", {}, {}, "Bilinear interpolation between bounding corners")) {
       interpolateSelectedRegion();
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bilinear interpolation between bounding corners");
 
     ImGui::SameLine();
-    if (ImGui::Button("Extrapolate VE")) {
+    if (ui::UI::Button("Extrapolate VE", {}, {}, "Extrapolate values for selected cells")) {
       showExtrapolateModal_ = true;
       wasExtrapolateModalOpen_ = false;
-      ImGui::OpenPopup("Extrapolate VE");
+      ImGui::OpenPopup(ui::popups::ExtrapolateVe);
     }
     renderExtrapolateModal();
 
     ImGui::EndDisabled();
+
+    if (customToolbarCallback_) {
+      ImGui::SameLine();
+      ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+      ImGui::SameLine();
+      customToolbarCallback_();
+    }
 
     if (hasSelection) {
       ImGui::SameLine();
@@ -185,7 +194,7 @@ namespace ui {
   void TableEditorPanel::renderExtrapolateModal()
   {
     // Pass &showExtrapolateModal_ so ImGui can toggle it if 'X' or Escape is pressed
-    bool isOpen = ImGui::BeginPopupModal("Extrapolate VE", &showExtrapolateModal_, ImGuiWindowFlags_AlwaysAutoResize);
+    bool isOpen = ImGui::BeginPopupModal(ui::popups::ExtrapolateVe, &showExtrapolateModal_, ImGuiWindowFlags_AlwaysAutoResize);
 
     if (isOpen) {
 
@@ -211,19 +220,20 @@ namespace ui {
       // Dynamically compute preview while modal is active
       applyExtrapolationPreview();
 
-      if (ImGui::Button("Apply", ImVec2(100, 0))) {
-        showPreview_ = false;            // Commit the extrapolated values
-        showExtrapolateModal_ = false;  // Close flag
+      if (ui::UI::Button("Apply", {}, ImVec2(100, 0)), "Commit the extrapolated values") {
+        showPreview_ = false;
+        showExtrapolateModal_ = false;
         wasExtrapolateModalOpen_ = false;
         ImGui::CloseCurrentPopup();
+        notifyDataChanged();
       }
       ImGui::SameLine();
-      if (ImGui::Button("Cancel", ImVec2(100, 0))) {
+      if (ui::UI::Button("Cancel", {}, {}, "Discard changes and close popup")) {
         if (showPreview_) {
           table_ = tableBackup_;      // Revert changes
           showPreview_ = false;
         }
-        showExtrapolateModal_ = false;  // Close flag
+        showExtrapolateModal_ = false;
         wasExtrapolateModalOpen_ = false;
         ImGui::CloseCurrentPopup();
       }
@@ -388,6 +398,7 @@ namespace ui {
         }
       }
     }
+    notifyDataChanged();
   }
 
   bool TableEditorPanel::importTunerStudioXml(const std::string &xmlContent)
@@ -429,8 +440,8 @@ namespace ui {
       for (size_t c = 0; c < cols; ++c) {
         table_.setValue(r, c, zVals[r * cols + c]);
       }
-    }
-
+    }    
+    notifyDataChanged();
     return true;
   }
 
@@ -494,7 +505,7 @@ namespace ui {
 
     ImGui::EndChild();
 
-    if (ImGui::Button("Space evenly")) {
+    if (ui::UI::Button("Space evenly", {}, {}, "Distribute bins evenly")) {
       if (axisEditorValues_.size() >= 2) {
         double first = axisEditorValues_.front();
         double last = axisEditorValues_.back();
@@ -507,12 +518,13 @@ namespace ui {
     ImGui::Separator();
 
     bool accepted = false;
-    if (ImGui::Button("OK")) {
+    if (ui::UI::Button("OK")) {
       ImGui::CloseCurrentPopup();
       accepted = true;
+      notifyDataChanged();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Cancel")) {
+    if (ui::UI::Button("Cancel", {}, {}, "Discard changes and close popup")) {
       ImGui::CloseCurrentPopup();
       if (editingAxis_ == AxisEditing::X)
         axisEditorValues_ = table_.xBreakpoints();
@@ -576,7 +588,8 @@ namespace ui {
       ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
       ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
 
-    if (ImGui::BeginTable("ValueGrid", static_cast<int>(cols + 1), flags, ImVec2(0.0f, 400.0f))) {
+    std::string tableId = "ValueGrid###" + title();
+    if (ImGui::BeginTable(tableId.c_str(), static_cast<int>(cols + 1), flags, ImVec2(0.0f, 400.0f))) {
       ImGui::TableSetupScrollFreeze(1, 1);
       ImGui::TableSetupColumn("Load \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
 
@@ -628,6 +641,7 @@ namespace ui {
 
               if (committed) {
                 table_.setValue(r, c, v);
+                notifyDataChanged();
                 editingRow_ = -1;
                 editingCol_ = -1;
               } else if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsItemDeactivated()) {
@@ -719,7 +733,7 @@ namespace ui {
 
     ImGui::TextDisabled("LMB Drag: Rotate | RMB Drag: Pan | Mouse Wheel: Zoom");
     ImGui::SameLine();
-    if (ImGui::Button("Reset View##3d_reset")) {
+    if (ui::UI::Button("Reset View##3d_reset")) {
       cameraYaw_ = 45.0f;
       cameraPitch_ = 30.0f;
       cameraZoom_ = 1.0f;
@@ -926,35 +940,35 @@ namespace ui {
 
   void TableEditorPanel::render(PlotCursor & /*cursor*/)
   {
-    if (ImGui::Button("Edit vertical axis")) {
+    if (ui::UI::Button("Edit vertical axis")) {
       axisEditorValues_ = table_.yBreakpoints();
       axisEditorBinCount_ = static_cast<int>(axisEditorValues_.size());
       editingAxis_ = AxisEditing::Y;
-      ImGui::OpenPopup("Axis Editor");
+      ImGui::OpenPopup(ui::popups::AxisEditor);
     }
 
     ImGui::SameLine();
 
-    if (ImGui::Button("Edit horizontal axis")) {
+    if (ui::UI::Button("Edit horizontal axis")) {
       axisEditorValues_ = table_.xBreakpoints();
       axisEditorBinCount_ = static_cast<int>(axisEditorValues_.size());
       editingAxis_ = AxisEditing::X;
-      ImGui::OpenPopup("Axis Editor");
+      ImGui::OpenPopup(ui::popups::AxisEditor);
     }
 
     ImGui::SameLine();
 
-    if (ImGui::Button("Import / Export...")) {
-      ImGui::OpenPopup("TableImportExportMenu");
+    if (ui::UI::Button("Import / Export...")) {
+      ImGui::OpenPopup(ui::popups::TableImportExportMenu);
     }
 
     ImGui::SameLine();
 
-    if (ImGui::Button(show3DView_ ? "Show 2D Table Grid" : "Show 3D Surface View")) {
+    if (ui::UI::Button(show3DView_ ? "Show 2D Table Grid" : "Show 3D Surface View")) {
       show3DView_ = !show3DView_;
     }
 
-    if (ImGui::BeginPopup("TableImportExportMenu")) {
+    if (ImGui::BeginPopup(ui::popups::TableImportExportMenu)) {
       if (ImGui::MenuItem("Copy Table / Selection")) {
         copyToClipboard(false);
         showCopyToast();
@@ -983,7 +997,7 @@ namespace ui {
       ImGui::EndPopup();
     }
 
-    if (ImGui::BeginPopupModal("Axis Editor")) {
+    if (ImGui::BeginPopupModal(ui::popups::AxisEditor)) {
       if (renderAxisEditorPopup("Axis Editor")) {
         if (editingAxis_ == AxisEditing::X)
           table_.setXBreakpoints(axisEditorValues_);

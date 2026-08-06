@@ -59,16 +59,12 @@ namespace ui {
     void updateWindowTitle();
 
     void refreshPanelsFromSession();
-    PlotPanel *addTimeSeriesPanel(const std::vector<std::string> &initialChannelNames);
-    PlotPanel *addScatterPanel(const std::string &initialXChannel, const std::string &initialYChannel);
-    PlotPanel *addStatusPanel();
-    //PlotPanel *addTableEditorPanel(const std::string &panelTypeIdValue, const std::string &displayName);
-    PlotPanel *addVeAnalysisPanel();
-    // After a workspace load restores each panel's title() via loadState(),
-    // bump nextPanelId_ past any trailing number found in those titles --
-    // otherwise a panel added later via the Panels menu could reuse an ID
-    // (and thus an ImGui window ID) that a reloaded panel already has.
-    void bumpNextPanelIdPastLoadedTitles();
+    PlotPanel *addTimeSeriesPanel(const std::vector<std::string> &initialChannelNames = {}, std::string explicitTitle = "");
+    PlotPanel *addScatterPanel(const std::string &initialXChannel = "", const std::string &initialYChannel = "", std::string explicitTitle = "");
+    PlotPanel *addStatusPanel(std::string explicitTitle = "");
+    PlotPanel *addVeAnalysisPanel(std::string explicitTitle = "");
+
+    int getNextPanelIdForPrefix(const std::string &prefix) const;
 
     bool showDemoWindow_ = false;
     bool firstFrame_ = true;
@@ -84,7 +80,6 @@ namespace ui {
 
     PlotCursor cursor_;
     std::vector<std::unique_ptr<PlotPanel>> panels_;
-    int nextPanelId_ = 1;
 
     io::MegasquirtCsvParser mslParser_;
     io::HaltechDlParser haltechParser_;

@@ -33,6 +33,7 @@ namespace ui {
       size_t minIdx = 0; // Cached index for fast jump
       size_t maxIdx = 0; // Cached index for fast jump
       bool hasRange = false;
+      uint64_t selectionOrder = 0;
     };
 
     struct ArtifactCursor {
@@ -63,10 +64,20 @@ namespace ui {
     std::string filterText_;
 
     std::unordered_map<std::string, ChannelState> channelStates_;
+    uint64_t nextSelectionOrder_ = 1;
 
     const std::vector<double> *cachedTimeSec_ = nullptr;
     std::vector<double> placeholderTimeSec_;
     std::vector<double> placeholderValue_;
+
+    float sidebarWidth_ = 240.0f;
+
+    // ImPlot states
+    double xAxisMin_ = 0.0;
+    double xAxisMax_ = 10.0;
+    double yAxisMin_ = 0.0;
+    double yAxisMax_ = 1.0;
+    bool bPendingAfterLoad_ = false;
 
     void generatePlaceholderData();
   };

@@ -1,5 +1,3 @@
-// src/core/formula_evaluator.h
-
 #pragma once
 
 #include <cmath>

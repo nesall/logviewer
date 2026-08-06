@@ -51,6 +51,8 @@ namespace ui {
     void setCustomTextColoring(std::function<std::optional<ImU32>(double, size_t, size_t)> colorFunc) { customTextColorFunc_ = std::move(colorFunc); }
     void setCustomHeatmapColoring(std::function<ImU32(double, size_t, size_t)> colorFunc) { customHeatmapColorFunc_ = std::move(colorFunc); }
     void setCustomHoverTooltip(std::function<std::string(double, size_t, size_t)> tooltipFunc) { customHoverTooltipFunc_ = std::move(tooltipFunc); }
+    void setCustomToolbarCallback(std::function<void()> callback) { customToolbarCallback_ = std::move(callback); }
+    void setOnDataChangedCallback(std::function<void()> callback) { onDataChanged_ = std::move(callback); }
 
   private:
     static std::string formatValue(double value, int decimalPlaces);
@@ -64,6 +66,8 @@ namespace ui {
     void clearSelection();
     void selectRectangularRegion(int r1, int c1, int r2, int c2, bool keepExisting = false);
     void getSelectionBounds(int &minR, int &maxR, int &minC, int &maxC) const;
+
+    void notifyDataChanged() { if (onDataChanged_) onDataChanged_(); }
 
   private:
     std::string panelTypeIdValue_;
@@ -115,6 +119,8 @@ namespace ui {
     std::function<std::optional<ImU32>(double, size_t, size_t)> customTextColorFunc_;
     std::function<ImU32(double, size_t, size_t)> customHeatmapColorFunc_;
     std::function<std::string(double, size_t, size_t)> customHoverTooltipFunc_;
+    std::function<void()> customToolbarCallback_;
+    std::function<void()> onDataChanged_;
   };
 
 } // namespace ui

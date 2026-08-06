@@ -170,8 +170,6 @@ core::Channel core::FormulaEvaluator::evaluate(const CustomChannelDef &def, cons
 
 ## File: src/core/formula_evaluator.h
 
-// src/core/formula_evaluator.h
-
 #pragma once
 
 #include <cmath>
@@ -614,8 +612,6 @@ namespace core {
 
 ## File: src/engine/ve_analyzer.cpp
 
-// src/engine/ve_analyzer.cpp
-
 #include "engine/ve_analyzer.h"
 #include <cmath>
 #include <limits>
@@ -706,11 +702,11 @@ namespace engine {
 
   core::Table2D VeAnalyzer::computeCorrectedVe(
     const core::LogSession &session,
-    const core::Table2D &currentVe,
+    const core::Table2D &baselineVe,
     const core::Table2D &targetAfr,
     const VeAnalysisConfig &config)
   {
-    core::Table2D correctedVe = currentVe;
+    core::Table2D correctedVe = baselineVe;
 
     const core::Channel *rpmCh = session.findChannel(config.rpmChannel);
     const core::Channel *loadCh = session.findChannel(config.loadChannel);
@@ -722,8 +718,8 @@ namespace engine {
 
     VeTransientFilter filter(session, config);
 
-    const size_t rows = currentVe.rowCount();
-    const size_t cols = currentVe.columnCount();
+    const size_t rows = baselineVe.rowCount();
+    const size_t cols = baselineVe.columnCount();
 
     std::vector<std::vector<double>> sumAfr(rows, std::vector<double>(cols, 0.0));
     std::vector<std::vector<size_t>> countAfr(rows, std::vector<size_t>(cols, 0));
@@ -747,8 +743,8 @@ namespace engine {
 
       for (size_t r = 0; r < rows; ++r) {
         for (size_t c = 0; c < cols; ++c) {
-          double dRpm = (rpm - currentVe.xBreakpoints()[c]) / 1000.0;
-          double dLoad = (load - currentVe.yBreakpoints()[r]) / 10.0;
+          double dRpm = (rpm - baselineVe.xBreakpoints()[c]) / 1000.0;
+          double dLoad = (load - baselineVe.yBreakpoints()[r]) / 10.0;
           double dist = (dRpm * dRpm) + (dLoad * dLoad);
 
           if (dist < minDist) {
@@ -769,12 +765,12 @@ namespace engine {
         if (countAfr[r][c] >= config.minSamplesPerBin) {
           double avgObservedAfr = sumAfr[r][c] / static_cast<double>(countAfr[r][c]);
 
-          double rpmBp = currentVe.xBreakpoints()[c];
-          double loadBp = currentVe.yBreakpoints()[r];
+          double rpmBp = baselineVe.xBreakpoints()[c];
+          double loadBp = baselineVe.yBreakpoints()[r];
           double tgtAfr = targetAfr.sample(rpmBp, loadBp);
 
           if (tgtAfr > 0.0) {
-            double oldVe = currentVe.value(r, c);
+            double oldVe = baselineVe.value(r, c);
             double newVe = oldVe * (avgObservedAfr / tgtAfr);
             correctedVe.setValue(r, c, newVe);
           }
@@ -844,7 +840,7 @@ namespace engine {
     // Unchanged cells retain their original VE values.
     static core::Table2D computeCorrectedVe(
       const core::LogSession &session,
-      const core::Table2D &currentVe,
+      const core::Table2D &baselineVe,
       const core::Table2D &targetAfr,
       const VeAnalysisConfig &config);
   };
@@ -1071,6 +1067,7 @@ namespace io {
 
 ## File: src/io/megasquirtcsvparser.cpp
 
+
 #include "io/megasquirtcsvparser.h"
 
 #include <cmath>
@@ -1084,43 +1081,109 @@ namespace io {
 
   namespace {
 
-    std::vector<std::string> splitTabDelimited(const std::string &line) {
-      std::vector<std::string> tokens;
+    void splitTabDelimited(std::string_view line, std::vector<std::string_view> &out) {
+      out.clear();
       size_t start = 0;
       while (true) {
         size_t tabPos = line.find('\t', start);
-        if (tabPos == std::string::npos) {
-          tokens.push_back(line.substr(start));
-          break;
-        }
-        tokens.push_back(line.substr(start, tabPos - start));
+        if (tabPos == std::string_view::npos) { out.push_back(line.substr(start)); break; }
+        out.push_back(line.substr(start, tabPos - start));
         start = tabPos + 1;
       }
-      return tokens;
     }
 
-    bool parseNumericToken(const std::string &token, double &outValue) {
+    bool parseNumericTokenFast(std::string_view token, double &outValue) {
+      if (token.empty()) return false;
+
+      const char *p = token.data();
+      const char *end = p + token.size();
+
+      bool negative = false;
+      if (*p == '-') { negative = true; ++p; } else if (*p == '+') { ++p; }
+
+      if (p == end) return false;
+
+      uint64_t mantissa = 0;
+      int digits = 0;
+      int exponent = 0;
+      bool seenDigit = false;
+      bool seenDot = false;
+
+      for (; p != end; ++p) {
+        char c = *p;
+        if (c == '.') {
+          if (seenDot) return false;   // malformed: two dots
+          seenDot = true;
+          continue;
+        }
+        if (c < '0' || c > '9') return false;  // bail -> caller falls back to from_chars
+        if (digits < 19) {                     // uint64_t safe up to ~19 digits
+          mantissa = mantissa * 10 + static_cast<uint64_t>(c - '0');
+          ++digits;
+          if (seenDot) --exponent;
+        }
+        // else: silently drop excess precision (telemetry data won't need it)
+        seenDigit = true;
+      }
+
+      if (!seenDigit) return false;
+
+      double result = static_cast<double>(mantissa);
+      if (exponent != 0) {
+        // small power-of-10 table beats pow() for the common range
+        static constexpr double kPow10[] = {
+          1e0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9
+        };
+        if (exponent >= -9 && exponent <= 0) {
+          result *= kPow10[-exponent];
+        } else {
+          result *= std::pow(10.0, exponent);  // rare fallback for unusual formats
+        }
+      }
+
+      outValue = negative ? -result : result;
+      return true;
+    }
+
+    bool parseNumericToken(std::string_view token, double &outValue) {
       if (token.empty()) {
         return false;
       }
       char *end = nullptr;
-      outValue = std::strtod(token.c_str(), &end);
-      return end != token.c_str() && *end == '\0';
+      auto [ptr, ec] = std::from_chars(token.data(), token.data() + token.size(), outValue);
+      return ec == std::errc{};
     }
 
-    bool tryParseBooleanToken(std::string token, double &outValue) {
-      for (char &c : token) {
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-      }
-      if (token == "yes" || token == "on" || token == "high" || token == "active" ||
-        token == "true") {
-        outValue = 1.0;
+    bool tryParseBooleanToken(std::string_view token, double &outValue) {
+      auto ieq = [](std::string_view a, std::string_view b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i) {
+          if (std::tolower(static_cast<unsigned char>(a[i])) !=
+            std::tolower(static_cast<unsigned char>(b[i]))) {
+            return false;
+          }
+        }
         return true;
-      }
-      if (token == "no" || token == "off" || token == "low" || token == "inactive" ||
-        token == "false") {
-        outValue = 0.0;
-        return true;
+        };
+
+      switch (token.size()) {
+      case 2: if (ieq(token, "no")) { outValue = 0; return true; }
+            if (ieq(token, "on")) { outValue = 1; return true; }
+            return false;
+      case 3: if (ieq(token, "yes")) { outValue = 1; return true; }
+            if (ieq(token, "off")) { outValue = 0; return true; }
+            if (ieq(token, "low")) { outValue = 0; return true; }
+            return false;
+      case 4: if (ieq(token, "high")) { outValue = 1; return true; }
+            if (ieq(token, "true")) { outValue = 1; return true; }
+            return false;
+      case 6: if (ieq(token, "active")) { outValue = 1; return true; }
+            return false;
+      case 5: if (ieq(token, "false")) { outValue = 0; return true; }
+            return false;
+      case 8: if (ieq(token, "inactive")) { outValue = 0; return true; }
+            return false;
+      default: return false;
       }
       return false;
     }
@@ -1160,38 +1223,48 @@ namespace io {
       return false;
     }
 
-    std::string line;
+    std::string buffer(fileSize, '\0');
+    file.read(buffer.data(), static_cast<std::streamsize>(fileSize));
+
     std::string formatInfo;
     std::string captureDate;
-    std::vector<std::string> headerTokens;
+    std::string headerLine;
+    std::vector<std::string_view> headerTokens;
     bool foundHeader = false;
     uint64_t bytesRead = 0;
 
-    // Scan defensively for the header row rather than hardcoding line
-    // numbers, in case a future TunerStudio version adds/removes a
-    // metadata line.
-    while (std::getline(file, line)) {
+    size_t pos = 0;
+    while (pos < buffer.size()) {
+      size_t nl = buffer.find('\n', pos);
+      std::string_view line = (nl == std::string_view::npos)
+        ? std::string_view(buffer).substr(pos)
+        : std::string_view(buffer).substr(pos, nl - pos);
+
+      if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+      pos = (nl == std::string_view::npos) ? buffer.size() : nl + 1;
+
       bytesRead += line.size() + 1; // +1 for newline character
       if (line.empty()) {
         continue;
       }
 
       if (line.front() == '"') {
-        std::string content = line;
+        std::string_view content = line;
         if (content.size() >= 2 && content.back() == '"') {
           content = content.substr(1, content.size() - 2);
         }
         if (content.rfind("Capture Date:", 0) == 0) {
-          captureDate = content;
+          captureDate = std::string(content);
         } else if (formatInfo.empty()) {
-          formatInfo = content;
+          formatInfo = std::string(content);
         }
         continue;
       }
       if (line == "#") {
         continue;
       }
-      headerTokens = splitTabDelimited(line);
+      headerLine = line;
+      splitTabDelimited(headerLine, headerTokens);
       foundHeader = true;
       break;
     }
@@ -1201,63 +1274,104 @@ namespace io {
       return false;
     }
 
-    if (!std::getline(file, line)) {
+    if (buffer.size() <= pos) {
       errorOut = "File ended after header row (missing units row): " + path;
       return false;
     }
+
+    size_t nl = buffer.find('\n', pos);
+    std::string_view line = (nl == std::string_view::npos)
+      ? std::string_view(buffer).substr(pos)
+      : std::string_view(buffer).substr(pos, nl - pos);
+    pos = (nl == std::string_view::npos) ? buffer.size() : nl + 1;
     bytesRead += line.size() + 1;
-    std::vector<std::string> unitTokens = splitTabDelimited(line);
+    std::vector<std::string_view> unitTokens;
+    splitTabDelimited(line, unitTokens);
 
     const size_t columnCount = headerTokens.size();
 
     std::vector<core::Channel> channels;
     channels.reserve(columnCount);
     for (size_t i = 0; i < columnCount; ++i) {
-      std::string unit = (i < unitTokens.size()) ? unitTokens[i] : std::string();
-      channels.emplace_back(headerTokens[i], unit);
+      std::string unit = (i < unitTokens.size()) ? std::string(unitTokens[i]) : std::string();
+      channels.emplace_back(std::string(headerTokens[i]), unit);
     }
+    bool channelRowsEstimated = false;
 
     size_t rowCount = 0;
-    std::vector<bool> sawNumericToken(columnCount, false);
-    std::vector<bool> sawBooleanToken(columnCount, false);
+    std::vector<uint8_t> sawNumericToken(columnCount, 0);
+    std::vector<uint8_t> sawBooleanToken(columnCount, 0);
+    std::vector<std::string_view> tokens;
 
-    while (std::getline(file, line)) {
+    while (pos < buffer.size()) {
+      size_t nl = buffer.find('\n', pos);
+      std::string_view line = (nl == std::string_view::npos)
+        ? std::string_view(buffer).substr(pos)
+        : std::string_view(buffer).substr(pos, nl - pos);
+
+      if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+      pos = (nl == std::string_view::npos) ? buffer.size() : nl + 1;
+
       bytesRead += line.size() + 1;
+      if (line.empty()) {
+        continue;
+      }
 
-      if (line.empty()) continue;
+      if (!channelRowsEstimated) {
+        size_t estimatedRows = fileSize / std::max<size_t>(line.size(), 1);
+        for (auto &channel : channels) channel.values().reserve(estimatedRows);
+        channelRowsEstimated = true;
+      }
 
       if (progress && (rowCount % 500 == 0)) {
         float p = static_cast<float>(bytesRead) / static_cast<float>(fileSize);
         progress->store(std::min(p, 1.0f));
       }
 
-      std::vector<std::string> tokens = splitTabDelimited(line);
+      size_t columnIndex = 0;
+      size_t start = 0;
+      bool rowValid = true;
 
-      if (tokens.size() != columnCount) {
-        // Not a real data row -- e.g. a "MARK <label>" annotation line
-        // TunerStudio inserts when the user hits a mark key during
-        // capture. Skip it rather than let a mismatched token corrupt
-        // column alignment / flip a channel to non-numeric.
+      while (start <= line.size()) {
+        size_t tabPos = line.find('\t', start);
+        std::string_view token = (tabPos == std::string_view::npos)
+          ? line.substr(start)
+          : line.substr(start, tabPos - start);
+
+        if (columnIndex >= columnCount) { rowValid = false; break; }
+
+        double value = std::numeric_limits<double>::quiet_NaN();
+        double parsed = 0.0;
+        char c = token.empty() ? '\0' : token.front();
+        bool looksNumeric = (c == '-' || c == '+' || c == '.' || (c >= '0' && c <= '9'));
+
+        if (looksNumeric) {
+          if (parseNumericTokenFast(token, parsed) || parseNumericToken(token, parsed)) {
+            value = parsed; sawNumericToken[columnIndex] = 1;
+          } else if (!token.empty()) {
+            channels[columnIndex].setIsNumeric(false);
+          }
+        } else if (!token.empty()) {
+          if (tryParseBooleanToken(token, parsed)) {
+            value = parsed; sawBooleanToken[columnIndex] = 1;
+          } else {
+            channels[columnIndex].setIsNumeric(false);
+          }
+        }
+        channels[columnIndex].values().push_back(value);
+
+        ++columnIndex;
+        if (tabPos == std::string_view::npos) break;
+        start = tabPos + 1;
+      }
+
+      if (columnIndex != columnCount) {
+        // mismatched row (e.g. "MARK" annotation) — need to roll back the
+        // partial push_backs you already did for columns 0..columnIndex-1
+        for (size_t i = 0; i < columnIndex; ++i) channels[i].values().pop_back();
         continue;
       }
 
-      for (size_t i = 0; i < columnCount; ++i) {
-        double value = std::numeric_limits<double>::quiet_NaN();
-        if (i < tokens.size()) {
-          const std::string &token = tokens[i];
-          double parsed = 0.0;
-          if (parseNumericToken(token, parsed)) {
-            value = parsed;
-            sawNumericToken[i] = true;
-          } else if (tryParseBooleanToken(token, parsed)) {
-            value = parsed;
-            sawBooleanToken[i] = true;
-          } else if (!token.empty()) {
-            channels[i].setIsNumeric(false);
-          }
-        }
-        channels[i].values().push_back(value);
-      }
       ++rowCount;
     }
 
@@ -1290,6 +1404,7 @@ namespace io {
   }
 
 } // namespace io
+
 
 
 ## File: src/io/megasquirtcsvparser.h
@@ -1413,11 +1528,13 @@ int main() {
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <cassert>
 
 #include "3rdparty/nlohmann/json.hpp"
 #include "3rdparty/portable-file-dialogs.h"
 #include "core/table2d.h"
 #include "core/formula_evaluator.h"
+#include "ui/ui_helpers.h"
 
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -1468,12 +1585,6 @@ namespace ui {
   {
     loadSettings();
     updateWindowTitle();
-
-
-    // Two starter panels; setSession() rebinds them to real data once a
-    // file is loaded. More can be added at runtime via Panels menu.
-    //addTimeSeriesPanel({ "RPM" });
-    //addTimeSeriesPanel({ "MAP" });
   }
 
   App::~App() = default;
@@ -1556,8 +1667,13 @@ namespace ui {
   // Workspace save/load
   // ---------------------------------------------------------------------
 
+  // For testing only.
+  std::string g_SavedLayoutIni = "";
+#define USE_SAVE_LAYOUT_INI 1
+
   void App::saveWorkspaceFile(const std::string &path)
   {
+#if USE_SAVE_LAYOUT_INI
     nlohmann::json root;
     root["logFilePath"] = session_.sourcePath();
 
@@ -1576,6 +1692,9 @@ namespace ui {
     nlohmann::json panelsJson = nlohmann::json::array();
     for (const auto &panel : panels_) {
       panelsJson.push_back({ {"type", panel->panelTypeId()}, {"state", panel->saveState()} });
+#ifdef _DEBUG2
+      std::cout << "Saving panel: " << panel->panelTypeId() << " state: " << panel->saveState().dump() << std::endl;
+#endif
     }
     root["panels"] = panelsJson;
 
@@ -1598,10 +1717,17 @@ namespace ui {
     currentWorkspacePath_ = path;
     updateWindowTitle();
     addRecentWorkspace(path);
+#else
+    size_t iniSize = 0;
+    const char *iniData = ImGui::SaveIniSettingsToMemory(&iniSize);
+    g_SavedLayoutIni = std::string(iniData, iniSize);
+
+#endif
   }
 
   void App::loadWorkspaceFile(const std::string &path)
   {
+#if USE_SAVE_LAYOUT_INI
     std::ifstream file(path);
     if (!file.is_open()) {
       loadErrorMessage_ = "Could not open workspace file: " + path;
@@ -1618,13 +1744,15 @@ namespace ui {
       return;
     }
 
+    panels_.clear();
+    ImGui::ClearIniSettings();
+
     addRecentWorkspace(path);
     currentWorkspacePath_ = path;
     updateWindowTitle();
     
     auto restoreWorkspaceState = [this, root]()
       {
-        // 1. Re-evaluate and append Custom Channels
         if (root.contains("customChannels") && root["customChannels"].is_array()) {
           for (const auto &customJson : root["customChannels"]) {
             if (!customJson.contains("name") || !customJson.contains("formula")) continue;
@@ -1644,20 +1772,35 @@ namespace ui {
           refreshPanelsFromSession();
         }
 
-        // 2. Restore Panels
-        panels_.clear();
+        if (root.contains("imguiLayout") && root["imguiLayout"].is_string()) {
+          std::string iniData = root["imguiLayout"].get<std::string>();
+          ImGui::LoadIniSettingsFromMemory(iniData.c_str(), iniData.size());
+          ImGuiID hostId = ImHashStr("DockSpaceHost");
+          ImGuiID dockspaceId = ImHashStr("MainDockSpace", 0, hostId);
+          if (ImGuiDockNode *node = ImGui::DockBuilderGetNode(dockspaceId)) {
+            ImGui::DockBuilderSetNodePos(dockspaceId, ImGui::GetMainViewport()->WorkPos);
+            ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->WorkSize);
+          }
+        }
+
+        assert(panels_.empty());
         if (root.contains("panels") && root["panels"].is_array()) {
           for (const auto &panelJson : root["panels"]) {
             if (!panelJson.contains("type") || !panelJson["type"].is_string()) continue;
 
             std::string type = panelJson["type"].get<std::string>();
             nlohmann::json state = panelJson.contains("state") ? panelJson["state"] : nlohmann::json::object();
-            PlotPanel *panel = nullptr;
+            std::string savedTitle = state.value("title", "");
 
-            if (type == "TimeSeries") panel = addTimeSeriesPanel({ "RPM" });
-            else if (type == "Scatter") panel = addScatterPanel("RPM", "AFR");
-            else if (type == "Status") panel = addStatusPanel();
-            else if (type == "VeAnalysisPanel") panel = addVeAnalysisPanel();
+            PlotPanel *panel = nullptr;
+            if (type == "TimeSeries") panel = addTimeSeriesPanel({}, savedTitle);
+            else if (type == "Scatter") panel = addScatterPanel({}, {}, savedTitle);
+            else if (type == "Status") panel = addStatusPanel(savedTitle);
+            else if (type == "VeAnalysisPanel") panel = addVeAnalysisPanel(savedTitle);
+
+#ifdef _DEBUG2
+            std::cout << "Restoring panel: " << type << " state: " << state.dump() << std::endl;
+#endif
 
             if (panel != nullptr) {
               panel->loadState(state);
@@ -1665,20 +1808,6 @@ namespace ui {
           }
         }
 
-        // 3. Restore ImGui Docking Layout & Fix Resize Responsiveness
-        if (root.contains("imguiLayout") && root["imguiLayout"].is_string()) {
-          std::string iniData = root["imguiLayout"].get<std::string>();
-          ImGui::LoadIniSettingsFromMemory(iniData.c_str(), iniData.size());
-
-          // Force ImGui to update host viewport dimensions on loaded dock nodes
-          ImGuiID dockspaceId = ImGui::GetID("MainDockSpace");
-          if (ImGuiDockNode *node = ImGui::DockBuilderGetNode(dockspaceId)) {
-            node->WantMouseMove = true;
-            //ImGui::DockBuilderSetNodePos(dockspaceId, ImGui::GetMainViewport()->WorkPos);
-            //ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->WorkSize);
-            ImGui::DockBuilderFinish(dockspaceId);
-          }
-        }
       };
 
     if (root.contains("logFilePath") && root["logFilePath"].is_string()) {
@@ -1691,6 +1820,20 @@ namespace ui {
     } else {
       restoreWorkspaceState();
     }
+#else
+
+    ImGui::ClearIniSettings();
+
+    ImGui::LoadIniSettingsFromMemory(g_SavedLayoutIni.c_str(), g_SavedLayoutIni.size());
+
+    ImGuiID hostId = ImHashStr("DockSpaceHost");
+    ImGuiID dockspaceId = ImHashStr("MainDockSpace", 0, hostId);
+    if (ImGuiDockNode *node = ImGui::DockBuilderGetNode(dockspaceId)) {
+      ImGui::DockBuilderSetNodePos(dockspaceId, ImGui::GetMainViewport()->WorkPos);
+      ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->WorkSize);
+    }
+
+#endif
   }
 
   void App::addRecentWorkspace(const std::string &path)
@@ -1793,33 +1936,18 @@ namespace ui {
     }
   }
 
-  void App::bumpNextPanelIdPastLoadedTitles()
-  {
-    for (const auto &panel : panels_) {
-      const std::string &t = panel->title();
-      size_t i = t.size();
-      while (i > 0 && std::isdigit(static_cast<unsigned char>(t[i - 1]))) {
-        --i;
-      }
-      if (i < t.size()) {
-        int trailingNumber = std::atoi(t.c_str() + i);
-        nextPanelId_ = (std::max)(nextPanelId_, trailingNumber + 1);
-      }
-    }
-  }
-
   void App::renderLoadProgressModal()
   {
     if (!showProgressModal_) return;
 
-    ImGui::OpenPopup("Loading...");
+    ImGui::OpenPopup(ui::popups::Loading);
 
     // Center modal on screen
     ImVec2 center = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(350, 0));
 
-    if (ImGui::BeginPopupModal("Loading...", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+    if (ImGui::BeginPopupModal(ui::popups::Loading, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
       ImGui::TextUnformatted(progressStatusText_.c_str());
       ImGui::Spacing();
 
@@ -1875,52 +2003,71 @@ namespace ui {
       });
   }
 
-  PlotPanel *App::addTimeSeriesPanel(const std::vector<std::string> &initialChannelNames)
+  PlotPanel *App::addTimeSeriesPanel(const std::vector<std::string> &initialChannelNames,
+    std::string explicitTitle)
   {
-    std::string panelId = "Time Series " + std::to_string(nextPanelId_++);
+    std::string panelId = explicitTitle.empty()
+      ? "Time Series " + std::to_string(getNextPanelIdForPrefix("Time Series"))
+      : explicitTitle;
+
     auto panel = std::make_unique<TimeSeriesPanel>(panelId, initialChannelNames);
     panel->setSession(&session_);
     panels_.push_back(std::move(panel));
     return panels_.back().get();
   }
 
-  PlotPanel *App::addScatterPanel(const std::string &initialXChannel, const std::string &initialYChannel)
+  PlotPanel *App::addScatterPanel(const std::string &initialXChannel,
+    const std::string &initialYChannel,
+    std::string explicitTitle)
   {
-    std::string panelId = "Scatter " + std::to_string(nextPanelId_++);
+    std::string panelId = explicitTitle.empty()
+      ? "Scatter " + std::to_string(getNextPanelIdForPrefix("Scatter"))
+      : explicitTitle;
+
     auto panel = std::make_unique<ScatterPanel>(panelId, initialXChannel, initialYChannel);
     panel->setSession(&session_);
     panels_.push_back(std::move(panel));
     return panels_.back().get();
   }
 
-  PlotPanel *App::addStatusPanel()
+  PlotPanel *App::addStatusPanel(std::string explicitTitle)
   {
-    std::string panelId = "Status " + std::to_string(nextPanelId_++);
+    std::string panelId = explicitTitle.empty()
+      ? "Status " + std::to_string(getNextPanelIdForPrefix("Status"))
+      : explicitTitle;
     auto panel = std::make_unique<StatusPanel>(panelId);
     panel->setSession(&session_);
     panels_.push_back(std::move(panel));
     return panels_.back().get();
   }
 
-  //PlotPanel *App::addTableEditorPanel(const std::string &panelTypeIdValue, const std::string &displayName)
-  //{
-  //  std::string panelId = displayName + " " + std::to_string(nextPanelId_++);
-  //  // 16x16 default (common MS3 table size) -- fully editable afterward.
-  //  core::Table2D defaultTable(core::generateEvenBreakpoints(500, 7000, 16),
-  //    core::generateEvenBreakpoints(20, 100, 16));
-  //  auto panel = std::make_unique<TableEditorPanel>(panelId, panelTypeIdValue, displayName,
-  //    std::move(defaultTable));
-  //  panels_.push_back(std::move(panel));
-  //  return panels_.back().get();
-  //}
-
-  PlotPanel *App::addVeAnalysisPanel()
+  PlotPanel *App::addVeAnalysisPanel(std::string explicitTitle)
   {
-    std::string panelId = "VE Analyzer " + std::to_string(nextPanelId_++);
+    std::string panelId = explicitTitle.empty()
+      ? "VE Analyzer " + std::to_string(getNextPanelIdForPrefix("VE Analyzer"))
+      : explicitTitle;
     auto panel = std::make_unique<VeAnalysisPanel>(panelId);
     panel->setSession(&session_);
     panels_.push_back(std::move(panel));
     return panels_.back().get();
+  }
+
+  int App::getNextPanelIdForPrefix(const std::string &prefix) const
+  {
+    int maxId = 0;
+    for (const auto &panel : panels_) {
+      const std::string &t = panel->title();
+      if (t.rfind(prefix, 0) == 0) { // Starts with prefix
+        size_t numPos = prefix.length();
+        if (numPos < t.length() && t[numPos] == ' ') {
+          try {
+            int val = std::stoi(t.substr(numPos + 1));
+            maxId = (std::max)(maxId, val);
+          } catch (...) {}
+        }
+      }
+    }
+    return maxId + 1;
   }
 
   // ---------------------------------------------------------------------
@@ -1967,7 +2114,7 @@ namespace ui {
           addTimeSeriesPanel({ "RPM" });
         }
         if (ImGui::MenuItem("Add Scatter Panel")) {
-          addScatterPanel("RPM", "AFR");
+          addScatterPanel("RPM", "MAP");
         }
         if (ImGui::MenuItem("Add Status Panel")) {
           addStatusPanel();
@@ -2021,11 +2168,11 @@ namespace ui {
   void App::renderLoadErrorPopup()
   {
     if (showLoadErrorPopup_) {
-      ImGui::OpenPopup("Load Error");
+      ImGui::OpenPopup(ui::popups::LoadError);
       showLoadErrorPopup_ = false;
     }
 
-    if (ImGui::BeginPopupModal("Load Error", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (ImGui::BeginPopupModal(ui::popups::LoadError, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
       ImGui::TextWrapped("%s", loadErrorMessage_.c_str());
       if (ImGui::Button("OK", ImVec2(120, 0))) {
         ImGui::CloseCurrentPopup();
@@ -2037,13 +2184,13 @@ namespace ui {
   void App::renderCustomChannelModal()
   {
     if (showCustomChannelModal_) {
-      ImGui::OpenPopup("Custom Calculated Channels");
+      ImGui::OpenPopup(ui::popups::CustomChannels);
     }
 
     // Set a comfortable size for the dual-pane modal
     ImGui::SetNextWindowSize(ImVec2(700, 420), ImGuiCond_FirstUseEver);
 
-    if (ImGui::BeginPopupModal("Custom Calculated Channels", &showCustomChannelModal_, ImGuiWindowFlags_None)) {
+    if (ImGui::BeginPopupModal(ui::popups::CustomChannels, &showCustomChannelModal_, ImGuiWindowFlags_None)) {
 
       // Track selected index (-1 means "New Channel" mode)
       static int selectedIndex = -1;
@@ -2186,23 +2333,25 @@ namespace ui {
 
   void App::render()
   {
-    pollPendingDialogs();
-
-    renderDockspace();
-
     if (!pendingRecentWorkspaceLoad_.empty()) {
       std::string path = std::move(pendingRecentWorkspaceLoad_);
       pendingRecentWorkspaceLoad_.clear();
       loadWorkspaceFile(path);
     }
 
+    pollPendingDialogs();
+
+    if (!pendingOnCompleteCallback_) {
+      renderDockspace();
+      for (auto &panel : panels_) {
+        panel->render(cursor_);
+      }
+    }
+
     renderLoadProgressModal();
     renderLoadErrorPopup();
     renderCustomChannelModal();
 
-    for (auto &panel : panels_) {
-      panel->render(cursor_);
-    }
 
     panels_.erase(
       std::remove_if(panels_.begin(), panels_.end(),
@@ -2282,16 +2431,12 @@ namespace ui {
     void updateWindowTitle();
 
     void refreshPanelsFromSession();
-    PlotPanel *addTimeSeriesPanel(const std::vector<std::string> &initialChannelNames);
-    PlotPanel *addScatterPanel(const std::string &initialXChannel, const std::string &initialYChannel);
-    PlotPanel *addStatusPanel();
-    //PlotPanel *addTableEditorPanel(const std::string &panelTypeIdValue, const std::string &displayName);
-    PlotPanel *addVeAnalysisPanel();
-    // After a workspace load restores each panel's title() via loadState(),
-    // bump nextPanelId_ past any trailing number found in those titles --
-    // otherwise a panel added later via the Panels menu could reuse an ID
-    // (and thus an ImGui window ID) that a reloaded panel already has.
-    void bumpNextPanelIdPastLoadedTitles();
+    PlotPanel *addTimeSeriesPanel(const std::vector<std::string> &initialChannelNames = {}, std::string explicitTitle = "");
+    PlotPanel *addScatterPanel(const std::string &initialXChannel = "", const std::string &initialYChannel = "", std::string explicitTitle = "");
+    PlotPanel *addStatusPanel(std::string explicitTitle = "");
+    PlotPanel *addVeAnalysisPanel(std::string explicitTitle = "");
+
+    int getNextPanelIdForPrefix(const std::string &prefix) const;
 
     bool showDemoWindow_ = false;
     bool firstFrame_ = true;
@@ -2307,7 +2452,6 @@ namespace ui {
 
     PlotCursor cursor_;
     std::vector<std::unique_ptr<PlotPanel>> panels_;
-    int nextPanelId_ = 1;
 
     io::MegasquirtCsvParser mslParser_;
     io::HaltechDlParser haltechParser_;
@@ -2584,66 +2728,69 @@ namespace ui {
 
   void ScatterPanel::render(PlotCursor &cursor)
   {
-    std::string windowLabel = selectedXChannel_ + " vs " + selectedYChannel_;
+    std::string legendLabel = selectedXChannel_ + " vs " + selectedYChannel_;
     if (!selectedColorChannel_.empty()) {
-      windowLabel += " vs " + selectedColorChannel_;
+      legendLabel += " vs " + selectedColorChannel_;
     }
-    windowLabel += "###" + title();
+    std::string windowLabel = legendLabel + "###" + title();
     ImGui::Begin(windowLabel.c_str(), &open_);
 
     const bool haveSession = (session_ != nullptr && !session_->channels().empty());
 
     if (haveSession) {
-      if (ImGui::BeginCombo("X Channel", selectedXChannel_.c_str())) {
-        for (const auto &channel : session_->channels()) {
-          bool isSelected = (channel.name() == selectedXChannel_);
-          if (ImGui::Selectable(channel.name().c_str(), isSelected)) {
-            selectedXChannel_ = channel.name();
-            rebindChannels();
-          }
-          if (isSelected) {
-            ImGui::SetItemDefaultFocus();
-          }
-        }
-        ImGui::EndCombo();
+      if (ImGui::Button("Channels...")) {
+        ImGui::OpenPopup("ScatterChannelsPopup");
       }
-      if (ImGui::BeginCombo("Y Channel", selectedYChannel_.c_str())) {
-        for (const auto &channel : session_->channels()) {
-          bool isSelected = (channel.name() == selectedYChannel_);
-          if (ImGui::Selectable(channel.name().c_str(), isSelected)) {
-            selectedYChannel_ = channel.name();
-            rebindChannels();
+
+      if (ImGui::BeginPopup("ScatterChannelsPopup")) {
+        ImGui::SetNextItemWidth(180.0f);
+        if (ImGui::BeginCombo("X Axis", selectedXChannel_.c_str())) {
+          for (const auto &channel : session_->channels()) {
+            bool isSelected = (channel.name() == selectedXChannel_);
+            if (ImGui::Selectable(channel.name().c_str(), isSelected)) {
+              selectedXChannel_ = channel.name();
+              rebindChannels();
+            }
+            if (isSelected) ImGui::SetItemDefaultFocus();
           }
-          if (isSelected) {
-            ImGui::SetItemDefaultFocus();
-          }
+          ImGui::EndCombo();
         }
-        ImGui::EndCombo();
-      }
-      {
-        const char *colorComboLabel =
-          selectedColorChannel_.empty() ? "None" : selectedColorChannel_.c_str();
-        if (ImGui::BeginCombo("Color Channel", colorComboLabel)) {
+
+        ImGui::SetNextItemWidth(180.0f);
+        if (ImGui::BeginCombo("Y Axis", selectedYChannel_.c_str())) {
+          for (const auto &channel : session_->channels()) {
+            bool isSelected = (channel.name() == selectedYChannel_);
+            if (ImGui::Selectable(channel.name().c_str(), isSelected)) {
+              selectedYChannel_ = channel.name();
+              rebindChannels();
+            }
+            if (isSelected) ImGui::SetItemDefaultFocus();
+          }
+          ImGui::EndCombo();
+        }
+
+        ImGui::SetNextItemWidth(180.0f);
+        const char *colorComboLabel = selectedColorChannel_.empty() ? "None" : selectedColorChannel_.c_str();
+        if (ImGui::BeginCombo("Color (Z)", colorComboLabel)) {
           bool noneSelected = selectedColorChannel_.empty();
           if (ImGui::Selectable("None", noneSelected)) {
             selectedColorChannel_.clear();
             rebuildColorData();
           }
-          if (noneSelected) {
-            ImGui::SetItemDefaultFocus();
-          }
+          if (noneSelected) ImGui::SetItemDefaultFocus();
+
           for (const auto &channel : session_->channels()) {
             bool isSelected = (channel.name() == selectedColorChannel_);
             if (ImGui::Selectable(channel.name().c_str(), isSelected)) {
               selectedColorChannel_ = channel.name();
               rebuildColorData();
             }
-            if (isSelected) {
-              ImGui::SetItemDefaultFocus();
-            }
+            if (isSelected) ImGui::SetItemDefaultFocus();
           }
           ImGui::EndCombo();
         }
+
+        ImGui::EndPopup();
       }
     } else {
       ImGui::TextDisabled("No log loaded yet.");
@@ -2671,8 +2818,7 @@ namespace ui {
 
     if (haveColorData) {
       ImPlot::PushColormap(ImPlotColormap_Viridis);
-      ImPlot::ColormapScale(selectedColorChannel_.c_str(), colorChannelMin_, colorChannelMax_,
-        ImVec2(80, -1));
+      ImPlot::ColormapScale(selectedColorChannel_.c_str(), colorChannelMin_, colorChannelMax_, ImVec2(80, -1));
       ImGui::SameLine();
     }
 
@@ -2681,16 +2827,14 @@ namespace ui {
 
       if (haveColorData) {
         ImPlotSpec spec;
+        spec.MarkerSize = 2.f;
         spec.MarkerFillColors = cachedPointColors_.data();
-        ImPlot::PlotScatter("Samples", xValues.data(), yValues.data(),
-          static_cast<int>(xValues.size()), spec);
+        ImPlot::PlotScatter(legendLabel.c_str(), xValues.data(), yValues.data(), static_cast<int>(xValues.size()), spec);
       } else {
-        ImPlot::PlotScatter("Samples", xValues.data(), yValues.data(),
-          static_cast<int>(xValues.size()));
+        ImPlot::PlotScatter(legendLabel.c_str(), xValues.data(), yValues.data(), static_cast<int>(xValues.size()));
       }
 
-      // Highlight the sample nearest the shared cursor time -- only
-      // meaningful with real, time-aligned data.
+      // Highlight the sample nearest the shared cursor time
       if (haveRealData && cursor.active && cachedTimeSec_ != nullptr && !cachedTimeSec_->empty()) {
         auto it = std::lower_bound(cachedTimeSec_->begin(), cachedTimeSec_->end(), cursor.timeSec);
         size_t index = static_cast<size_t>(it - cachedTimeSec_->begin());
@@ -2791,6 +2935,7 @@ namespace ui {
 ## File: src/ui/statuspanel.cpp
 
 #include "ui/statuspanel.h"
+#include "ui/ui_helpers.h"
 
 #include <algorithm>
 #include <cctype>
@@ -2898,10 +3043,10 @@ namespace ui {
   void StatusPanel::renderChannelPickerPopup()
   {
     if (ImGui::Button("Channels...")) {
-      ImGui::OpenPopup("StatusPanelChannelsPopup");
+      ImGui::OpenPopup(ui::popups::StatusPanelChannels);
     }
 
-    if (ImGui::BeginPopup("StatusPanelChannelsPopup")) {
+    if (ImGui::BeginPopup(ui::popups::StatusPanelChannels)) {
       if (session_ == nullptr || session_->channels().empty()) {
         ImGui::TextDisabled("No log loaded yet.");
         ImGui::EndPopup();
@@ -3099,6 +3244,7 @@ namespace ui {
 ## File: src/ui/tableeditorpanel.cpp
 
 #include "ui/tableeditorpanel.h"
+#include "ui/ui_helpers.h"
 
 #include <algorithm>
 #include <cmath>
@@ -3110,6 +3256,7 @@ namespace ui {
 #include "3rdparty/nlohmann/json.hpp"
 #include "3rdparty/portable-file-dialogs.h"
 #include "imgui.h"
+#include "imgui_internal.h"
 
 namespace ui {
 
@@ -3188,6 +3335,7 @@ namespace ui {
       double v = table_.value(r, c);
       table_.setValue(r, c, v * factor);
     }
+    notifyDataChanged();
   }
 
   void TableEditorPanel::applyBatchOffset(double delta)
@@ -3196,6 +3344,7 @@ namespace ui {
       double v = table_.value(r, c);
       table_.setValue(r, c, v + delta);
     }
+    notifyDataChanged();
   }
 
   void TableEditorPanel::applyBatchSetValue(double value)
@@ -3203,6 +3352,7 @@ namespace ui {
     for (const auto &[r, c] : selectedCells_) {
       table_.setValue(r, c, value);
     }
+    notifyDataChanged();
   }
 
   void TableEditorPanel::interpolateSelectedRegion()
@@ -3231,6 +3381,7 @@ namespace ui {
         table_.setValue(r, c, interpolated);
       }
     }
+    notifyDataChanged();
   }
 
   void TableEditorPanel::renderBatchToolbar()
@@ -3269,12 +3420,19 @@ namespace ui {
     ImGui::SameLine();
     if (ImGui::Button("Extrapolate VE")) {
       showExtrapolateModal_ = true;
-      wasExtrapolateModalOpen_ = true;
-      ImGui::OpenPopup("Extrapolate VE");
+      wasExtrapolateModalOpen_ = false;
+      ImGui::OpenPopup(ui::popups::ExtrapolateVe);
     }
     renderExtrapolateModal();
 
     ImGui::EndDisabled();
+
+    if (customToolbarCallback_) {
+      ImGui::SameLine();
+      ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+      ImGui::SameLine();
+      customToolbarCallback_();
+    }
 
     if (hasSelection) {
       ImGui::SameLine();
@@ -3282,10 +3440,67 @@ namespace ui {
     }
   }
 
+  void TableEditorPanel::renderExtrapolateModal()
+  {
+    // Pass &showExtrapolateModal_ so ImGui can toggle it if 'X' or Escape is pressed
+    bool isOpen = ImGui::BeginPopupModal(ui::popups::ExtrapolateVe, &showExtrapolateModal_, ImGuiWindowFlags_AlwaysAutoResize);
+
+    if (isOpen) {
+
+      if (!wasExtrapolateModalOpen_) {
+        tableBackup_ = table_;
+        wasExtrapolateModalOpen_ = true;
+        showPreview_ = true;
+      }
+
+      ImGui::InputFloat("Tolerance (%)", &guessTolerance_, 1.0f, 5.0f, "%.1f");
+
+      ImGui::SeparatorText("Slope Calculation");
+      ImGui::RadioButton("Auto (Nearest Neighbor)", &slopeMode_, 0);
+      ImGui::SameLine();
+      ImGui::RadioButton("Manual Slope", &slopeMode_, 1);
+
+      ImGui::BeginDisabled(slopeMode_ == 0);
+      ImGui::InputFloat("Manual Delta", &manualSlope_, 0.5f, 1.0f, "%.2f");
+      ImGui::EndDisabled();
+
+      ImGui::Separator();
+
+      // Dynamically compute preview while modal is active
+      applyExtrapolationPreview();
+
+      if (ImGui::Button("Apply", ImVec2(100, 0))) {
+        showPreview_ = false;            // Commit the extrapolated values
+        showExtrapolateModal_ = false;  // Close flag
+        wasExtrapolateModalOpen_ = false;
+        ImGui::CloseCurrentPopup();
+        notifyDataChanged();
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Cancel", ImVec2(100, 0))) {
+        if (showPreview_) {
+          table_ = tableBackup_;      // Revert changes
+          showPreview_ = false;
+        }
+        showExtrapolateModal_ = false;  // Close flag
+        wasExtrapolateModalOpen_ = false;
+        ImGui::CloseCurrentPopup();
+      }
+
+      ImGui::EndPopup();
+    } else if (wasExtrapolateModalOpen_) {
+      // Handle close via 'X' button or Escape key
+      if (showPreview_) {
+        table_ = tableBackup_;
+        showPreview_ = false;
+      }
+      wasExtrapolateModalOpen_ = false;
+    }
+  }
+
   void TableEditorPanel::applyExtrapolationPreview()
   {
-    // Store a backup of the current table for the "Discard" action
-    tableBackup_ = table_;
+    table_ = tableBackup_;
     showPreview_ = true;
 
     float tolMultiplier = guessTolerance_ / 100.0f;
@@ -3432,6 +3647,7 @@ namespace ui {
         }
       }
     }
+    notifyDataChanged();
   }
 
   bool TableEditorPanel::importTunerStudioXml(const std::string &xmlContent)
@@ -3473,8 +3689,8 @@ namespace ui {
       for (size_t c = 0; c < cols; ++c) {
         table_.setValue(r, c, zVals[r * cols + c]);
       }
-    }
-
+    }    
+    notifyDataChanged();
     return true;
   }
 
@@ -3554,6 +3770,7 @@ namespace ui {
     if (ImGui::Button("OK")) {
       ImGui::CloseCurrentPopup();
       accepted = true;
+      notifyDataChanged();
     }
     ImGui::SameLine();
     if (ImGui::Button("Cancel")) {
@@ -3564,59 +3781,6 @@ namespace ui {
         axisEditorValues_ = table_.yBreakpoints();
     }
     return accepted;
-  }
-
-  void TableEditorPanel::renderExtrapolateModal()
-  {
-    // Pass &showExtrapolateModal_ so ImGui can toggle it if 'X' or Escape is pressed
-    bool isOpen = ImGui::BeginPopupModal("Extrapolate VE", &showExtrapolateModal_, ImGuiWindowFlags_AlwaysAutoResize);
-
-    if (isOpen) {
-      wasExtrapolateModalOpen_ = true; // Mark as open this frame
-
-      ImGui::InputFloat("Tolerance (%)", &guessTolerance_, 1.0f, 5.0f, "%.1f");
-
-      ImGui::SeparatorText("Slope Calculation");
-      ImGui::RadioButton("Auto (Nearest Neighbor)", &slopeMode_, 0);
-      ImGui::SameLine();
-      ImGui::RadioButton("Manual Slope", &slopeMode_, 1);
-
-      ImGui::BeginDisabled(slopeMode_ == 0);
-      ImGui::InputFloat("Manual Delta", &manualSlope_, 0.5f, 1.0f, "%.2f");
-      ImGui::EndDisabled();
-
-      ImGui::Separator();
-
-      // Dynamically compute preview while modal is active
-      applyExtrapolationPreview();
-
-      if (ImGui::Button("Apply", ImVec2(100, 0))) {
-        showPreview_ = false;            // Commit the extrapolated values
-        showExtrapolateModal_ = false;  // Close flag
-        wasExtrapolateModalOpen_ = false;
-        ImGui::CloseCurrentPopup();
-      }
-      ImGui::SameLine();
-      if (ImGui::Button("Cancel", ImVec2(100, 0))) {
-        if (showPreview_) {
-          table_ = tableBackup_;      // Revert changes
-          showPreview_ = false;
-        }
-        showExtrapolateModal_ = false;  // Close flag
-        wasExtrapolateModalOpen_ = false;
-        ImGui::CloseCurrentPopup();
-      }
-
-      ImGui::EndPopup();
-    } else if (wasExtrapolateModalOpen_) {
-      // ONLY triggers on the frame IMMEDIATELY AFTER the popup was closed 
-      // via ImGui close button ('X') or Escape key.
-      if (showPreview_) {
-        table_ = tableBackup_;          // Safely revert changes
-        showPreview_ = false;
-      }
-      wasExtrapolateModalOpen_ = false;   // Reset transition state
-    }
   }
 
   void TableEditorPanel::renderValueGrid()
@@ -3673,7 +3837,8 @@ namespace ui {
       ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
       ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
 
-    if (ImGui::BeginTable("ValueGrid", static_cast<int>(cols + 1), flags, ImVec2(0.0f, 400.0f))) {
+    std::string tableId = "ValueGrid###" + title();
+    if (ImGui::BeginTable(tableId.c_str(), static_cast<int>(cols + 1), flags, ImVec2(0.0f, 400.0f))) {
       ImGui::TableSetupScrollFreeze(1, 1);
       ImGui::TableSetupColumn("Load \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
 
@@ -3710,7 +3875,6 @@ namespace ui {
             if (selected) {
               ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImGuiCol_HeaderActive));
             } else {
-              //ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, getHeatmapColor(v));
               if (customHeatmapColorFunc_) {
                 ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, customHeatmapColorFunc_(v, r, c));
               } else {
@@ -3726,6 +3890,7 @@ namespace ui {
 
               if (committed) {
                 table_.setValue(r, c, v);
+                notifyDataChanged();
                 editingRow_ = -1;
                 editingCol_ = -1;
               } else if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsItemDeactivated()) {
@@ -3736,8 +3901,20 @@ namespace ui {
               char cellText[32];
               std::snprintf(cellText, sizeof(cellText), "%.2f", v);
 
+              bool hasCustomTextColor = false;
+              if (customTextColorFunc_) {
+                if (auto cclr = customTextColorFunc_(v, r, c)) {
+                  ImGui::PushStyleColor(ImGuiCol_Text, *cclr);
+                  hasCustomTextColor = true;
+                }
+              }
+
               ImGuiSelectableFlags selFlags = ImGuiSelectableFlags_AllowDoubleClick;
               ImGui::Selectable(cellText, selected, selFlags);
+
+              if (hasCustomTextColor) {
+                ImGui::PopStyleColor();
+              }
 
               bool isHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
               bool isSelectionLogic = false;
@@ -4016,7 +4193,7 @@ namespace ui {
       axisEditorValues_ = table_.yBreakpoints();
       axisEditorBinCount_ = static_cast<int>(axisEditorValues_.size());
       editingAxis_ = AxisEditing::Y;
-      ImGui::OpenPopup("Axis Editor");
+      ImGui::OpenPopup(ui::popups::AxisEditor);
     }
 
     ImGui::SameLine();
@@ -4025,13 +4202,13 @@ namespace ui {
       axisEditorValues_ = table_.xBreakpoints();
       axisEditorBinCount_ = static_cast<int>(axisEditorValues_.size());
       editingAxis_ = AxisEditing::X;
-      ImGui::OpenPopup("Axis Editor");
+      ImGui::OpenPopup(ui::popups::AxisEditor);
     }
 
     ImGui::SameLine();
 
     if (ImGui::Button("Import / Export...")) {
-      ImGui::OpenPopup("TableImportExportMenu");
+      ImGui::OpenPopup(ui::popups::TableImportExportMenu);
     }
 
     ImGui::SameLine();
@@ -4040,7 +4217,7 @@ namespace ui {
       show3DView_ = !show3DView_;
     }
 
-    if (ImGui::BeginPopup("TableImportExportMenu")) {
+    if (ImGui::BeginPopup(ui::popups::TableImportExportMenu)) {
       if (ImGui::MenuItem("Copy Table / Selection")) {
         copyToClipboard(false);
         showCopyToast();
@@ -4069,7 +4246,7 @@ namespace ui {
       ImGui::EndPopup();
     }
 
-    if (ImGui::BeginPopupModal("Axis Editor")) {
+    if (ImGui::BeginPopupModal(ui::popups::AxisEditor)) {
       if (renderAxisEditorPopup("Axis Editor")) {
         if (editingAxis_ == AxisEditing::X)
           table_.setXBreakpoints(axisEditorValues_);
@@ -4156,6 +4333,7 @@ namespace ui {
 #include <vector>
 #include <set>
 #include <utility>
+#include <optional>
 #include <functional>
 
 #include "3rdparty/nlohmann/json_fwd.hpp"
@@ -4199,8 +4377,11 @@ namespace ui {
     void setSelection(const std::set<std::pair<int, int>> &cells);
     const std::set<std::pair<int, int>> &selectedCells() const { return selectedCells_; }
 
+    void setCustomTextColoring(std::function<std::optional<ImU32>(double, size_t, size_t)> colorFunc) { customTextColorFunc_ = std::move(colorFunc); }
     void setCustomHeatmapColoring(std::function<ImU32(double, size_t, size_t)> colorFunc) { customHeatmapColorFunc_ = std::move(colorFunc); }
     void setCustomHoverTooltip(std::function<std::string(double, size_t, size_t)> tooltipFunc) { customHoverTooltipFunc_ = std::move(tooltipFunc); }
+    void setCustomToolbarCallback(std::function<void()> callback) { customToolbarCallback_ = std::move(callback); }
+    void setOnDataChangedCallback(std::function<void()> callback) { onDataChanged_ = std::move(callback); }
 
   private:
     static std::string formatValue(double value, int decimalPlaces);
@@ -4214,6 +4395,8 @@ namespace ui {
     void clearSelection();
     void selectRectangularRegion(int r1, int c1, int r2, int c2, bool keepExisting = false);
     void getSelectionBounds(int &minR, int &maxR, int &minC, int &maxC) const;
+
+    void notifyDataChanged() { if (onDataChanged_) onDataChanged_(); }
 
   private:
     std::string panelTypeIdValue_;
@@ -4262,8 +4445,11 @@ namespace ui {
     AxisEditing editingAxis_ = AxisEditing::None;
 
     float copyToastTimer_ = 0.0f;
+    std::function<std::optional<ImU32>(double, size_t, size_t)> customTextColorFunc_;
     std::function<ImU32(double, size_t, size_t)> customHeatmapColorFunc_;
     std::function<std::string(double, size_t, size_t)> customHoverTooltipFunc_;
+    std::function<void()> customToolbarCallback_;
+    std::function<void()> onDataChanged_;
   };
 
 } // namespace ui
@@ -4375,10 +4561,16 @@ namespace ui {
     for (const auto &[name, state] : channelStates_) {
       channelsJson[name] = {
         {"enabled", state.enabled},
-        {"color", {state.color.x, state.color.y, state.color.z, state.color.w}}
+        {"color", {state.color.x, state.color.y, state.color.z, state.color.w}},
+        { "selectionOrder", state.selectionOrder }
       };
     }
     j["channels"] = channelsJson;
+    j["xAxisMin"] = xAxisMin_;
+    j["xAxisMax"] = xAxisMax_;
+    j["yAxisMin"] = yAxisMin_;
+    j["yAxisMax"] = yAxisMax_;
+    j["sidebarWidth"] = sidebarWidth_;
     return j;
   }
 
@@ -4390,6 +4582,30 @@ namespace ui {
     }
     if (state.contains("maxChannelsPerPlot") && state["maxChannelsPerPlot"].is_number_integer()) {
       maxChannelsPerPlot_ = state["maxChannelsPerPlot"].get<int>();
+    }
+    int nofSavedLimits = 0;
+    if (state.contains("xAxisMin") && state["xAxisMin"].is_number()) {
+      xAxisMin_ = state["xAxisMin"].get<double>();
+      nofSavedLimits++;
+    }
+    if (state.contains("xAxisMax") && state["xAxisMax"].is_number()) {
+      xAxisMax_ = state["xAxisMax"].get<double>();
+      nofSavedLimits++;
+    }
+    if (state.contains("yAxisMin") && state["yAxisMin"].is_number()) {
+      yAxisMin_ = state["yAxisMin"].get<double>();
+      nofSavedLimits++;
+    }
+    if (state.contains("yAxisMax") && state["yAxisMax"].is_number()) {
+      yAxisMax_ = state["yAxisMax"].get<double>();
+      nofSavedLimits++;
+    }
+    bPendingAfterLoad_ = false;
+    if (nofSavedLimits == 4)
+      bPendingAfterLoad_ = true;
+
+    if (state.contains("sidebarWidth") && state["sidebarWidth"].is_number()) {
+      sidebarWidth_ = state["sidebarWidth"].get<float>();
     }
 
     if (state.contains("channels") && state["channels"].is_object()) {
@@ -4403,6 +4619,10 @@ namespace ui {
             it.value()["color"][2],
             it.value()["color"][3]
           );
+        }
+        if (it.value().contains("selectionOrder")) {
+          cs.selectionOrder = it.value()["selectionOrder"].get<uint64_t>();
+          nextSelectionOrder_ = std::max(nextSelectionOrder_, cs.selectionOrder + 1);
         }
         channelStates_[it.key()] = cs;
       }
@@ -4458,6 +4678,7 @@ namespace ui {
     if (ImGui::InputInt("Max/Plot", &maxChannelsPerPlot_)) {
       if (maxChannelsPerPlot_ < 1) maxChannelsPerPlot_ = 1;
       if (maxChannelsPerPlot_ > 16) maxChannelsPerPlot_ = 16;
+      bPendingAfterLoad_ = true; // ensure ranges are reset on next render
     }
     if (ImGui::IsItemHovered()) {
       ImGui::SetTooltip("Maximum channels displayed per subplot before creating a new subplot.");
@@ -4539,7 +4760,14 @@ namespace ui {
         ImGui::PushID(name.c_str());
 
         // [checkbox] color-picker channel-name
-        ImGui::Checkbox("##check", &state.enabled);
+        if (ImGui::Checkbox("##check", &state.enabled)) {
+          if (state.enabled) {
+            state.selectionOrder = nextSelectionOrder_++;
+          } else {
+            state.selectionOrder = 0;
+          }
+          bPendingAfterLoad_ = true; // ensure ranges are reset on next render
+        }
         ImGui::SameLine();
 
         ImGui::ColorEdit4("##color", (float *)&state.color,
@@ -4597,6 +4825,11 @@ namespace ui {
           activeChannels.push_back(&channel);
         }
       }
+
+      std::sort(activeChannels.begin(), activeChannels.end(),
+        [this](const core::Channel *a, const core::Channel *b) {
+          return channelStates_[a->name()].selectionOrder < channelStates_[b->name()].selectionOrder;
+        });
     }
 
     int numActive = static_cast<int>(activeChannels.size());
@@ -4626,10 +4859,20 @@ namespace ui {
         // Set next axis limits for the plot before BeginPlot
         if (pendingXAxisCenter_) {
           ImPlot::SetNextAxisLimits(ImAxis_X1, newMinX, newMaxX, ImGuiCond_Always);
+        } else if (bPendingAfterLoad_) {
+          ImPlot::SetNextAxisLimits(ImAxis_X1, xAxisMin_, xAxisMax_, ImGuiCond_Always);
+          ImPlot::SetNextAxisLimits(ImAxis_Y1, yAxisMin_, yAxisMax_, ImGuiCond_Always);
+          bPendingAfterLoad_ = false;
         }
 
         if (ImPlot::BeginPlot(plotID.c_str(), ImVec2(-1, -1))) {
           ImPlot::SetupAxes("Time (s)", "Normalized", ImPlotAxisFlags_None, ImPlotAxisFlags_NoTickLabels);
+
+          auto plotLimits = ImPlot::GetPlotLimits();
+          xAxisMin_ = plotLimits.X.Min;
+          xAxisMax_ = plotLimits.X.Max;
+          yAxisMin_ = plotLimits.Y.Min;
+          yAxisMax_ = plotLimits.Y.Max;
 
           if (hasRealData && numActive > 0) {
             int startIdx = plotIdx * maxPerPlot;
@@ -4830,13 +5073,43 @@ namespace ui {
     ImGui::Separator();
 
     if (showSidebar_) {
-      ImGui::BeginChild("SidebarChild", ImVec2(240, 0), true);
+      // 1. Enforce min/max sidebar width bounds
+      const float minWidth = 120.0f;
+      const float maxWidth = ImGui::GetContentRegionAvail().x - 150.0f; // Leave space for plot
+      sidebarWidth_ = std::clamp(sidebarWidth_, minWidth, std::max(minWidth, maxWidth));
+
+      // 2. Render Sidebar Child Window
+      ImGui::BeginChild("SidebarChild", ImVec2(sidebarWidth_, 0.0f), true);
       renderLeftSidebar(cursor);
       ImGui::EndChild();
+
+      ImGui::SameLine();
+
+      // 3. Render Resizable Splitter
+      const float splitterThickness = 4.0f;
+      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImGui::GetStyleColorVec4(ImGuiCol_SeparatorActive));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_SeparatorHovered));
+
+      ImGui::Button("##Splitter", ImVec2(splitterThickness, -1.0f));
+
+      ImGui::PopStyleColor(3);
+
+      // Set resize cursor on hover/active
+      if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+      }
+
+      // Handle drag movement
+      if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        sidebarWidth_ += ImGui::GetIO().MouseDelta.x;
+      }
+
       ImGui::SameLine();
     }
 
-    ImGui::BeginChild("PlotChild", ImVec2(0, 0), false);
+    // 4. Render Main Plot Region with remaining width
+    ImGui::BeginChild("PlotChild", ImVec2(0.0f, 0.0f), false);
     renderPlotArea(cursor);
     ImGui::EndChild();
 
@@ -4883,6 +5156,7 @@ namespace ui {
       size_t minIdx = 0; // Cached index for fast jump
       size_t maxIdx = 0; // Cached index for fast jump
       bool hasRange = false;
+      uint64_t selectionOrder = 0;
     };
 
     struct ArtifactCursor {
@@ -4913,10 +5187,20 @@ namespace ui {
     std::string filterText_;
 
     std::unordered_map<std::string, ChannelState> channelStates_;
+    uint64_t nextSelectionOrder_ = 1;
 
     const std::vector<double> *cachedTimeSec_ = nullptr;
     std::vector<double> placeholderTimeSec_;
     std::vector<double> placeholderValue_;
+
+    float sidebarWidth_ = 240.0f;
+
+    // ImPlot states
+    double xAxisMin_ = 0.0;
+    double xAxisMax_ = 10.0;
+    double yAxisMin_ = 0.0;
+    double yAxisMax_ = 1.0;
+    bool bPendingAfterLoad_ = false;
 
     void generatePlaceholderData();
   };
@@ -4924,9 +5208,116 @@ namespace ui {
 } // namespace ui
 
 
+## File: src/ui/ui_helpers.h
+
+#pragma once
+
+#include "imgui.h"
+
+namespace ui {
+
+  namespace popups {
+
+    inline constexpr const char *Loading = "Loading###LoadingModal";
+    inline constexpr const char *TargetAfrEditor = "Edit Target AFR###EditTargetAfrModal";
+    inline constexpr const char *BaselineVeEditor = "Edit Baseline VE###EditBaselineVeModal";
+    inline constexpr const char *AxisEditor = "Axis Editor###AxisEditorModal";
+    inline constexpr const char *TableImportExportMenu = "Table Import / Export###TableImportExportMenu";
+    inline constexpr const char *ExtrapolateVe = "Extrapolate VE###ExtrapolateVeModal";
+    inline constexpr const char *CustomChannels = "Custom Calculated Channels###CustomChannelsModal";
+    inline constexpr const char *LoadError = "Load Error###LoadErrorModal";
+    inline constexpr const char *StatusPanelChannels = "Status Panel Channels###StatusPanelChannelsPopup";
+
+  } // namespace popups
+
+
+  enum class ButtonStyle {
+    Default,   // Standard ImGui theme button
+    Primary,   // Accent blue - primary workflows (e.g. Apply, Recalculate)
+    Secondary, // Neutral - secondary workflows (e.g. Copy, Paste, Export)
+    Success,   // Green - confirmation / generator actions (e.g. Select Unvisited)
+    Danger,    // Red - destructive / reset actions (e.g. Reset to Calculated, Delete)
+  };
+
+  class UI {
+    static ImVec4 Hover(ImVec4 c) {
+      return ImVec4(
+        (std::min)(c.x + 0.08f, 1.0f),
+        (std::min)(c.y + 0.08f, 1.0f),
+        (std::min)(c.z + 0.08f, 1.0f),
+        c.w);
+    } 
+    static ImVec4 Active(ImVec4 c) {
+      return ImVec4(
+        c.x * 0.85f,
+        c.y * 0.85f,
+        c.z * 0.85f,
+        c.w);
+    }
+  public:
+    static bool Button(const char *label, ButtonStyle style = ButtonStyle::Default, const ImVec2 &size = ImVec2(0, 0), const char *tooltip = nullptr) {
+      if (style == ButtonStyle::Default) {
+        return ImGui::Button(label, size);
+      }
+
+      ImVec4 normal;
+
+      switch (style) {
+      case ButtonStyle::Primary:
+        normal = ImVec4(0.18f, 0.42f, 0.70f, 1.0f);
+        break;
+      case ButtonStyle::Secondary:
+        normal = ImVec4(0.33f, 0.42f, 0.52f, 1.0f);
+        break;
+      case ButtonStyle::Success:
+        normal = ImVec4(0.18f, 0.50f, 0.28f, 1.0f);
+        break;
+      case ButtonStyle::Danger:
+        normal = ImVec4(0.60f, 0.20f, 0.20f, 1.0f);
+        break;
+      default:
+        return ImGui::Button(label, size);
+      }
+
+      ImGui::PushStyleColor(ImGuiCol_Button, normal);
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Hover(normal));
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive, Active(normal));
+
+      bool clicked = ImGui::Button(label, size);
+
+      if (ImGui::IsItemHovered() && tooltip && tooltip[0] != '\0') {
+        ImGui::SetTooltip("%s", tooltip);
+      }
+
+      ImGui::PopStyleColor(3);
+      return clicked;
+    }
+
+    static bool ButtonPrimary(const char *label, const ImVec2 &size = ImVec2(0, 0), const char *tooltip = nullptr) {
+      return Button(label, ButtonStyle::Primary, size, tooltip);
+    }
+
+    static bool ButtonSuccess(const char *label, const ImVec2 &size = ImVec2(0, 0), const char *tooltip = nullptr) {
+      return Button(label, ButtonStyle::Success, size, tooltip);
+    }
+
+    static bool ButtonSecondary(const char *label, const ImVec2 &size = ImVec2(0, 0), const char *tooltip = nullptr) {
+      return Button(label, ButtonStyle::Secondary, size, tooltip);
+    }
+
+    static bool ButtonDanger(const char *label, const ImVec2 &size = ImVec2(0, 0), const char *tooltip = nullptr) {
+      return Button(label, ButtonStyle::Danger, size, tooltip);
+    }
+  };
+
+} // namespace ui
+
+
+
 ## File: src/ui/veanalysispanel.cpp
 
 #include "ui/veanalysispanel.h"
+#include "ui/ui_helpers.h"
 #include "3rdparty/nlohmann/json.hpp"
 
 #include <algorithm>
@@ -4942,15 +5333,36 @@ namespace ui {
     , targetAfrPanel_("Target AFR Editor", "TargetAfrTable", "Target AFR",
       core::Table2D(core::generateEvenBreakpoints(500, 7000, 16),
         core::generateEvenBreakpoints(20, 100, 16)))
-    , currentVePanel_("Current VE Editor", "VeTable", "Current VE",
+    , baselineVePanel_("Baseline VE Editor", "VeTable", "Baseline VE",
       core::Table2D(core::generateEvenBreakpoints(500, 7000, 16),
         core::generateEvenBreakpoints(20, 100, 16)))
     , suggestedVePanel_("Suggested VE", "SuggestedVeTable", "Suggested VE",
       core::Table2D(core::generateEvenBreakpoints(500, 7000, 16),
         core::generateEvenBreakpoints(20, 100, 16)))
   {
-    observedAfrTable_ = core::Table2D(core::generateEvenBreakpoints(500, 7000, 16),
-      core::generateEvenBreakpoints(20, 100, 16));
+    observedAfrTable_ = core::Table2D(core::generateEvenBreakpoints(500, 7000, 16), core::generateEvenBreakpoints(20, 100, 16));
+
+    auto recalcCallback = [this]() {
+      computeObservedAfr();
+      computeAfrDelta();
+      computeSuggestedVe();
+      };
+    targetAfrPanel_.setOnDataChangedCallback(recalcCallback);
+    baselineVePanel_.setOnDataChangedCallback(recalcCallback);
+    targetAfrPanel_.setCustomToolbarCallback([this, recalcCallback] {
+      ImGui::BeginDisabled(!hasBaselineVe() || session_ == nullptr);
+      if (ui::UI::ButtonPrimary("Apply Changes", {}, "Recomputes AFR Delta and Suggested VE.")) {
+        recalcCallback();
+      }
+      ImGui::EndDisabled();
+      });
+    baselineVePanel_.setCustomToolbarCallback([this, recalcCallback] {
+      ImGui::BeginDisabled(!hasTargetAfr() || session_ == nullptr);
+      if (ui::UI::ButtonPrimary("Apply Changes", {}, "Recomputes AFR Delta and Suggested VE.")) {
+        recalcCallback();
+      }
+      ImGui::EndDisabled();
+      });
   }
 
   void VeAnalysisPanel::setSession(const core::LogSession *session)
@@ -4981,10 +5393,10 @@ namespace ui {
     std::vector<double> xBp;
     std::vector<double> yBp;
 
-    if (hasCurrentVe_) {
-      xBp = currentVePanel_.table().xBreakpoints();
-      yBp = currentVePanel_.table().yBreakpoints();
-    } else if (hasTargetAfr_) {
+    if (hasBaselineVe()) {
+      xBp = baselineVePanel_.table().xBreakpoints();
+      yBp = baselineVePanel_.table().yBreakpoints();
+    } else if (hasTargetAfr()) {
       xBp = targetAfrPanel_.table().xBreakpoints();
       yBp = targetAfrPanel_.table().yBreakpoints();
     } else {
@@ -5081,7 +5493,7 @@ namespace ui {
 
   void VeAnalysisPanel::computeSuggestedVe()
   {
-    if (!session_ || !hasTargetAfr_ || !hasCurrentVe_) return;
+    if (!session_ || !hasTargetAfr() || !hasBaselineVe()) return;
 
     auto customHeatmap = [this](double value, size_t row, size_t col) -> ImU32 {
       auto getVeChangeHeatMapColor = [](double diff) -> ImU32 {
@@ -5106,48 +5518,111 @@ namespace ui {
         return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a));
         };
       double sugVe = suggestedVePanel_.table().value(row, col);
-      double curVe = currentVePanel_.table().value(row, col);
+      double curVe = baselineVePanel_.table().value(row, col);
       double diff = sugVe - curVe;
       return getVeChangeHeatMapColor(diff);
       };
 
     auto customTooltip = [this](double value, size_t row, size_t col) -> std::string {
-      double curVe = currentVePanel_.table().value(row, col);
+      double curVe = baselineVePanel_.table().value(row, col);
       double diff = value - curVe;
       if (std::abs(diff) < 1e-5) return {};
+      double percentChange = (curVe != 0.0) ? (diff / curVe) * 100.0 : 0.0;
       char buffer[64];
-      snprintf(buffer, sizeof(buffer), "Current: %.2f\nChange: %+0.2f", curVe, diff);
+      snprintf(buffer, sizeof(buffer), "Baseline: %.2f\nChange: %+0.2f (%+0.2f%%)", curVe, diff, percentChange);
       return std::string(buffer);
       };
 
-    core::Table2D result = engine::VeAnalyzer::computeCorrectedVe(*session_, currentVePanel_.table(), targetAfrPanel_.table(), config_);
+    auto customTextColor = [this](double value, size_t row, size_t col) -> std::optional<ImU32> {
+      double curVe = baselineVePanel_.table().value(row, col);
+      double diff = value - curVe;
+      if (std::abs(diff) < 1e-5) {
+        return ImGui::ColorConvertFloat4ToU32(ImVec4{ 0.6f, 0.6f, 0.6f, 1.0f }); // Gray for unchanged
+      }
+      return ImGui::ColorConvertFloat4ToU32(ImVec4{ 0.2f, 0.8f, 1.0f, 1.0f });      
+      };
+
+    auto customToolbar = [this]() {
+      if (ui::UI::ButtonSecondary("Select Unvisited Cells", {}, "Highlights cells that lacked enough log samples for direct AFR analysis.")) {
+        selectUnvisitedCellsOnSuggestedVe();
+      }
+
+      ImGui::SameLine();
+
+      ImGui::BeginDisabled(!hasTargetAfr() || !hasBaselineVe() || session_ == nullptr);
+      if (ui::UI::ButtonDanger("Reset to Calculated VE", {}, "Recomputes Suggested VE from log data, discarding any manual edits.")) {
+        
+        computeSuggestedVe();
+      }
+      ImGui::EndDisabled();
+      };
+
+    core::Table2D result = engine::VeAnalyzer::computeCorrectedVe(*session_, baselineVePanel_.table(), targetAfrPanel_.table(), config_);
     suggestedVePanel_.setCustomHeatmapColoring(customHeatmap);
     suggestedVePanel_.setCustomHoverTooltip(customTooltip);
+    suggestedVePanel_.setCustomTextColoring(customTextColor);
+    // In VeAnalysisPanel constructor or initialization:
+    suggestedVePanel_.setCustomToolbarCallback(customToolbar);
     suggestedVePanel_.setTable(result);
     hasSuggestedVe_ = true;
   }
 
   void VeAnalysisPanel::selectUnvisitedCellsOnSuggestedVe()
   {
-    if (!hasSuggestedVe_ || !hasCurrentVe_) return;
+    if (!hasSuggestedVe_ || !hasBaselineVe() || !session_) return;
+
+    const core::Table2D &veTable = baselineVePanel_.table();
+    const size_t rows = veTable.rowCount();
+    const size_t cols = veTable.columnCount();
+    if (rows == 0 || cols == 0) return;
+
+    const core::Channel *rpmCh = session_->findChannel(config_.rpmChannel);
+    const core::Channel *loadCh = session_->findChannel(config_.loadChannel);
+    const core::Channel *afrCh = session_->findChannel(config_.afrChannel);
+
+    std::vector<std::vector<size_t>> sampleCounts(rows, std::vector<size_t>(cols, 0));
+
+    if (rpmCh && loadCh && afrCh) {
+      const auto &xBp = veTable.xBreakpoints();
+      const auto &yBp = veTable.yBreakpoints();
+      const size_t numSamples = session_->rowCount();
+      engine::VeTransientFilter filter(*session_, config_);
+
+      for (size_t i = 0; i < numSamples; ++i) {
+        if (!session_->isRowInCropRange(i)) continue;
+
+        double rpm = rpmCh->values()[i];
+        double load = loadCh->values()[i];
+        double afr = afrCh->values()[i];
+
+        if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
+        if (filter.shouldIgnoreSample(i, load)) continue;
+
+        size_t bestR = 0, bestC = 0;
+        double minDist = std::numeric_limits<double>::max();
+
+        for (size_t r = 0; r < rows; ++r) {
+          for (size_t c = 0; c < cols; ++c) {
+            double dRpm = (rpm - xBp[c]) / 1000.0;
+            double dLoad = (load - yBp[r]) / 10.0;
+            double dist = (dRpm * dRpm) + (dLoad * dLoad);
+
+            if (dist < minDist) {
+              minDist = dist;
+              bestR = r;
+              bestC = c;
+            }
+          }
+        }
+        sampleCounts[bestR][bestC]++;
+      }
+    }
+
     std::set<std::pair<int, int>> unvisited;
-    const size_t rows = suggestedVePanel_.table().rowCount();
-    const size_t cols = suggestedVePanel_.table().columnCount();
     for (size_t r = 0; r < rows; ++r) {
       for (size_t c = 0; c < cols; ++c) {
-        // Unvisited cells are those below minSamplesPerBin 
-        // (or where observed hit count was 0 during computeObservedAfr/SuggestedVe)
-        if (c < afrDeltaSampleCounts_.size() && r < afrDeltaSampleCounts_[c].size()) {
-          if (afrDeltaSampleCounts_[r][c] < config_.minSamplesPerBin) {
-            unvisited.insert({ static_cast<int>(r), static_cast<int>(c) });
-          }
-        } else {
-          // Fallback: check if suggested value is identical to current VE (un-analyzed)
-          double sug = suggestedVePanel_.table().value(r, c);
-          double cur = currentVePanel_.table().value(r, c);
-          if (std::abs(sug - cur) < 1e-5) {
-            unvisited.insert({ static_cast<int>(r), static_cast<int>(c) });
-          }
+        if (sampleCounts[r][c] < config_.minSamplesPerBin) {
+          unvisited.insert({ static_cast<int>(r), static_cast<int>(c) });
         }
       }
     }
@@ -5235,13 +5710,13 @@ namespace ui {
       }
       if (changed) {
         computeObservedAfr();
-        if (hasTargetAfr_) computeAfrDelta();
-        if (hasTargetAfr_ && hasCurrentVe_) computeSuggestedVe();
+        if (hasTargetAfr()) computeAfrDelta();
+        if (hasTargetAfr() && hasBaselineVe()) computeSuggestedVe();
       }
       ImGui::Separator();
     }
 
-    if (ImGui::Button("Recalculate Observed AFR")) {
+    if (ui::UI::ButtonPrimary("Recalculate Observed AFR")) {
       computeObservedAfr();
     }
 
@@ -5335,7 +5810,7 @@ namespace ui {
 
   void VeAnalysisPanel::computeAfrDelta()
   {
-    if (!session_ || !hasTargetAfr_) {
+    if (!session_ || !hasTargetAfr()) {
       hasAfrDelta_ = false;
       return;
     }
@@ -5349,8 +5824,8 @@ namespace ui {
       return;
     }
 
-    const bool useVeAxes = alignAfrDeltaToVeTable_ && hasCurrentVe_;
-    const core::Table2D &refTable = useVeAxes ? currentVePanel_.table() : targetAfrPanel_.table();
+    const bool useVeAxes = alignAfrDeltaToVeTable_ && hasBaselineVe();
+    const core::Table2D &refTable = useVeAxes ? baselineVePanel_.table() : targetAfrPanel_.table();
 
     const auto &xBp = refTable.xBreakpoints();
     const auto &yBp = refTable.yBreakpoints();
@@ -5421,7 +5896,7 @@ namespace ui {
 
   void VeAnalysisPanel::renderAfrDeltaTab()
   {
-    if (!hasTargetAfr_) {
+    if (!hasTargetAfr()) {
       ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.2f, 1.0f), "Please set the 'Target AFR' table first.");
       return;
     }
@@ -5432,9 +5907,9 @@ namespace ui {
 
     ImGui::SameLine();
 
-    ImGui::BeginDisabled(!hasCurrentVe_);
-    if (!hasCurrentVe_) alignAfrDeltaToVeTable_ = false;
-    if (ImGui::Checkbox("Align grid to Current VE Table", &alignAfrDeltaToVeTable_)) {
+    ImGui::BeginDisabled(!hasBaselineVe());
+    if (!hasBaselineVe()) alignAfrDeltaToVeTable_ = false;
+    if (ImGui::Checkbox("Align grid to Baseline VE Table", &alignAfrDeltaToVeTable_)) {
       computeAfrDelta();
     }
     ImGui::EndDisabled();
@@ -5442,8 +5917,8 @@ namespace ui {
     ImGui::SameLine();
     ImGui::Checkbox("Scale intensity by sample count", &scaleDeltaIntensityByHitCount_);
 
-    if (!hasCurrentVe_) {
-      ImGui::TextDisabled("(Target AFR axes used - load Current VE to enable VE alignment)");
+    if (!hasBaselineVe()) {
+      ImGui::TextDisabled("(Target AFR axes used - load Baseline VE to enable VE alignment)");
     }
 
     if (hasAfrDelta_) {
@@ -5544,175 +6019,93 @@ namespace ui {
     }
   }
 
-  void VeAnalysisPanel::renderReadOnlyTableTab(const char *tabName, TableEditorPanel &editorPanel, bool &tableSetFlag, const char *popupId)
+  bool VeAnalysisPanel::hasTargetAfr() const
   {
-    std::string editBtnLabel = std::string("Edit / Change ") + tabName + "...";
-    if (ImGui::Button(editBtnLabel.c_str())) {
-      ImGui::OpenPopup(popupId);
-    }
-
-    if (tableSetFlag) {
-      ImGui::SameLine();
-      if (ImGui::Button("Copy to Clipboard")) {
-        editorPanel.copyToClipboard(false);
-        suggestedVePanel_.showCopyToast();
+    const auto &tbl = targetAfrPanel_.table();
+    if (tbl.rowCount() == 0 || tbl.columnCount() == 0) return false;
+    for (size_t r = 0; r < tbl.rowCount(); ++r) {
+      for (size_t c = 0; c < tbl.columnCount(); ++c) {
+        if (0 < tbl.value(r, c)) return true;
       }
-      suggestedVePanel_.renderToast();
-
-      renderReadOnlyTableGrid(editorPanel.table());
-    } else {
-      ImGui::Separator();
-      ImGui::TextDisabled("No %s data set yet. Click '%s' to enter or paste values.", tabName, editBtnLabel.c_str());
     }
-
-    // Modal Editor Window
-    ImGui::SetNextWindowSize(ImVec2(800, 600), ImGuiCond_FirstUseEver);
-    if (ImGui::BeginPopupModal(popupId, nullptr, ImGuiWindowFlags_NoDocking)) {
-      PlotCursor dummyCursor;
-      editorPanel.render(dummyCursor);
-
-      ImGui::Separator();
-      if (ImGui::Button("OK", ImVec2(120, 0))) {
-        tableSetFlag = true;
-        computeObservedAfr(); // Re-bins log
-        computeAfrDelta();    // Re-syncs AFR Delta grid[cite: 2]
-        ImGui::CloseCurrentPopup();
-      }
-      ImGui::SameLine();
-      if (ImGui::Button("Cancel", ImVec2(120, 0))) {
-        ImGui::CloseCurrentPopup();
-      }
-      ImGui::EndPopup();
-    }
+    return false;
   }
 
-#if 0
+  bool VeAnalysisPanel::hasBaselineVe() const
+  {
+    const auto &tbl = baselineVePanel_.table();
+    if (tbl.rowCount() == 0 || tbl.columnCount() == 0) return false;
+    for (size_t r = 0; r < tbl.rowCount(); ++r) {
+      for (size_t c = 0; c < tbl.columnCount(); ++c) {
+        if (0 < tbl.value(r, c)) return true;
+      }
+    }
+    return false;
+  }
+
+  //void VeAnalysisPanel::renderReadOnlyTableTab(const char *tabName, TableEditorPanel &editorPanel, bool &tableSetFlag, const char *popupId)
+  //{
+  //  std::string editBtnLabel = std::string("Edit / Change ") + tabName + "...";
+  //  if (ImGui::Button(editBtnLabel.c_str())) {
+  //    ImGui::OpenPopup(popupId);
+  //  }
+
+  //  if (tableSetFlag) {
+  //    ImGui::SameLine();
+  //    if (ImGui::Button("Copy to Clipboard")) {
+  //      editorPanel.copyToClipboard(false);
+  //      suggestedVePanel_.showCopyToast();
+  //    }
+  //    suggestedVePanel_.renderToast();
+
+  //    renderReadOnlyTableGrid(editorPanel.table());
+  //  } else {
+  //    ImGui::Separator();
+  //    ImGui::TextDisabled("No %s data set yet. Click '%s' to enter or paste values.", tabName, editBtnLabel.c_str());
+  //  }
+
+  //  // Modal Editor Window
+  //  ImGui::SetNextWindowSize(ImVec2(800, 600), ImGuiCond_FirstUseEver);
+  //  if (ImGui::BeginPopupModal(popupId, nullptr, ImGuiWindowFlags_NoDocking)) {
+  //    PlotCursor dummyCursor;
+  //    editorPanel.render(dummyCursor);
+
+  //    ImGui::Separator();
+  //    if (ImGui::Button("OK", ImVec2(120, 0))) {
+  //      tableSetFlag = true;
+  //      computeObservedAfr(); // Re-bins log
+  //      computeAfrDelta();    // Re-syncs AFR Delta grid
+  //      ImGui::CloseCurrentPopup();
+  //    }
+  //    ImGui::SameLine();
+  //    if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+  //      ImGui::CloseCurrentPopup();
+  //    }
+  //    ImGui::EndPopup();
+  //  }
+  //}
+
+  void VeAnalysisPanel::renderTargetAfrTab()
+  {
+    PlotCursor dummyCursor;
+    targetAfrPanel_.render(dummyCursor);
+  }
+
+  void VeAnalysisPanel::renderBaselineVeTab()
+  {
+    PlotCursor dummyCursor;
+    baselineVePanel_.render(dummyCursor);
+  }
+
   void VeAnalysisPanel::renderSuggestedVeTab()
   {
-    ImGui::BeginDisabled(!hasTargetAfr_ || !hasCurrentVe_ || session_ == nullptr);
-    if (ImGui::Button("Calculate Suggested VE")) {
-      computeSuggestedVe();
-    }
-    ImGui::EndDisabled();
-
-    if (!hasTargetAfr_ || !hasCurrentVe_) {
-      ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.2f, 1.0f),
-        "Please enter both 'Target AFR' and 'Current VE' tables before calculating.");
+    if (!hasSuggestedVe_) {
+      ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.2f, 1.0f), "Please set the 'Baseline VE' table first.");
       return;
     }
-
-    if (hasSuggestedVe_) {
-      ImGui::SameLine();
-      if (ImGui::Button("Copy to Clipboard")) {
-        suggestedVePanel_.copyToClipboard(false);
-        suggestedVePanel_.showCopyToast();
-      }
-      suggestedVePanel_.renderToast();
-
-      const auto &xBp = suggestedVePanel_.table().xBreakpoints();
-      const auto &yBp = suggestedVePanel_.table().yBreakpoints();
-      const size_t cols = xBp.size();
-      const size_t rows = yBp.size();
-
-      if (cols == 0 || rows == 0) return;
-
-      // Heat map generator (Red/Orange = adding fuel, Green/Cyan = pulling fuel)
-      auto getVeChangeHeatMapColor = [](double diff) -> ImU32 {
-        float norm = static_cast<float>(diff / 10.0); // Scale across +/- 10 VE points
-        if (norm > 1.0f) norm = 1.0f;
-        if (norm < -1.0f) norm = -1.0f;
-
-        float r = 0.0f, g = 0.0f, b = 0.0f, a = 0.35f;
-
-        if (norm > 0.0f) {
-          // Adding fuel (Engine was lean) -> Red/Orange
-          r = norm;
-          g = 0.3f * norm;
-          b = 0.1f * (1.0f - norm);
-        } else {
-          // Pulling fuel (Engine was rich) -> Green/Cyan
-          float negNorm = -norm;
-          r = 0.1f * (1.0f - negNorm);
-          g = negNorm;
-          b = 0.8f * negNorm;
-        }
-        return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a));
-        };
-
-      const ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-        ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
-        ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
-
-      if (ImGui::BeginTable("SuggestedVeGrid", static_cast<int>(cols + 1), flags, ImVec2(0.0f, 380.0f))) {
-        ImGui::TableSetupScrollFreeze(1, 1);
-        ImGui::TableSetupColumn("MAP \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-        for (size_t c = 0; c < cols; ++c) {
-          std::string header = std::to_string(static_cast<int>(xBp[c])) + "##col" + std::to_string(c);
-          ImGui::TableSetupColumn(header.c_str(), ImGuiTableColumnFlags_WidthFixed, 65.0f);
-        }
-        ImGui::TableHeadersRow();
-
-        for (size_t r = rows; r-- > 0; ) {
-          ImGui::TableNextRow();
-          ImGui::TableSetColumnIndex(0);
-          ImGui::Text("%.1f", yBp[r]);
-
-          for (size_t c = 0; c < cols; ++c) {
-            ImGui::TableSetColumnIndex(static_cast<int>(c + 1));
-            double sugVe = suggestedVePanel_.table().value(r, c);
-            double curVe = currentVePanel_.table().value(r, c);
-            double diff = sugVe - curVe;
-
-            // Apply cell background heatmap if changed
-            if (std::abs(diff) > 0.01) {
-              ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, getVeChangeHeatMapColor(diff));
-              // Color text pale blue for changed cells
-              ImGui::TextColored(ImVec4(0.6f, 0.85f, 1.0f, 1.0f), "%.2f", sugVe);
-            } else {
-              ImGui::Text("%.2f", sugVe);
-            }
-
-            if (ImGui::IsItemHovered() && std::abs(diff) > 0.01) {
-              ImGui::SetTooltip("Current: %.2f | Change: %+.2f", curVe, diff);
-            }
-          }
-        }
-        ImGui::EndTable();
-      }
-    }
+    PlotCursor dummyCursor;
+    suggestedVePanel_.render(dummyCursor);
   }
-#else
-  void VeAnalysisPanel::renderSuggestedVeTab()
-  {
-    ImGui::BeginDisabled(!hasTargetAfr_ || !hasCurrentVe_ || session_ == nullptr);
-    if (ImGui::Button("Reset to Calculated VE")) {
-      computeSuggestedVe();
-    }
-    if (ImGui::IsItemHovered()) {
-      ImGui::SetTooltip("Recomputes Suggested VE from log data, discarding any manual edits, interpolations, or extrapolations.");
-    }
-    ImGui::EndDisabled();
-
-    if (hasSuggestedVe_) {
-      ImGui::SameLine();
-      if (ImGui::Button("Select Unvisited Cells")) {
-        selectUnvisitedCellsOnSuggestedVe();
-      }
-      if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Highlights cells that lacked enough log samples for direct AFR analysis.");
-      }
-
-      ImGui::SameLine();
-      ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-      ImGui::SameLine();
-
-      // Render standard TableEditorPanel batch toolbar & grid directly
-      // gives Extrapolate, Interpolate, Offset, Scale, and click-and-drag selections for free
-      PlotCursor dummyCursor;
-      suggestedVePanel_.render(dummyCursor);
-    }
-  }
-#endif
 
   void VeAnalysisPanel::render(PlotCursor &cursor)
   {
@@ -5727,7 +6120,12 @@ namespace ui {
       }
 
       if (ImGui::BeginTabItem("Target AFR")) {
-        renderReadOnlyTableTab("Target AFR", targetAfrPanel_, hasTargetAfr_, "EditTargetAfrModal");
+        renderTargetAfrTab();
+        ImGui::EndTabItem();
+      }
+
+      if (ImGui::BeginTabItem("Baseline VE")) {
+        renderBaselineVeTab();
         ImGui::EndTabItem();
       }
 
@@ -5737,15 +6135,14 @@ namespace ui {
         ImGui::EndTabItem();
       }
 
-      if (ImGui::BeginTabItem("Current VE")) {
-        renderReadOnlyTableTab("Current VE", currentVePanel_, hasCurrentVe_, "EditCurrentVeModal");
-        ImGui::EndTabItem();
-      }
-
+      ImGui::PushStyleColor(ImGuiCol_Tab, ImVec4(0.15f, 0.45f, 0.25f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_TabHovered, ImVec4(0.25f, 0.65f, 0.35f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_TabActive, ImVec4(0.20f, 0.55f, 0.30f, 1.0f));
       if (ImGui::BeginTabItem("Suggested VE")) {
         renderSuggestedVeTab();
         ImGui::EndTabItem();
       }
+      ImGui::PopStyleColor(3);
 
       ImGui::EndTabBar();
     }
@@ -5758,8 +6155,6 @@ namespace ui {
     auto j = PlotPanel::saveState();
 
     // Persist input flags and view settings
-    j["hasTargetAfr"] = hasTargetAfr_;
-    j["hasCurrentVe"] = hasCurrentVe_;
     j["alignAfrDeltaToVeTable"] = alignAfrDeltaToVeTable_;
 
     // Persist analysis channel / sample thresholds
@@ -5780,7 +6175,7 @@ namespace ui {
 
     // Only serialize primary input tables (ignore calculated ones)
     j["targetAfr"] = targetAfrPanel_.saveState();
-    j["currentVe"] = currentVePanel_.saveState();
+    j["baselineVe"] = baselineVePanel_.saveState();
 
     return j;
   }
@@ -5789,12 +6184,6 @@ namespace ui {
   {
     PlotPanel::loadState(state);
 
-    if (state.contains("hasTargetAfr") && state["hasTargetAfr"].is_boolean()) {
-      hasTargetAfr_ = state["hasTargetAfr"].get<bool>();
-    }
-    if (state.contains("hasCurrentVe") && state["hasCurrentVe"].is_boolean()) {
-      hasCurrentVe_ = state["hasCurrentVe"].get<bool>();
-    }
     if (state.contains("alignAfrDeltaToVeTable") && state["alignAfrDeltaToVeTable"].is_boolean()) {
       alignAfrDeltaToVeTable_ = state["alignAfrDeltaToVeTable"].get<bool>();
     }
@@ -5821,19 +6210,15 @@ namespace ui {
     if (state.contains("targetAfr")) {
       targetAfrPanel_.loadState(state["targetAfr"]);
     }
-    if (state.contains("currentVe")) {
-      currentVePanel_.loadState(state["currentVe"]);
+    if (state.contains("baselineVe")) {
+      baselineVePanel_.loadState(state["baselineVe"]);
     }
 
     // Automatically recalculate all derived tables (Observed AFR, AFR Delta, Suggested VE)
     if (session_ != nullptr) {
       computeObservedAfr();
-      if (hasTargetAfr_) {
-        computeAfrDelta();
-      }
-      if (hasTargetAfr_ && hasCurrentVe_) {
-        computeSuggestedVe();
-      }
+      computeAfrDelta();
+      computeSuggestedVe();
     }
   }
 
@@ -5870,13 +6255,18 @@ namespace ui {
     void computeObservedAfr();
     void computeSuggestedVe();
     void renderObservedAfrTab();
-    void renderReadOnlyTableTab(const char *tabName, TableEditorPanel &editorPanel, bool &tableSetFlag, const char *popupId);
+    //void renderReadOnlyTableTab(const char *tabName, TableEditorPanel &editorPanel, bool &tableSetFlag, const char *popupId);
+    void renderTargetAfrTab();
+    void renderBaselineVeTab();
     void renderSuggestedVeTab();
     void renderReadOnlyTableGrid(const core::Table2D &table);
     void selectUnvisitedCellsOnSuggestedVe();
 
     void computeAfrDelta();
     void renderAfrDeltaTab();
+
+    bool hasBaselineVe() const;
+    bool hasTargetAfr() const;
 
     const core::LogSession *session_ = nullptr;
     bool open_ = true;
@@ -5886,7 +6276,7 @@ namespace ui {
     // Core tables
     core::Table2D observedAfrTable_;
     TableEditorPanel targetAfrPanel_;
-    TableEditorPanel currentVePanel_;
+    TableEditorPanel baselineVePanel_;
     TableEditorPanel suggestedVePanel_;
     core::Table2D afrDeltaTable_;
     bool hasAfrDelta_ = false;
@@ -5896,10 +6286,8 @@ namespace ui {
 
     // Editing buffers for popups
     core::Table2D targetAfrEditBuffer_;
-    core::Table2D currentVeEditBuffer_;
+    core::Table2D baselineVeEditBuffer_;
 
-    bool hasTargetAfr_ = false;
-    bool hasCurrentVe_ = false;
     bool hasSuggestedVe_ = false;
 
     // Cropped axis bounds for Observed AFR

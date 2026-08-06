@@ -52,7 +52,7 @@ namespace engine {
     // Unchanged cells retain their original VE values.
     static core::Table2D computeCorrectedVe(
       const core::LogSession &session,
-      const core::Table2D &currentVe,
+      const core::Table2D &baselineVe,
       const core::Table2D &targetAfr,
       const VeAnalysisConfig &config);
   };

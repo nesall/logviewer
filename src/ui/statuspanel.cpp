@@ -1,4 +1,5 @@
 #include "ui/statuspanel.h"
+#include "ui/ui_helpers.h"
 
 #include <algorithm>
 #include <cctype>
@@ -105,30 +106,30 @@ namespace ui {
 
   void StatusPanel::renderChannelPickerPopup()
   {
-    if (ImGui::Button("Channels...")) {
-      ImGui::OpenPopup("StatusPanelChannelsPopup");
+    if (ui::UI::Button("Channels...", {}, {}, "Open channel selection popup")) {
+      ImGui::OpenPopup(ui::popups::StatusPanelChannels);
     }
 
-    if (ImGui::BeginPopup("StatusPanelChannelsPopup")) {
+    if (ImGui::BeginPopup(ui::popups::StatusPanelChannels)) {
       if (session_ == nullptr || session_->channels().empty()) {
         ImGui::TextDisabled("No log loaded yet.");
         ImGui::EndPopup();
         return;
       }
 
-      if (ImGui::Button("Select All")) {
+      if (ui::UI::Button("Select All", {}, {}, "Select all channels")) {
         for (const auto &channel : session_->channels()) {
           setVisible(channel.name(), true);
         }
       }
       ImGui::SameLine();
-      if (ImGui::Button("Unselect All")) {
+      if (ui::UI::Button("Unselect All", {}, {}, "Unselect all channels")) {
         for (const auto &channel : session_->channels()) {
           setVisible(channel.name(), false);
         }
       }
       ImGui::SameLine();
-      if (ImGui::Button("Status Channels Only")) {
+      if (ui::UI::Button("Status Channels Only", {}, {}, "Show only status channels")) {
         for (const auto &channel : session_->channels()) {
           setVisible(channel.name(), channel.isBoolean());
         }

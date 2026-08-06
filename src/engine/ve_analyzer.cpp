@@ -1,5 +1,3 @@
-// src/engine/ve_analyzer.cpp
-
 #include "engine/ve_analyzer.h"
 #include <cmath>
 #include <limits>
@@ -90,11 +88,11 @@ namespace engine {
 
   core::Table2D VeAnalyzer::computeCorrectedVe(
     const core::LogSession &session,
-    const core::Table2D &currentVe,
+    const core::Table2D &baselineVe,
     const core::Table2D &targetAfr,
     const VeAnalysisConfig &config)
   {
-    core::Table2D correctedVe = currentVe;
+    core::Table2D correctedVe = baselineVe;
 
     const core::Channel *rpmCh = session.findChannel(config.rpmChannel);
     const core::Channel *loadCh = session.findChannel(config.loadChannel);
@@ -106,8 +104,8 @@ namespace engine {
 
     VeTransientFilter filter(session, config);
 
-    const size_t rows = currentVe.rowCount();
-    const size_t cols = currentVe.columnCount();
+    const size_t rows = baselineVe.rowCount();
+    const size_t cols = baselineVe.columnCount();
 
     std::vector<std::vector<double>> sumAfr(rows, std::vector<double>(cols, 0.0));
     std::vector<std::vector<size_t>> countAfr(rows, std::vector<size_t>(cols, 0));
@@ -131,8 +129,8 @@ namespace engine {
 
       for (size_t r = 0; r < rows; ++r) {
         for (size_t c = 0; c < cols; ++c) {
-          double dRpm = (rpm - currentVe.xBreakpoints()[c]) / 1000.0;
-          double dLoad = (load - currentVe.yBreakpoints()[r]) / 10.0;
+          double dRpm = (rpm - baselineVe.xBreakpoints()[c]) / 1000.0;
+          double dLoad = (load - baselineVe.yBreakpoints()[r]) / 10.0;
           double dist = (dRpm * dRpm) + (dLoad * dLoad);
 
           if (dist < minDist) {
@@ -153,12 +151,12 @@ namespace engine {
         if (countAfr[r][c] >= config.minSamplesPerBin) {
           double avgObservedAfr = sumAfr[r][c] / static_cast<double>(countAfr[r][c]);
 
-          double rpmBp = currentVe.xBreakpoints()[c];
-          double loadBp = currentVe.yBreakpoints()[r];
+          double rpmBp = baselineVe.xBreakpoints()[c];
+          double loadBp = baselineVe.yBreakpoints()[r];
           double tgtAfr = targetAfr.sample(rpmBp, loadBp);
 
           if (tgtAfr > 0.0) {
-            double oldVe = currentVe.value(r, c);
+            double oldVe = baselineVe.value(r, c);
             double newVe = oldVe * (avgObservedAfr / tgtAfr);
             correctedVe.setValue(r, c, newVe);
           }
