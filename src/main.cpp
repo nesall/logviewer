@@ -3,6 +3,7 @@
 #include <GLFW/glfw3.h>
 
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 #include "implot.h"
@@ -43,6 +44,17 @@ int main() {
   ImGuiIO &io = ImGui::GetIO();
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+
+  ImFont *mainFont = io.Fonts->AddFontFromFileTTF("assets/fonts/Rubik-Regular.ttf", 16.0f, nullptr, io.Fonts->GetGlyphRangesDefault());
+#include "3rdparty/IconsFontAwesome7.h"
+  static const ImWchar iconsRanges[] = { ICON_MIN_FA, ICON_MAX_16_FA, 0 };
+  ImFontConfig fontConfig;
+  fontConfig.MergeMode = true;
+  fontConfig.PixelSnapH = true;
+  fontConfig.OversampleV = 3;
+  fontConfig.OversampleH = 1;
+  fontConfig.GlyphMinAdvanceX = 16.0f; // Keeps icon widths uniform
+  io.Fonts->AddFontFromFileTTF("assets/fonts/Font Awesome 7 Free-Solid-900.otf", 14.0f, &fontConfig, iconsRanges);
 
   ImGui::StyleColorsDark();
 

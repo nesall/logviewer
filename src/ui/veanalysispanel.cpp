@@ -1,6 +1,7 @@
 #include "ui/veanalysispanel.h"
 #include "ui/ui_helpers.h"
 #include "3rdparty/nlohmann/json.hpp"
+#include "3rdparty/IconsFontAwesome7.h"
 
 #include <algorithm>
 #include <cmath>
@@ -33,14 +34,14 @@ namespace ui {
     baselineVePanel_.setOnDataChangedCallback(recalcCallback);
     targetAfrPanel_.setCustomToolbarCallback([this, recalcCallback] {
       ImGui::BeginDisabled(!hasBaselineVe() || session_ == nullptr);
-      if (ui::UI::ButtonPrimary("Apply Changes", {}, "Recomputes AFR Delta and Suggested VE.")) {
+      if (ui::UI::ButtonPrimary(ICON_FA_CHECK " Apply Changes", {}, "Recomputes AFR Delta and Suggested VE.")) {
         recalcCallback();
       }
       ImGui::EndDisabled();
       });
     baselineVePanel_.setCustomToolbarCallback([this, recalcCallback] {
       ImGui::BeginDisabled(!hasTargetAfr() || session_ == nullptr);
-      if (ui::UI::ButtonPrimary("Apply Changes", {}, "Recomputes AFR Delta and Suggested VE.")) {
+      if (ui::UI::ButtonPrimary(ICON_FA_CHECK " Apply Changes", {}, "Recomputes AFR Delta and Suggested VE.")) {
         recalcCallback();
       }
       ImGui::EndDisabled();
@@ -50,9 +51,9 @@ namespace ui {
   void VeAnalysisPanel::setSession(const core::LogSession *session)
   {
     session_ = session;
-    if (session_ != nullptr) {
-      engine::populateDefaultsForSession(config_, *session_);
-    }
+    //if (session_ != nullptr) {
+    //  engine::populateDefaultsForSession(config_, *session_);
+    //}
     computeObservedAfr();
   }
 
@@ -63,9 +64,9 @@ namespace ui {
       return;
     }
 
-    const core::Channel *rpmCh = session_->findChannel(config_.rpmChannel);
-    const core::Channel *loadCh = session_->findChannel(config_.loadChannel);
-    const core::Channel *afrCh = session_->findChannel(config_.afrChannel);
+    const core::Channel *rpmCh = session_->findChannel(session_->channelMapping().rpm);
+    const core::Channel *loadCh = session_->findChannel(session_->channelMapping().load);
+    const core::Channel *afrCh = session_->findChannel(session_->channelMapping().afr);
 
     if (!rpmCh || !loadCh || !afrCh) {
       hasObservedData_ = false;
@@ -221,7 +222,7 @@ namespace ui {
       if (std::abs(diff) < 1e-5) {
         return ImGui::ColorConvertFloat4ToU32(ImVec4{ 0.6f, 0.6f, 0.6f, 1.0f }); // Gray for unchanged
       }
-      return ImGui::ColorConvertFloat4ToU32(ImVec4{ 0.2f, 0.8f, 1.0f, 1.0f });      
+      return ImGui::ColorConvertFloat4ToU32(ImVec4{ 0.2f, 0.8f, 1.0f, 1.0f });
       };
 
     auto customToolbar = [this]() {
@@ -258,9 +259,9 @@ namespace ui {
     const size_t cols = veTable.columnCount();
     if (rows == 0 || cols == 0) return;
 
-    const core::Channel *rpmCh = session_->findChannel(config_.rpmChannel);
-    const core::Channel *loadCh = session_->findChannel(config_.loadChannel);
-    const core::Channel *afrCh = session_->findChannel(config_.afrChannel);
+    const core::Channel *rpmCh = session_->findChannel(session_->channelMapping().rpm);
+    const core::Channel *loadCh = session_->findChannel(session_->channelMapping().load);
+    const core::Channel *afrCh = session_->findChannel(session_->channelMapping().afr);
 
     std::vector<std::vector<size_t>> sampleCounts(rows, std::vector<size_t>(cols, 0));
 
@@ -324,23 +325,23 @@ namespace ui {
 
       bool changed = false;
 
-      auto renderChannelCombo = [this, &changed](const char *label, std::string &selectedChannel) {
-        if (ImGui::BeginCombo(label, selectedChannel.empty() ? "None" : selectedChannel.c_str())) {
-          if (ImGui::Selectable("None", selectedChannel.empty())) {
-            selectedChannel.clear();
-            changed = true;
-          }
-          for (const auto &ch : session_->channels()) {
-            bool isSelected = (ch.name() == selectedChannel);
-            if (ImGui::Selectable(ch.name().c_str(), isSelected)) {
-              selectedChannel = ch.name();
-              changed = true;
-            }
-            if (isSelected) ImGui::SetItemDefaultFocus();
-          }
-          ImGui::EndCombo();
-        }
-        };
+      //auto renderChannelCombo = [this, &changed](const char *label, std::string &selectedChannel) {
+      //  if (ImGui::BeginCombo(label, selectedChannel.empty() ? "None" : selectedChannel.c_str())) {
+      //    if (ImGui::Selectable("None", selectedChannel.empty())) {
+      //      selectedChannel.clear();
+      //      changed = true;
+      //    }
+      //    for (const auto &ch : session_->channels()) {
+      //      bool isSelected = (ch.name() == selectedChannel);
+      //      if (ImGui::Selectable(ch.name().c_str(), isSelected)) {
+      //        selectedChannel = ch.name();
+      //        changed = true;
+      //      }
+      //      if (isSelected) ImGui::SetItemDefaultFocus();
+      //    }
+      //    ImGui::EndCombo();
+      //  }
+      //  };
 
       if (ImGui::BeginTabBar("ObservedAfrSettingsTabBar")) {
 
@@ -378,15 +379,15 @@ namespace ui {
         }
 
 
-        if (ImGui::BeginTabItem("Channel Mapping")) {
-          ImGui::Spacing();
-          renderChannelCombo("RPM Channel", config_.rpmChannel);
-          renderChannelCombo("Load Channel", config_.loadChannel);
-          renderChannelCombo("AFR Channel", config_.afrChannel);
-          renderChannelCombo("TPSdot Channel", config_.tpsDotChannel);
-          renderChannelCombo("CLT Channel", config_.cltChannel);
-          ImGui::EndTabItem();
-        }
+        //if (ImGui::BeginTabItem("Channel Mapping")) {
+        //  ImGui::Spacing();
+        //  renderChannelCombo("RPM Channel", session_->channelMapping().rpm);
+        //  renderChannelCombo("Load Channel", session_->channelMapping().load);
+        //  renderChannelCombo("AFR Channel", session_->channelMapping().afr);
+        //  renderChannelCombo("TPSdot Channel", session_->channelMapping().tpsDot);
+        //  renderChannelCombo("CLT Channel", session_->channelMapping().clt);
+        //  ImGui::EndTabItem();
+        //}
 
         ImGui::EndTabBar();
       }
@@ -398,7 +399,7 @@ namespace ui {
       ImGui::Separator();
     }
 
-    if (ui::UI::ButtonPrimary("Recalculate Observed AFR")) {
+    if (ui::UI::ButtonPrimary(ICON_FA_REPEAT " Recalculate Observed AFR")) {
       computeObservedAfr();
     }
 
@@ -497,9 +498,9 @@ namespace ui {
       return;
     }
 
-    const core::Channel *rpmCh = session_->findChannel(config_.rpmChannel);
-    const core::Channel *loadCh = session_->findChannel(config_.loadChannel);
-    const core::Channel *afrCh = session_->findChannel(config_.afrChannel);
+    const core::Channel *rpmCh = session_->findChannel(session_->channelMapping().rpm);
+    const core::Channel *loadCh = session_->findChannel(session_->channelMapping().load);
+    const core::Channel *afrCh = session_->findChannel(session_->channelMapping().afr);
 
     if (!rpmCh || !loadCh || !afrCh) {
       hasAfrDelta_ = false;
@@ -583,7 +584,7 @@ namespace ui {
       return;
     }
 
-    if (ui::UI::ButtonPrimary("Recalculate AFR Delta")) {
+    if (ui::UI::ButtonPrimary(ICON_FA_REPEAT " Recalculate AFR Delta")) {
       computeAfrDelta();
     }
 
@@ -799,11 +800,11 @@ namespace ui {
 
     // Persist analysis channel / sample thresholds
     j["config"] = {
-      {"rpmChannel", config_.rpmChannel},
-      {"loadChannel", config_.loadChannel},
-      {"afrChannel", config_.afrChannel},
-      {"tpsDotChannel", config_.tpsDotChannel},
-      {"cltChannel", config_.cltChannel},
+      //{"rpmChannel", session_->channelMapping().rpm},
+      //{"loadChannel", session_->channelMapping().load},
+      //{"afrChannel", session_->channelMapping().afr},
+      //{"tpsDotChannel", session_->channelMapping().tpsDot},
+      //{"cltChannel", session_->channelMapping().clt},
       {"minSamplesPerBin", config_.minSamplesPerBin},
       {"enableTpsDotFilter", config_.enableTpsDotFilter},
       {"maxTpsDot", config_.maxTpsDot},
@@ -831,11 +832,11 @@ namespace ui {
     // Restore analysis config
     if (state.contains("config") && state["config"].is_object()) {
       const auto &cfg = state["config"];
-      if (cfg.contains("rpmChannel")) config_.rpmChannel = cfg["rpmChannel"].get<std::string>();
-      if (cfg.contains("loadChannel")) config_.loadChannel = cfg["loadChannel"].get<std::string>();
-      if (cfg.contains("afrChannel")) config_.afrChannel = cfg["afrChannel"].get<std::string>();
-      if (cfg.contains("tpsDotChannel")) config_.tpsDotChannel = cfg["tpsDotChannel"].get<std::string>();
-      if (cfg.contains("cltChannel")) config_.cltChannel = cfg["cltChannel"].get<std::string>();
+      //if (cfg.contains("rpmChannel")) session_->channelMapping().rpm = cfg["rpmChannel"].get<std::string>();
+      //if (cfg.contains("loadChannel")) session_->channelMapping().load = cfg["loadChannel"].get<std::string>();
+      //if (cfg.contains("afrChannel")) session_->channelMapping().afr = cfg["afrChannel"].get<std::string>();
+      //if (cfg.contains("tpsDotChannel")) session_->channelMapping().tpsDot = cfg["tpsDotChannel"].get<std::string>();
+      //if (cfg.contains("cltChannel")) session_->channelMapping().clt = cfg["cltChannel"].get<std::string>();
       if (cfg.contains("minSamplesPerBin")) config_.minSamplesPerBin = cfg["minSamplesPerBin"].get<size_t>();
 
       if (cfg.contains("enableTpsDotFilter")) config_.enableTpsDotFilter = cfg["enableTpsDotFilter"].get<bool>();

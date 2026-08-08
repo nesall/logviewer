@@ -1,9 +1,107 @@
 #include "core/logsession.h"
+#include "3rdparty/nlohmann/json.hpp"
 
 #include <algorithm>
 #include <utility>
 
 namespace core {
+
+  void ChannelMapping::autoDetect(const LogSession &session)
+  {
+    // Helper lambda to find the first channel present in the session from a candidate list
+    auto findFirstMatch = [&session](const std::vector<std::string> &candidates) -> std::string {
+      for (const auto &name : candidates) {
+        if (session.findChannel(name) != nullptr) {
+          return name;
+        }
+      }
+      return "";
+      };
+
+    // Candidate lists ordered by format prevalence
+    rpm = findFirstMatch({
+      "RPM",                       // MegaSquirt / Haltech / Standard
+      "Filtered RPM",              // Haltech alternative
+      "Engine Speed"
+      });
+
+    load = findFirstMatch({
+      "MAP",                       // MegaSquirt
+      "Fuel - Load (MAP)",         // Haltech NSP
+      "Manifold Pressure",         // Haltech raw
+      "Ignition - Load (MAP)",     // Haltech alternative
+      "Engine Demand",             // Haltech TPS-based load
+      "TPS"                        // MegaSquirt Alpha-N
+      });
+
+    afr = findFirstMatch({
+      "AFR",                       // MegaSquirt
+      "Wideband O2 1",             // Haltech
+      "Wideband O2 Overall",       // Haltech
+      "WBC1 Lambda",               // Haltech
+      "AFR1",
+      "Lambda1"
+      });
+
+    egt = findFirstMatch({
+      "EGT1",                      // MegaSquirt
+      "Exhaust Gas Temperature 1"  // Haltech
+      });
+
+    tps = findFirstMatch({
+      "TPS",                       // MegaSquirt
+      "Throttle Position",         // Haltech
+      "Throttle Position - Cable"  // Haltech
+      });
+
+    tpsDot = findFirstMatch({
+      "TPSdot",                    // MegaSquirt
+      "Throttle Position Derivative", // Haltech
+      "Throttle Position Derivative - Cable", // Haltech
+      "MAPdot"
+      });
+
+    clt = findFirstMatch({
+      "CLT",                       // MegaSquirt
+      "Coolant Temperature"        // Haltech
+      });
+
+    timing = findFirstMatch({
+      "SPK: Spark Advance",        // MegaSquirt
+      "Ignition Timing"            // Haltech
+      });
+  }
+
+  nlohmann::json ChannelMapping::toJson() const
+  {
+    return nlohmann::json{
+        {"rpm", rpm},
+        {"load", load},
+        {"afr", afr},
+        {"tps", tps},
+        {"tpsDot", tpsDot},
+        {"clt", clt},
+        {"egt", egt},
+        {"pw", pw},
+        {"timing", timing}
+    };
+  }
+
+  ChannelMapping ChannelMapping::fromJson(const nlohmann::json &j)
+  {
+    ChannelMapping mapping;
+    if (j.contains("rpm")) mapping.rpm = j["rpm"].get<std::string>();
+    if (j.contains("load")) mapping.load = j["load"].get<std::string>();
+    if (j.contains("afr")) mapping.afr = j["afr"].get<std::string>();
+    if (j.contains("tps")) mapping.tps = j["tps"].get<std::string>();
+    if (j.contains("tpsDot")) mapping.tpsDot = j["tpsDot"].get<std::string>();
+    if (j.contains("clt")) mapping.clt = j["clt"].get<std::string>();
+    if (j.contains("egt")) mapping.egt = j["egt"].get<std::string>();
+    if (j.contains("pw")) mapping.pw = j["pw"].get<std::string>();
+    if (j.contains("timing")) mapping.timing = j["timing"].get<std::string>();
+    return mapping;
+  }
+
 
   void LogSession::addChannel(Channel channel)
   {

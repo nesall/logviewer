@@ -7,17 +7,36 @@
 #include <fstream>
 #include <sstream>
 #include <utility>
+#include <random>
 
 #include "3rdparty/nlohmann/json.hpp"
 #include "3rdparty/portable-file-dialogs.h"
 #include "imgui.h"
 #include "imgui_internal.h"
 
+namespace {
+  std::string generateUniqueId(size_t length = 8) {
+    static const char charset[] =
+      "0123456789"
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+      "abcdefghijklmnopqrstuvwxyz";
+    static std::mt19937 rng(std::random_device{}());
+    static std::uniform_int_distribution<> dist(0, sizeof(charset) - 2);
+    std::string id;
+    id.reserve(length);
+    for (size_t i = 0; i < length; ++i) {
+      id += charset[dist(rng)];
+    }
+    return id;
+  }
+}
+
 namespace ui {
 
   TableEditorPanel::TableEditorPanel(std::string title, std::string panelTypeIdValue,
     std::string displayName, core::Table2D initialTable, int xDecimalPlaces, int yDecimalPlaces)
     : PlotPanel(std::move(title))
+    , tableUniqueId_(generateUniqueId())
     , panelTypeIdValue_(std::move(panelTypeIdValue))
     , displayName_(std::move(displayName))
     , table_(std::move(initialTable))
@@ -143,51 +162,55 @@ namespace ui {
   {
     bool hasSelection = !selectedCells_.empty();
 
-    ImGui::BeginDisabled(!hasSelection);
+    if (batchToolbarVisible_) {
+      ImGui::BeginDisabled(!hasSelection);
 
-    ImGui::SetNextItemWidth(80.0f);
-    ImGui::InputDouble("##batchVal", &batchValue_, 0.0, 0.0, "%.2f");
+      ImGui::SetNextItemWidth(80.0f);
+      ImGui::InputDouble("##batchVal", &batchValue_, 0.0, 0.0, "%.2f");
 
-    ImGui::SameLine();
-    if (ui::UI::Button("* Scale", {}, {}, "Multiply selected cells by factor")) {
-      applyBatchMultiply(batchValue_);
+      ImGui::SameLine();
+      if (ui::UI::Button("* Scale", {}, {}, "Multiply selected cells by factor")) {
+        applyBatchMultiply(batchValue_);
+      }
+
+      ImGui::SameLine();
+      if (ui::UI::Button("+ Offset", {}, {}, "Add offset to selected cells")) {
+        applyBatchOffset(batchValue_);
+      }
+
+      ImGui::SameLine();
+      if (ui::UI::Button("= Set", {}, {}, "Set all selected cells to value")) {
+        applyBatchSetValue(batchValue_);
+      }
+
+      ImGui::SameLine();
+      if (ui::UI::Button("Interpolate", {}, {}, "Bilinear interpolation between bounding corners")) {
+        interpolateSelectedRegion();
+      }
+
+      ImGui::SameLine();
+      if (ui::UI::Button("Extrapolate VE", {}, {}, "Extrapolate values for selected cells")) {
+        showExtrapolateModal_ = true;
+        wasExtrapolateModalOpen_ = false;
+        ImGui::OpenPopup(ui::popups::ExtrapolateVe);
+      }
+      renderExtrapolateModal();
+
+      ImGui::EndDisabled();
+
+      if (hasSelection) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%zu cells selected)", selectedCells_.size());
+      }
     }
-
-    ImGui::SameLine();
-    if (ui::UI::Button("+ Offset", {}, {}, "Add offset to selected cells")) {
-      applyBatchOffset(batchValue_);
-    }
-
-    ImGui::SameLine();
-    if (ui::UI::Button("= Set", {}, {}, "Set all selected cells to value")) {
-      applyBatchSetValue(batchValue_);
-    }
-
-    ImGui::SameLine();
-    if (ui::UI::Button("Interpolate", {}, {}, "Bilinear interpolation between bounding corners")) {
-      interpolateSelectedRegion();
-    }
-
-    ImGui::SameLine();
-    if (ui::UI::Button("Extrapolate VE", {}, {}, "Extrapolate values for selected cells")) {
-      showExtrapolateModal_ = true;
-      wasExtrapolateModalOpen_ = false;
-      ImGui::OpenPopup(ui::popups::ExtrapolateVe);
-    }
-    renderExtrapolateModal();
-
-    ImGui::EndDisabled();
 
     if (customToolbarCallback_) {
-      ImGui::SameLine();
-      ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+      if (batchToolbarVisible_) {
+        ImGui::SameLine();
+        ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+      }
       ImGui::SameLine();
       customToolbarCallback_();
-    }
-
-    if (hasSelection) {
-      ImGui::SameLine();
-      ImGui::TextDisabled("(%zu cells selected)", selectedCells_.size());
     }
   }
 
@@ -376,6 +399,7 @@ namespace ui {
           table_.setValue(r, c, newValues[r][c]);
         }
       }
+      tableUniqueId_ = generateUniqueId();
     } else {
       int startR = static_cast<int>(table_.rowCount()) - 1;
       int startC = 0;
@@ -440,7 +464,8 @@ namespace ui {
       for (size_t c = 0; c < cols; ++c) {
         table_.setValue(r, c, zVals[r * cols + c]);
       }
-    }    
+    }
+    tableUniqueId_ = generateUniqueId();
     notifyDataChanged();
     return true;
   }
@@ -521,6 +546,7 @@ namespace ui {
     if (ui::UI::Button("OK")) {
       ImGui::CloseCurrentPopup();
       accepted = true;
+      tableUniqueId_ = generateUniqueId();
       notifyDataChanged();
     }
     ImGui::SameLine();
@@ -588,7 +614,7 @@ namespace ui {
       ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
       ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
 
-    std::string tableId = "ValueGrid###" + title();
+    std::string tableId = "ValueGrid###" + title() + "_" + tableUniqueId_;
     if (ImGui::BeginTable(tableId.c_str(), static_cast<int>(cols + 1), flags, ImVec2(0.0f, 400.0f))) {
       ImGui::TableSetupScrollFreeze(1, 1);
       ImGui::TableSetupColumn("Load \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);

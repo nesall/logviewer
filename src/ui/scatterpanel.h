@@ -32,6 +32,7 @@ namespace ui {
     void generatePlaceholderData();
     void rebindChannels();
     void rebuildColorData();
+    void computeFilteredStats();
 
     std::string selectedXChannel_;
     std::string selectedYChannel_;
@@ -44,14 +45,38 @@ namespace ui {
     const std::vector<double> *cachedYValues_ = nullptr;
     std::string cachedXUnit_;
     std::string cachedYUnit_;
+    std::string cachedZUnit_;
 
     // Only populated when selectedColorChannel_ is non-empty and found.
-    std::vector<uint32_t> cachedPointColors_;
     double colorChannelMin_ = 0.0;
     double colorChannelMax_ = 0.0;
 
     std::vector<double> placeholderXValues_;
     std::vector<double> placeholderYValues_;
+
+    bool enableColorFilter_ = false;
+    double colorFilterMin_ = 0.0;
+    double colorFilterMax_ = 0.0;
+    bool colorFilterMinMaxSet_ = false;
+
+    // Filtered buffer for plotting
+    std::vector<double> filteredXValues_;
+    std::vector<double> filteredYValues_;
+    std::vector<uint32_t> filteredPointColors_;
+
+    bool showStatsOverlay_ = true;
+    struct ScatterStats {
+      size_t pointCount = 0;
+      double timeInZoneSec = 0.0;
+      double avgX = 0.0;
+      double avgY = 0.0;
+      double avgZ = 0.0;
+      double maxZ = 0.0;
+      double maxXAtMaxZ = 0.0;
+      double maxYAtMaxZ = 0.0;
+      double correlationXY = 0.0; // Pearson r
+      bool valid = false;
+    } stats_;
   };
 
 } // namespace ui

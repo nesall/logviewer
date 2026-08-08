@@ -16,7 +16,7 @@ namespace ui {
     inline constexpr const char *LoadError = "Load Error###LoadErrorModal";
     inline constexpr const char *StatusPanelChannels = "Status Panel Channels###StatusPanelChannelsPopup";
     inline constexpr const char *ScatterPanelChannels = "Scatter Panel Channels###ScatterPanelChannelsPopup";
-
+    inline constexpr const char *ChannelMapping = "Channel Semantic Mapping###ChannelMappingModal";
   } // namespace popups
 
 
@@ -65,7 +65,7 @@ namespace ui {
         break;
       }
 
-      ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+      ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 2.0f);
 
       if (normal) {
         ImGui::PushStyleColor(ImGuiCol_Button, *normal);

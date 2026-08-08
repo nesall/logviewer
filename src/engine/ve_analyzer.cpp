@@ -5,64 +5,64 @@
 
 namespace engine {
 
-  void populateDefaultsForSession(VeAnalysisConfig &config, const core::LogSession &session) {
-    // Helper lambda to find the first channel present in the session from a candidate list
-    auto findFirstMatch = [&session](const std::vector<std::string> &candidates) -> std::string {
-      for (const auto &name : candidates) {
-        if (session.findChannel(name) != nullptr) {
-          return name;
-        }
-      }
-      return "";
-      };
+  //void populateDefaultsForSession(VeAnalysisConfig &config, const core::LogSession &session) {
+  //  // Helper lambda to find the first channel present in the session from a candidate list
+  //  auto findFirstMatch = [&session](const std::vector<std::string> &candidates) -> std::string {
+  //    for (const auto &name : candidates) {
+  //      if (session.findChannel(name) != nullptr) {
+  //        return name;
+  //      }
+  //    }
+  //    return "";
+  //    };
 
-    // Candidate lists ordered by format prevalence
-    config.rpmChannel = findFirstMatch({
-      "RPM",                       // MegaSquirt / Haltech / Standard
-      "Filtered RPM",              // Haltech alternative
-      "Engine Speed"
-      });
+  //  // Candidate lists ordered by format prevalence
+  //  config.rpmChannel = findFirstMatch({
+  //    "RPM",                       // MegaSquirt / Haltech / Standard
+  //    "Filtered RPM",              // Haltech alternative
+  //    "Engine Speed"
+  //    });
 
-    config.loadChannel = findFirstMatch({
-      "MAP",                       // MegaSquirt
-      "Fuel - Load (MAP)",         // Haltech NSP[cite: 2]
-      "Manifold Pressure",         // Haltech raw[cite: 2]
-      "Ignition - Load (MAP)",     // Haltech alternative[cite: 2]
-      "Engine Demand",             // Haltech TPS-based load[cite: 2]
-      "TPS"                        // MegaSquirt Alpha-N
-      });
+  //  config.loadChannel = findFirstMatch({
+  //    "MAP",                       // MegaSquirt
+  //    "Fuel - Load (MAP)",         // Haltech NSP[cite: 2]
+  //    "Manifold Pressure",         // Haltech raw[cite: 2]
+  //    "Ignition - Load (MAP)",     // Haltech alternative[cite: 2]
+  //    "Engine Demand",             // Haltech TPS-based load[cite: 2]
+  //    "TPS"                        // MegaSquirt Alpha-N
+  //    });
 
-    config.afrChannel = findFirstMatch({
-      "AFR",                       // MegaSquirt
-      "Wideband O2 1",             // Haltech[cite: 2]
-      "Wideband O2 Overall",       // Haltech[cite: 2]
-      "WBC1 Lambda",               // Haltech[cite: 2]
-      "AFR1",
-      "Lambda1"
-      });
+  //  config.afrChannel = findFirstMatch({
+  //    "AFR",                       // MegaSquirt
+  //    "Wideband O2 1",             // Haltech[cite: 2]
+  //    "Wideband O2 Overall",       // Haltech[cite: 2]
+  //    "WBC1 Lambda",               // Haltech[cite: 2]
+  //    "AFR1",
+  //    "Lambda1"
+  //    });
 
-    config.tpsDotChannel = findFirstMatch({
-      "TPSdot",                    // MegaSquirt[cite: 1]
-      "Throttle Position Derivative", // Haltech[cite: 2]
-      "Throttle Position Derivative - Cable", // Haltech[cite: 2]
-      "MAPdot"
-      });
+  //  config.tpsDotChannel = findFirstMatch({
+  //    "TPSdot",                    // MegaSquirt[cite: 1]
+  //    "Throttle Position Derivative", // Haltech[cite: 2]
+  //    "Throttle Position Derivative - Cable", // Haltech[cite: 2]
+  //    "MAPdot"
+  //    });
 
-    config.cltChannel = findFirstMatch({
-      "CLT",                       // MegaSquirt[cite: 1]
-      "Coolant Temperature"        // Haltech[cite: 2]
-      });
-  }
+  //  config.cltChannel = findFirstMatch({
+  //    "CLT",                       // MegaSquirt[cite: 1]
+  //    "Coolant Temperature"        // Haltech[cite: 2]
+  //    });
+  //}
 
 
   VeTransientFilter::VeTransientFilter(const core::LogSession &session, const VeAnalysisConfig &config)
     : config_(config)
   {
     if (config_.enableTpsDotFilter) {
-      tpsDotCh_ = session.findChannel(config_.tpsDotChannel);
+      tpsDotCh_ = session.findChannel(session.channelMapping().tpsDot);
     }
     if (config_.enableCltFilter) {
-      cltCh_ = session.findChannel(config_.cltChannel);
+      cltCh_ = session.findChannel(session.channelMapping().clt);
     }
   }
 
@@ -94,9 +94,9 @@ namespace engine {
   {
     core::Table2D correctedVe = baselineVe;
 
-    const core::Channel *rpmCh = session.findChannel(config.rpmChannel);
-    const core::Channel *loadCh = session.findChannel(config.loadChannel);
-    const core::Channel *afrCh = session.findChannel(config.afrChannel);
+    const core::Channel *rpmCh = session.findChannel(session.channelMapping().rpm);
+    const core::Channel *loadCh = session.findChannel(session.channelMapping().load);
+    const core::Channel *afrCh = session.findChannel(session.channelMapping().afr);
 
     if (!rpmCh || !loadCh || !afrCh) {
       return correctedVe;
@@ -155,7 +155,7 @@ namespace engine {
           double loadBp = baselineVe.yBreakpoints()[r];
           double tgtAfr = targetAfr.sample(rpmBp, loadBp);
 
-          if (tgtAfr > 0.0) {
+          if (0 < tgtAfr) {
             double oldVe = baselineVe.value(r, c);
             double newVe = oldVe * (avgObservedAfr / tgtAfr);
             correctedVe.setValue(r, c, newVe);

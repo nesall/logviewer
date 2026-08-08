@@ -44,6 +44,8 @@ namespace ui {
     void applyBatchSetValue(double value);
     void interpolateSelectedRegion();
     void applyExtrapolationPreview();
+    void setBatchToolbarVisible(bool visible) { batchToolbarVisible_ = visible; }
+    bool isBatchToolbarVisible() const { return batchToolbarVisible_; }
 
     void setSelection(const std::set<std::pair<int, int>> &cells);
     const std::set<std::pair<int, int>> &selectedCells() const { return selectedCells_; }
@@ -70,6 +72,7 @@ namespace ui {
     void notifyDataChanged() { if (onDataChanged_) onDataChanged_(); }
 
   private:
+    std::string tableUniqueId_;
     std::string panelTypeIdValue_;
     std::string displayName_;
     core::Table2D table_;
@@ -99,6 +102,7 @@ namespace ui {
     double batchValue_ = 1.05;
 
     core::Table2D tableBackup_;
+    bool batchToolbarVisible_ = true;
     bool showExtrapolateModal_ = false;
     bool wasExtrapolateModalOpen_ = false;
     bool showPreview_ = true;

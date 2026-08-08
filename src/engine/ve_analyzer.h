@@ -8,15 +8,6 @@
 namespace engine {
 
   struct VeAnalysisConfig {
-    std::string rpmChannel = "RPM";
-    std::string loadChannel = "MAP";
-    std::string afrChannel = "AFR";
-
-    // Optional filtering channels
-    std::string tpsDotChannel = "TPSdot";
-    std::string cltChannel = "CLT";
-    std::string statusChannel = "Engine"; // or "Status1" for fuel cut checks
-
     size_t minSamplesPerBin = 10;
 
     // Transient & Environmental Filtering Rules
@@ -30,7 +21,7 @@ namespace engine {
     double minLoadThreshold = 15.0; // Ignore deep overrun / vacuum decel
   };
 
-  void populateDefaultsForSession(VeAnalysisConfig &config, const core::LogSession &session);
+  //void populateDefaultsForSession(VeAnalysisConfig &config, const core::LogSession &session);
 
   // Reusable transient filter to share identical rules across different binning grids
   class VeTransientFilter {

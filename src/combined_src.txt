@@ -198,11 +198,109 @@ namespace core {
 ## File: src/core/logsession.cpp
 
 #include "core/logsession.h"
+#include "3rdparty/nlohmann/json.hpp"
 
 #include <algorithm>
 #include <utility>
 
 namespace core {
+
+  void ChannelMapping::autoDetect(const LogSession &session)
+  {
+    // Helper lambda to find the first channel present in the session from a candidate list
+    auto findFirstMatch = [&session](const std::vector<std::string> &candidates) -> std::string {
+      for (const auto &name : candidates) {
+        if (session.findChannel(name) != nullptr) {
+          return name;
+        }
+      }
+      return "";
+      };
+
+    // Candidate lists ordered by format prevalence
+    rpm = findFirstMatch({
+      "RPM",                       // MegaSquirt / Haltech / Standard
+      "Filtered RPM",              // Haltech alternative
+      "Engine Speed"
+      });
+
+    load = findFirstMatch({
+      "MAP",                       // MegaSquirt
+      "Fuel - Load (MAP)",         // Haltech NSP
+      "Manifold Pressure",         // Haltech raw
+      "Ignition - Load (MAP)",     // Haltech alternative
+      "Engine Demand",             // Haltech TPS-based load
+      "TPS"                        // MegaSquirt Alpha-N
+      });
+
+    afr = findFirstMatch({
+      "AFR",                       // MegaSquirt
+      "Wideband O2 1",             // Haltech
+      "Wideband O2 Overall",       // Haltech
+      "WBC1 Lambda",               // Haltech
+      "AFR1",
+      "Lambda1"
+      });
+
+    egt = findFirstMatch({
+      "EGT1",                      // MegaSquirt
+      "Exhaust Gas Temperature 1"  // Haltech
+      });
+
+    tps = findFirstMatch({
+      "TPS",                       // MegaSquirt
+      "Throttle Position",         // Haltech
+      "Throttle Position - Cable"  // Haltech
+      });
+
+    tpsDot = findFirstMatch({
+      "TPSdot",                    // MegaSquirt
+      "Throttle Position Derivative", // Haltech
+      "Throttle Position Derivative - Cable", // Haltech
+      "MAPdot"
+      });
+
+    clt = findFirstMatch({
+      "CLT",                       // MegaSquirt
+      "Coolant Temperature"        // Haltech
+      });
+
+    timing = findFirstMatch({
+      "SPK: Spark Advance",        // MegaSquirt
+      "Ignition Timing"            // Haltech
+      });
+  }
+
+  nlohmann::json ChannelMapping::toJson() const
+  {
+    return nlohmann::json{
+        {"rpm", rpm},
+        {"load", load},
+        {"afr", afr},
+        {"tps", tps},
+        {"tpsDot", tpsDot},
+        {"clt", clt},
+        {"egt", egt},
+        {"pw", pw},
+        {"timing", timing}
+    };
+  }
+
+  ChannelMapping ChannelMapping::fromJson(const nlohmann::json &j)
+  {
+    ChannelMapping mapping;
+    if (j.contains("rpm")) mapping.rpm = j["rpm"].get<std::string>();
+    if (j.contains("load")) mapping.load = j["load"].get<std::string>();
+    if (j.contains("afr")) mapping.afr = j["afr"].get<std::string>();
+    if (j.contains("tps")) mapping.tps = j["tps"].get<std::string>();
+    if (j.contains("tpsDot")) mapping.tpsDot = j["tpsDot"].get<std::string>();
+    if (j.contains("clt")) mapping.clt = j["clt"].get<std::string>();
+    if (j.contains("egt")) mapping.egt = j["egt"].get<std::string>();
+    if (j.contains("pw")) mapping.pw = j["pw"].get<std::string>();
+    if (j.contains("timing")) mapping.timing = j["timing"].get<std::string>();
+    return mapping;
+  }
+
 
   void LogSession::addChannel(Channel channel)
   {
@@ -274,9 +372,32 @@ namespace core {
 #include <string>
 #include <vector>
 
+#include "3rdparty/nlohmann/json_fwd.hpp"
+
 #include "core/channel.h"
+#include "core/regime.h"
 
 namespace core {
+
+  class LogSession;
+
+  struct ChannelMapping {
+    std::string rpm = "RPM";
+    std::string load = "MAP";
+    std::string afr = "AFR";
+    std::string tps = "TPS";
+    std::string tpsDot = "TPSdot";
+    std::string clt = "CLT";
+    std::string egt = "EGT1";
+    std::string pw = "PW";
+    std::string timing = "Ignition Timing";
+
+    // Auto-detects defaults from a loaded log session
+    void autoDetect(const LogSession &session);
+
+    nlohmann::json toJson() const;
+    static ChannelMapping fromJson(const nlohmann::json &j);
+  };
 
   struct TimeCropRange {
     double startSec = 0.0;
@@ -317,8 +438,16 @@ namespace core {
     size_t cropEndIndex() const;
     bool isRowInCropRange(size_t rowIndex) const;
 
+    const ChannelMapping &channelMapping() const { return channelMapping_; }
+    void setChannelMapping(ChannelMapping mapping) { channelMapping_ = std::move(mapping); }
+
+    const std::vector<RegimeSummary> &regimeSummaries() const { return regimeSummaries_; }
+    std::vector<RegimeSummary> &regimeSummaries() { return regimeSummaries_; }
+    void setRegimeSummaries(std::vector<RegimeSummary> summaries) { regimeSummaries_ = std::move(summaries); }
+
   private:
     std::vector<Channel> channels_;
+    ChannelMapping channelMapping_;
     size_t rowCount_ = 0;
     std::optional<size_t> timeChannelIndex_;
 
@@ -327,6 +456,59 @@ namespace core {
     std::string captureDate_;
 
     TimeCropRange cropRange_;
+    std::vector<RegimeSummary> regimeSummaries_;
+  };
+
+} // namespace core
+
+
+## File: src/core/regime.h
+
+#pragma once
+
+#include <string>
+#include <vector>
+#include <imgui.h>
+
+namespace core {
+
+  struct TimeInterval {
+    double startSec = 0.0;
+    double endSec = 0.0;
+  };
+
+  enum class RegimeType {
+    FreewayCruise,
+    OverrunFuelCut,
+    HighGearLowRpmBoost,
+    HighRpmVacuum,
+    IdleStability,
+    TransientTipIn
+  };
+
+  struct RegimeSummary {
+    RegimeType type;
+    std::string id;            // Internal key e.g. "freeway_cruise"
+    std::string displayName;   // UI Label e.g. "Freeway Cruise"
+
+    ImVec4 color = ImVec4(0.2f, 0.6f, 0.9f, 0.30f); // Default shaded color
+    bool showShading = false;   // Toggle timeline shading
+
+    std::vector<TimeInterval> intervals;
+
+    size_t sampleCount = 0;
+    double totalDwellTimeSec = 0.0;
+    double percentageOfLog = 0.0;
+
+    // Aggregated Metrics
+    double avgRpm = 0.0;
+    double avgMap = 0.0;
+    double avgAfr = 0.0;
+    double avgTiming = 0.0;
+    double peakEgt = 0.0;
+    double peakKnock = 0.0;
+
+    std::string warningMessage; // e.g., "High Cruise EGT: 1640°F Peak"
   };
 
 } // namespace core
@@ -610,6 +792,164 @@ namespace core {
 
 
 
+## File: src/engine/regime_analyzer.cpp
+
+#include "engine/regime_analyzer.h"
+#include <cmath>
+#include <algorithm>
+#include <limits>
+
+namespace engine {
+
+  namespace {
+    // Helper to extract channel values safely (returns NaN if index out of range or null)
+    double getVal(const core::Channel *ch, size_t idx) {
+      if (!ch || idx >= ch->values().size()) return std::numeric_limits<double>::quiet_NaN();
+      return ch->values()[idx];
+    }
+  } // namespace
+
+  std::vector<core::RegimeSummary> RegimeAnalyzer::analyzeSession(const core::LogSession &session) {
+    std::vector<core::RegimeSummary> summaries;
+    if (session.rowCount() == 0) return summaries;
+
+    const auto *timeSec = session.timeSec();
+    if (!timeSec || timeSec->empty()) return summaries;
+
+    double totalLogTime = timeSec->back() - timeSec->front();
+    if (totalLogTime <= 0.0) totalLogTime = 1.0;
+
+    // Find Channels
+    const auto &mapping = session.channelMapping();
+    const auto *rpmCh = session.findChannel(mapping.rpm);
+    const auto *mapCh = session.findChannel(mapping.load);
+    const auto *tpsCh = session.findChannel(mapping.tps);
+    const auto *tpsDotCh = session.findChannel(mapping.tpsDot);
+    const auto *afrCh = session.findChannel(mapping.afr);
+    const auto *egtCh = session.findChannel(mapping.egt);
+    const auto *pwCh = session.findChannel(mapping.pw);
+    const auto *timingCh = session.findChannel(mapping.timing);
+
+    // Initialize Preset Regimes
+    core::RegimeSummary cruise{ core::RegimeType::FreewayCruise, "freeway_cruise", "Freeway Cruise", ImVec4(0.2f, 0.7f, 1.0f, 0.25f) };
+    core::RegimeSummary overrun{ core::RegimeType::OverrunFuelCut, "overrun_fuel_cut", "Overrun Fuel Cut (DFCO)", ImVec4(0.8f, 0.3f, 0.3f, 0.25f) };
+    core::RegimeSummary lspi{ core::RegimeType::HighGearLowRpmBoost, "lspi_risk", "Low RPM / High Boost (LSPI)", ImVec4(1.0f, 0.5f, 0.0f, 0.30f) };
+    core::RegimeSummary highVac{ core::RegimeType::HighRpmVacuum, "high_rpm_vacuum", "High RPM Vacuum / Decel", ImVec4(0.6f, 0.4f, 0.8f, 0.25f) };
+    core::RegimeSummary idle{ core::RegimeType::IdleStability, "idle_stability", "Idle Stability", ImVec4(0.3f, 0.8f, 0.4f, 0.25f) };
+    core::RegimeSummary tipIn{ core::RegimeType::TransientTipIn, "transient_tipin", "Transient Tip-In", ImVec4(0.9f, 0.9f, 0.2f, 0.25f) };
+
+    std::vector<core::RegimeSummary *> allRegimes = { &cruise, &overrun, &lspi, &highVac, &idle, &tipIn };
+
+    const size_t rowCount = session.rowCount();
+    std::vector<bool> matches(allRegimes.size(), false);
+
+    std::vector<double> matchStartTimes(allRegimes.size(), 0.0);
+    std::vector<bool> inInterval(allRegimes.size(), false);
+
+    // Temp accumulation maps
+    struct Acc { double sumRpm = 0, sumMap = 0, sumAfr = 0, sumTiming = 0, maxEgt = 0; size_t count = 0; };
+    std::vector<Acc> accs(allRegimes.size());
+
+    for (size_t i = 0; i < rowCount; ++i) {
+      if (!session.isRowInCropRange(i)) continue;
+
+      double t = (*timeSec)[i];
+      double rpm = getVal(rpmCh, i);
+      double map = getVal(mapCh, i);
+      double tps = getVal(tpsCh, i);
+      double tpsDot = getVal(tpsDotCh, i);
+      double afr = getVal(afrCh, i);
+      double egt = getVal(egtCh, i);
+      double pw = getVal(pwCh, i);
+      double timing = getVal(timingCh, i);
+
+      // Evaluate Conditions
+      matches[0] = (map < 60.0 && tps < 20.0 && std::abs(tpsDot) < 10.0 && rpm > 2000.0 && rpm < 4000.0); // Cruise
+      matches[1] = (map < 22.0 && rpm > 1800.0 && (pw == 0.0 || tps < 2.0));                              // Overrun
+      matches[2] = (rpm > 1500.0 && rpm < 3000.0 && map > 110.0 && tps > 50.0);                          // LSPI / Low RPM Boost
+      matches[3] = (rpm > 4500.0 && map < 50.0 && tps < 10.0);                                            // High RPM Vac
+      matches[4] = (rpm > 500.0 && rpm < 1100.0 && tps < 2.0 && map < 45.0);                              // Idle
+      matches[5] = (std::abs(tpsDot) > 35.0);                                                             // Tip-In
+
+      for (size_t r = 0; r < allRegimes.size(); ++r) {
+        if (matches[r]) {
+          if (!inInterval[r]) {
+            inInterval[r] = true;
+            matchStartTimes[r] = t;
+          }
+          accs[r].sumRpm += std::isnan(rpm) ? 0 : rpm;
+          accs[r].sumMap += std::isnan(map) ? 0 : map;
+          accs[r].sumAfr += std::isnan(afr) ? 0 : afr;
+          accs[r].sumTiming += std::isnan(timing) ? 0 : timing;
+          if (!std::isnan(egt) && egt > accs[r].maxEgt) accs[r].maxEgt = egt;
+          accs[r].count++;
+        } else {
+          if (inInterval[r]) {
+            inInterval[r] = false;
+            double duration = t - matchStartTimes[r];
+            if (duration >= 0.5) { // Filter out micro noise < 0.5 sec
+              allRegimes[r]->intervals.push_back({ matchStartTimes[r], t });
+            }
+          }
+        }
+      }
+    }
+
+    // Finalize Summaries
+    for (size_t r = 0; r < allRegimes.size(); ++r) {
+      auto *reg = allRegimes[r];
+      size_t count = accs[r].count;
+      reg->sampleCount = count;
+
+      for (const auto &inter : reg->intervals) {
+        reg->totalDwellTimeSec += (inter.endSec - inter.startSec);
+      }
+      reg->percentageOfLog = (reg->totalDwellTimeSec / totalLogTime) * 100.0;
+
+      if (count > 0) {
+        reg->avgRpm = accs[r].sumRpm / count;
+        reg->avgMap = accs[r].sumMap / count;
+        reg->avgAfr = accs[r].sumAfr / count;
+        reg->avgTiming = accs[r].sumTiming / count;
+        reg->peakEgt = accs[r].maxEgt;
+      }
+
+      // Context Warnings
+      if (reg->type == core::RegimeType::FreewayCruise && reg->peakEgt > 1600.0) {
+        reg->warningMessage = "High Cruise EGT: " + std::to_string(static_cast<int>(reg->peakEgt)) + " °F";
+      } else if (reg->type == core::RegimeType::HighGearLowRpmBoost && count > 0) {
+        reg->warningMessage = "High Engine Load at Low RPM";
+      }
+
+      if (reg->totalDwellTimeSec > 0.0) {
+        summaries.push_back(*reg);
+      }
+    }
+
+    return summaries;
+  }
+
+} // namespace engine
+
+
+## File: src/engine/regime_analyzer.h
+
+#pragma once
+
+#include <vector>
+#include "core/logsession.h"
+#include "core/regime.h"
+
+namespace engine {
+
+  class RegimeAnalyzer {
+  public:
+    static std::vector<core::RegimeSummary> analyzeSession(const core::LogSession &session);
+  };
+
+} // namespace engine
+
+
 ## File: src/engine/ve_analyzer.cpp
 
 #include "engine/ve_analyzer.h"
@@ -619,64 +959,64 @@ namespace core {
 
 namespace engine {
 
-  void populateDefaultsForSession(VeAnalysisConfig &config, const core::LogSession &session) {
-    // Helper lambda to find the first channel present in the session from a candidate list
-    auto findFirstMatch = [&session](const std::vector<std::string> &candidates) -> std::string {
-      for (const auto &name : candidates) {
-        if (session.findChannel(name) != nullptr) {
-          return name;
-        }
-      }
-      return "";
-      };
+  //void populateDefaultsForSession(VeAnalysisConfig &config, const core::LogSession &session) {
+  //  // Helper lambda to find the first channel present in the session from a candidate list
+  //  auto findFirstMatch = [&session](const std::vector<std::string> &candidates) -> std::string {
+  //    for (const auto &name : candidates) {
+  //      if (session.findChannel(name) != nullptr) {
+  //        return name;
+  //      }
+  //    }
+  //    return "";
+  //    };
 
-    // Candidate lists ordered by format prevalence
-    config.rpmChannel = findFirstMatch({
-      "RPM",                       // MegaSquirt / Haltech / Standard
-      "Filtered RPM",              // Haltech alternative
-      "Engine Speed"
-      });
+  //  // Candidate lists ordered by format prevalence
+  //  config.rpmChannel = findFirstMatch({
+  //    "RPM",                       // MegaSquirt / Haltech / Standard
+  //    "Filtered RPM",              // Haltech alternative
+  //    "Engine Speed"
+  //    });
 
-    config.loadChannel = findFirstMatch({
-      "MAP",                       // MegaSquirt
-      "Fuel - Load (MAP)",         // Haltech NSP[cite: 2]
-      "Manifold Pressure",         // Haltech raw[cite: 2]
-      "Ignition - Load (MAP)",     // Haltech alternative[cite: 2]
-      "Engine Demand",             // Haltech TPS-based load[cite: 2]
-      "TPS"                        // MegaSquirt Alpha-N
-      });
+  //  config.loadChannel = findFirstMatch({
+  //    "MAP",                       // MegaSquirt
+  //    "Fuel - Load (MAP)",         // Haltech NSP[cite: 2]
+  //    "Manifold Pressure",         // Haltech raw[cite: 2]
+  //    "Ignition - Load (MAP)",     // Haltech alternative[cite: 2]
+  //    "Engine Demand",             // Haltech TPS-based load[cite: 2]
+  //    "TPS"                        // MegaSquirt Alpha-N
+  //    });
 
-    config.afrChannel = findFirstMatch({
-      "AFR",                       // MegaSquirt
-      "Wideband O2 1",             // Haltech[cite: 2]
-      "Wideband O2 Overall",       // Haltech[cite: 2]
-      "WBC1 Lambda",               // Haltech[cite: 2]
-      "AFR1",
-      "Lambda1"
-      });
+  //  config.afrChannel = findFirstMatch({
+  //    "AFR",                       // MegaSquirt
+  //    "Wideband O2 1",             // Haltech[cite: 2]
+  //    "Wideband O2 Overall",       // Haltech[cite: 2]
+  //    "WBC1 Lambda",               // Haltech[cite: 2]
+  //    "AFR1",
+  //    "Lambda1"
+  //    });
 
-    config.tpsDotChannel = findFirstMatch({
-      "TPSdot",                    // MegaSquirt[cite: 1]
-      "Throttle Position Derivative", // Haltech[cite: 2]
-      "Throttle Position Derivative - Cable", // Haltech[cite: 2]
-      "MAPdot"
-      });
+  //  config.tpsDotChannel = findFirstMatch({
+  //    "TPSdot",                    // MegaSquirt[cite: 1]
+  //    "Throttle Position Derivative", // Haltech[cite: 2]
+  //    "Throttle Position Derivative - Cable", // Haltech[cite: 2]
+  //    "MAPdot"
+  //    });
 
-    config.cltChannel = findFirstMatch({
-      "CLT",                       // MegaSquirt[cite: 1]
-      "Coolant Temperature"        // Haltech[cite: 2]
-      });
-  }
+  //  config.cltChannel = findFirstMatch({
+  //    "CLT",                       // MegaSquirt[cite: 1]
+  //    "Coolant Temperature"        // Haltech[cite: 2]
+  //    });
+  //}
 
 
   VeTransientFilter::VeTransientFilter(const core::LogSession &session, const VeAnalysisConfig &config)
     : config_(config)
   {
     if (config_.enableTpsDotFilter) {
-      tpsDotCh_ = session.findChannel(config_.tpsDotChannel);
+      tpsDotCh_ = session.findChannel(session.channelMapping().tpsDot);
     }
     if (config_.enableCltFilter) {
-      cltCh_ = session.findChannel(config_.cltChannel);
+      cltCh_ = session.findChannel(session.channelMapping().clt);
     }
   }
 
@@ -708,9 +1048,9 @@ namespace engine {
   {
     core::Table2D correctedVe = baselineVe;
 
-    const core::Channel *rpmCh = session.findChannel(config.rpmChannel);
-    const core::Channel *loadCh = session.findChannel(config.loadChannel);
-    const core::Channel *afrCh = session.findChannel(config.afrChannel);
+    const core::Channel *rpmCh = session.findChannel(session.channelMapping().rpm);
+    const core::Channel *loadCh = session.findChannel(session.channelMapping().load);
+    const core::Channel *afrCh = session.findChannel(session.channelMapping().afr);
 
     if (!rpmCh || !loadCh || !afrCh) {
       return correctedVe;
@@ -769,7 +1109,7 @@ namespace engine {
           double loadBp = baselineVe.yBreakpoints()[r];
           double tgtAfr = targetAfr.sample(rpmBp, loadBp);
 
-          if (tgtAfr > 0.0) {
+          if (0 < tgtAfr) {
             double oldVe = baselineVe.value(r, c);
             double newVe = oldVe * (avgObservedAfr / tgtAfr);
             correctedVe.setValue(r, c, newVe);
@@ -796,15 +1136,6 @@ namespace engine {
 namespace engine {
 
   struct VeAnalysisConfig {
-    std::string rpmChannel = "RPM";
-    std::string loadChannel = "MAP";
-    std::string afrChannel = "AFR";
-
-    // Optional filtering channels
-    std::string tpsDotChannel = "TPSdot";
-    std::string cltChannel = "CLT";
-    std::string statusChannel = "Engine"; // or "Status1" for fuel cut checks
-
     size_t minSamplesPerBin = 10;
 
     // Transient & Environmental Filtering Rules
@@ -818,7 +1149,7 @@ namespace engine {
     double minLoadThreshold = 15.0; // Ignore deep overrun / vacuum decel
   };
 
-  void populateDefaultsForSession(VeAnalysisConfig &config, const core::LogSession &session);
+  //void populateDefaultsForSession(VeAnalysisConfig &config, const core::LogSession &session);
 
   // Reusable transient filter to share identical rules across different binning grids
   class VeTransientFilter {
@@ -1435,6 +1766,7 @@ namespace io {
 #include <GLFW/glfw3.h>
 
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 #include "implot.h"
@@ -1475,6 +1807,17 @@ int main() {
   ImGuiIO &io = ImGui::GetIO();
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+
+  ImFont *mainFont = io.Fonts->AddFontFromFileTTF("assets/fonts/Rubik-Regular.ttf", 16.0f, nullptr, io.Fonts->GetGlyphRangesDefault());
+#include "3rdparty/IconsFontAwesome7.h"
+  static const ImWchar iconsRanges[] = { ICON_MIN_FA, ICON_MAX_16_FA, 0 };
+  ImFontConfig fontConfig;
+  fontConfig.MergeMode = true;
+  fontConfig.PixelSnapH = true;
+  fontConfig.OversampleV = 3;
+  fontConfig.OversampleH = 1;
+  fontConfig.GlyphMinAdvanceX = 16.0f; // Keeps icon widths uniform
+  io.Fonts->AddFontFromFileTTF("assets/fonts/Font Awesome 7 Free-Solid-900.otf", 14.0f, &fontConfig, iconsRanges);
 
   ImGui::StyleColorsDark();
 
@@ -1545,6 +1888,8 @@ int main() {
 #include "ui/tableeditorpanel.h"
 #include "ui/timeseriespanel.h"
 #include "ui/veanalysispanel.h"
+#include "ui/tableoverlaypanel.h"
+#include "ui/driveregimepanel.h"
 
 namespace ui {
 
@@ -1677,6 +2022,8 @@ namespace ui {
     nlohmann::json root;
     root["logFilePath"] = session_.sourcePath();
 
+    root["channelMapping"] = session_.channelMapping().toJson();
+
     nlohmann::json customChannelsJson = nlohmann::json::array();
     for (const auto &channel : session_.channels()) {
       if (channel.isCustom()) {
@@ -1772,6 +2119,11 @@ namespace ui {
           refreshPanelsFromSession();
         }
 
+        if (root.contains("channelMapping") && root["channelMapping"].is_object()) {
+          auto mapping = core::ChannelMapping::fromJson(root["channelMapping"]);
+          session_.setChannelMapping(mapping);
+        }
+
         if (root.contains("imguiLayout") && root["imguiLayout"].is_string()) {
           std::string iniData = root["imguiLayout"].get<std::string>();
           ImGui::LoadIniSettingsFromMemory(iniData.c_str(), iniData.size());
@@ -1797,6 +2149,8 @@ namespace ui {
             else if (type == "Scatter") panel = addScatterPanel({}, {}, savedTitle);
             else if (type == "Status") panel = addStatusPanel(savedTitle);
             else if (type == "VeAnalysisPanel") panel = addVeAnalysisPanel(savedTitle);
+            else if (type == "TableOverlayPanel") panel = addTableOverlayPanel(savedTitle);
+            else if (type == "DriveRegimePanel") panel = getOrAddDriveRegimePanel();
 
 #ifdef _DEBUG2
             std::cout << "Restoring panel: " << type << " state: " << state.dump() << std::endl;
@@ -1998,7 +2352,9 @@ namespace ui {
       } else {
         res.success = mslParser_.parse(path, res.session, res.error, &loadProgress_);
       }
-
+      core::ChannelMapping mapping;
+      mapping.autoDetect(res.session);
+      res.session.setChannelMapping(mapping);
       return res;
       });
   }
@@ -2050,6 +2406,30 @@ namespace ui {
     panel->setSession(&session_);
     panels_.push_back(std::move(panel));
     return panels_.back().get();
+  }
+
+  PlotPanel *App::addTableOverlayPanel(std::string explicitTitle)
+  {
+    std::string panelId = explicitTitle.empty()
+      ? "Table Overlay " + std::to_string(getNextPanelIdForPrefix("Table Overlay"))
+      : explicitTitle;
+    auto panel = std::make_unique<TableOverlayPanel>(panelId);
+    panel->setSession(&session_);
+    panels_.push_back(std::move(panel));
+    return panels_.back().get();
+  }
+
+  DriveRegimePanel *App::getOrAddDriveRegimePanel()
+  {
+    for (const auto &panel : panels_) {
+      if (panel->panelTypeId() == "DriveRegimePanel") {
+        return static_cast<DriveRegimePanel *>(panel.get());
+      }
+    }
+    auto regimePanel = std::make_unique<DriveRegimePanel>();
+    regimePanel->setSession(&session_);
+    panels_.push_back(std::move(regimePanel));
+    return static_cast<DriveRegimePanel *>(panels_.back().get());
   }
 
   int App::getNextPanelIdForPrefix(const std::string &prefix) const
@@ -2110,6 +2490,7 @@ namespace ui {
         ImGui::EndMenu();
       }
       if (ImGui::BeginMenu("Panels")) {
+
         if (ImGui::MenuItem("Add Time Series Panel")) {
           addTimeSeriesPanel({ "RPM" });
         }
@@ -2122,11 +2503,20 @@ namespace ui {
         if (ImGui::MenuItem("Add VE Analyzer / Observed AFR")) {
           addVeAnalysisPanel();
         }
+        if (ImGui::MenuItem("Add Table Overlay Panel")) {
+          addTableOverlayPanel();
+        }
+        if (ImGui::MenuItem("Drive Regime Summary")) {
+          getOrAddDriveRegimePanel();
+        }
         ImGui::EndMenu();
       }
       if (ImGui::BeginMenu("Tools")) {
         if (ImGui::MenuItem("Custom Channels...")) {
           showCustomChannelModal_ = true;
+        }
+        if (ImGui::MenuItem("Channel Semantic Mapping...")) {
+          showChannelMappingModal_ = true;
         }
         ImGui::EndMenu();
       }
@@ -2174,7 +2564,7 @@ namespace ui {
 
     if (ImGui::BeginPopupModal(ui::popups::LoadError, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
       ImGui::TextWrapped("%s", loadErrorMessage_.c_str());
-      if (ImGui::Button("OK", ImVec2(120, 0))) {
+      if (ui::UI::Button("OK", {}, ImVec2(120, 0))) {
         ImGui::CloseCurrentPopup();
       }
       ImGui::EndPopup();
@@ -2274,7 +2664,7 @@ namespace ui {
       // --- BOTTOM BUTTON BAR ---
       if (selectedIndex == -1) {
         // Add Mode
-        if (ImGui::Button("Add Channel", ImVec2(120, 0))) {
+        if (ui::UI::Button("Add Channel", {}, ImVec2(120, 0))) {
           core::CustomChannelDef def{ nameBuf, unitBuf, formulaBuf };
           std::string err;
 
@@ -2290,7 +2680,7 @@ namespace ui {
         }
       } else {
         // Edit / Update Mode
-        if (ImGui::Button("Update / Re-evaluate", ImVec2(160, 0))) {
+        if (ui::UI::Button("Update / Re-evaluate", {}, ImVec2(160, 0))) {
           core::CustomChannelDef def{ nameBuf, unitBuf, formulaBuf };
           std::string err;
 
@@ -2310,7 +2700,7 @@ namespace ui {
         // Delete Mode
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.7f, 0.2f, 0.2f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9f, 0.3f, 0.3f, 1.0f));
-        if (ImGui::Button("Delete Channel", ImVec2(120, 0))) {
+        if (ui::UI::Button("Delete Channel", {}, ImVec2(120, 0))) {
           if (selectedIndex >= 0 && selectedIndex < static_cast<int>(channels.size())) {
             channels.erase(channels.begin() + selectedIndex);
             refreshPanelsFromSession(); // Rebind open panels so deleted channel is safely unbound
@@ -2322,8 +2712,110 @@ namespace ui {
       }
 
       ImGui::SameLine();
-      if (ImGui::Button("Close", ImVec2(100, 0))) {
+      if (ui::UI::Button("Close", {}, ImVec2(100, 0))) {
         showCustomChannelModal_ = false;
+        ImGui::CloseCurrentPopup();
+      }
+
+      ImGui::EndPopup();
+    }
+  }
+
+  void App::renderChannelMappingModal()
+  {
+    if (showChannelMappingModal_) {
+      ImGui::OpenPopup(ui::popups::ChannelMapping);
+    }
+
+    ImGui::SetNextWindowSize(ImVec2(480, 420), ImGuiCond_FirstUseEver);
+
+    if (ImGui::BeginPopupModal(ui::popups::ChannelMapping, &showChannelMappingModal_, ImGuiWindowFlags_None)) {
+      if (session_.rowCount() == 0) {
+        ImGui::TextDisabled("No log session loaded.");
+        if (ui::UI::Button("Close", {}, ImVec2(100, 0))) {
+          showChannelMappingModal_ = false;
+          ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+        return;
+      }
+
+      ImGui::TextDisabled("Map log channels to standard ECU telemetry slots:");
+      ImGui::Spacing();
+
+      // Work on a mutable copy of the session's mapping
+      core::ChannelMapping mapping = session_.channelMapping();
+      bool changed = false;
+
+      auto renderMappingCombo = [this, &changed](const char *label, std::string &targetChannel) {
+        ImGui::PushID(label);
+        ImGui::SetNextItemWidth(220.0f);
+
+        // Check if channel is non-empty AND missing from session
+        bool isInvalid = !targetChannel.empty() && (session_.findChannel(targetChannel) == nullptr);
+
+        if (isInvalid) {
+          ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f)); // Bright Red
+        }
+
+        if (ImGui::BeginCombo(label, targetChannel.empty() ? "(None)" : targetChannel.c_str())) {
+          if (isInvalid) {
+            ImGui::PopStyleColor(); // Restore text color for dropdown options
+          }
+
+          if (ImGui::Selectable("(None)", targetChannel.empty())) {
+            targetChannel.clear();
+            changed = true;
+          }
+
+          for (const auto &ch : session_.channels()) {
+            bool isSelected = (ch.name() == targetChannel);
+            if (ImGui::Selectable(ch.name().c_str(), isSelected)) {
+              targetChannel = ch.name();
+              changed = true;
+            }
+            if (isSelected) ImGui::SetItemDefaultFocus();
+          }
+          ImGui::EndCombo();
+        } else if (isInvalid) {
+          ImGui::PopStyleColor(); // Restore text color if combo wasn't opened
+        }
+
+        ImGui::PopID();
+        };
+
+      renderMappingCombo("RPM", mapping.rpm);
+      renderMappingCombo("Load / MAP", mapping.load);
+      renderMappingCombo("AFR / Lambda", mapping.afr);
+      renderMappingCombo("Throttle (TPS)", mapping.tps);
+      renderMappingCombo("Accel (TPSdot)", mapping.tpsDot);
+      renderMappingCombo("Coolant (CLT)", mapping.clt);
+      renderMappingCombo("Exhaust Temp (EGT)", mapping.egt);
+      renderMappingCombo("Pulse Width (PW)", mapping.pw);
+      renderMappingCombo("Ignition Timing", mapping.timing);
+
+      ImGui::Separator();
+      ImGui::Spacing();
+
+      if (ui::UI::ButtonSecondary("Auto-Detect Defaults")) {
+        mapping.autoDetect(session_);
+        session_.setChannelMapping(mapping);
+        refreshPanelsFromSession(); // Triggers re-analysis across open panels
+      }
+
+      ImGui::SameLine();
+
+      if (ui::UI::ButtonPrimary("Apply & Recalculate", ImVec2(140, 0))) {
+        session_.setChannelMapping(mapping);
+        refreshPanelsFromSession(); // Notify panels to rerun VeAnalyzer and RegimeAnalyzer
+        showChannelMappingModal_ = false;
+        ImGui::CloseCurrentPopup();
+      }
+
+      ImGui::SameLine();
+
+      if (ui::UI::Button("Cancel", {}, ImVec2(90, 0))) {
+        showChannelMappingModal_ = false;
         ImGui::CloseCurrentPopup();
       }
 
@@ -2351,7 +2843,7 @@ namespace ui {
     renderLoadProgressModal();
     renderLoadErrorPopup();
     renderCustomChannelModal();
-
+    renderChannelMappingModal();
 
     panels_.erase(
       std::remove_if(panels_.begin(), panels_.end(),
@@ -2393,6 +2885,7 @@ namespace pfd {
 } // namespace pfd
 
 namespace ui {
+  class DriveRegimePanel;
 
   // Owns the main window's per-frame UI: dockspace + panels.
   // Does not own the GLFW/OpenGL/ImGui lifecycle -- that's main.cpp's job,
@@ -2411,6 +2904,7 @@ namespace ui {
     void renderMenuBar();
     void renderLoadErrorPopup();
     void renderCustomChannelModal();
+    void renderChannelMappingModal();
 
     // File dialogs are non-blocking: opening one just creates it, and
     // pollPendingDialogs_() checks each frame whether the user has
@@ -2435,6 +2929,8 @@ namespace ui {
     PlotPanel *addScatterPanel(const std::string &initialXChannel = "", const std::string &initialYChannel = "", std::string explicitTitle = "");
     PlotPanel *addStatusPanel(std::string explicitTitle = "");
     PlotPanel *addVeAnalysisPanel(std::string explicitTitle = "");
+    PlotPanel *addTableOverlayPanel(std::string explicitTitle = "");
+    DriveRegimePanel *getOrAddDriveRegimePanel();
 
     int getNextPanelIdForPrefix(const std::string &prefix) const;
 
@@ -2442,6 +2938,7 @@ namespace ui {
     bool firstFrame_ = true;
 
     bool showCustomChannelModal_ = false;
+    bool showChannelMappingModal_ = false;
     char customNameBuf_[64] = "";
     char customUnitBuf_[32] = "";
     char customFormulaBuf_[256] = "";
@@ -2493,6 +2990,274 @@ namespace ui {
     };
     std::future<LoadResult> activeLoadTask_;
     std::function<void()> pendingOnCompleteCallback_;
+  };
+
+} // namespace ui
+
+
+## File: src/ui/driveregimepanel.cpp
+
+#include "ui/driveregimepanel.h"
+#include "ui/ui_helpers.h"
+#include "engine/regime_analyzer.h"
+#include "3rdparty/nlohmann/json.hpp"
+#include "3rdparty/IconsFontAwesome7.h"
+
+#include <cstdio>
+#include "imgui.h"
+
+namespace {
+  std::string dtostr(double d, int precision = 2) {
+    char buffer[64];
+    std::snprintf(buffer, sizeof(buffer), "%.*f", precision, d);
+    return std::string(buffer);
+  }
+} // anonymous namespace
+
+namespace ui {
+
+  DriveRegimePanel::DriveRegimePanel(std::string title)
+    : PlotPanel(std::move(title)) {}
+
+  void DriveRegimePanel::setSession(const core::LogSession *session)
+  {
+    session_ = session;
+    reanalyze();
+  }
+
+  void DriveRegimePanel::reanalyze()
+  {
+    if (session_) {
+      auto mutableSession = const_cast<core::LogSession *>(session_);
+      mutableSession->setRegimeSummaries(engine::RegimeAnalyzer::analyzeSession(*session_));
+      summaries_ = mutableSession->regimeSummaries();
+    } else {
+      summaries_.clear();
+    }
+  }
+
+  void DriveRegimePanel::render(PlotCursor &cursor)
+  {
+    std::string windowLabel = title() + "###" + panelTypeId();
+    ImGui::Begin(windowLabel.c_str(), &open_);
+
+    if (!session_) {
+      ImGui::TextDisabled("No log session loaded.");
+      ImGui::End();
+      return;
+    }
+
+    // --- Top Control Bar ---
+    if (ui::UI::ButtonPrimary(ICON_FA_REPEAT " Re-Analyze Session")) {
+      reanalyze();
+    }
+
+    const auto *timeSec = session_->timeSec();
+    if (timeSec && !timeSec->empty()) {
+      ImGui::SameLine();
+      ImGui::TextDisabled("| Total Log Time: %.1f s", timeSec->back() - timeSec->front());
+    }
+
+    ImGui::Separator();
+
+    if (summaries_.empty()) {
+      ImGui::TextDisabled("No regimes detected in the current log range.");
+      ImGui::End();
+      return;
+    }
+
+    // --- Regime Cards Loop ---
+// --- Regime Cards Loop ---
+    for (auto &reg : summaries_) {
+      ImGui::PushID(reg.id.c_str());
+
+      // 1. Build Header Title with Alert Badge (visible even when collapsed)
+      std::string headerLabel = reg.displayName + "  (" + dtostr(reg.percentageOfLog, 1) + "% of log)";
+
+      bool hasAlert = !reg.warningMessage.empty();
+      if (hasAlert) {
+        // Append critical alert text to the header title
+        headerLabel += "  [ " + std::string(ICON_FA_TRIANGLE_EXCLAMATION) + " " + dtostr(reg.peakEgt, 0) + " °F ]";
+
+        // Highlight header text color red/orange if critical alert is present
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.45f, 1.0f));
+      }
+
+      bool nodeOpen = ImGui::CollapsingHeader(headerLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
+
+      if (hasAlert) {
+        ImGui::PopStyleColor();
+      }
+
+      // 2. Expanded Card Body
+      if (nodeOpen) {
+        ImGui::Indent(8.0f);
+        ImGui::Spacing();
+
+        // Controls Row
+        if (ImGui::Checkbox("Shade Timeline", &reg.showShading)) {
+          if (session_) {
+            const_cast<core::LogSession *>(session_)->setRegimeSummaries(summaries_);
+          }
+        }
+
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(100.0f);
+        if (ImGui::ColorEdit4("Highlight Color", (float *)&reg.color,
+          ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoAlpha)) {
+          if (session_) {
+            const_cast<core::LogSession *>(session_)->setRegimeSummaries(summaries_);
+          }
+        }
+
+        ImGui::Spacing();
+
+        // Detailed Warning Banner Inside Body
+        if (hasAlert) {
+          ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), ICON_FA_TRIANGLE_EXCLAMATION " %s", reg.warningMessage.c_str());
+          ImGui::Spacing();
+        }
+
+        // Dwell Time Info
+        ImGui::TextDisabled("Dwell Time: %s s across %zu intervals", dtostr(reg.totalDwellTimeSec, 1).c_str(), reg.intervals.size());
+        ImGui::Spacing();
+
+        // Compact 2-Pair Key/Value Grid
+        if (ImGui::BeginTable("CompactMetrics", 4, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV)) {
+          ImGui::TableSetupColumn("K1", ImGuiTableColumnFlags_WidthFixed, 65.0f);
+          ImGui::TableSetupColumn("V1", ImGuiTableColumnFlags_WidthFixed, 60.0f);
+          ImGui::TableSetupColumn("K2", ImGuiTableColumnFlags_WidthFixed, 65.0f);
+          ImGui::TableSetupColumn("V2", ImGuiTableColumnFlags_WidthFixed, 60.0f);
+
+          // Row 1: Avg RPM & Avg MAP
+          ImGui::TableNextRow();
+          ImGui::TableSetColumnIndex(0); ImGui::TextDisabled("Avg RPM");
+          ImGui::TableSetColumnIndex(1); ImGui::Text("%s", dtostr(reg.avgRpm, 0).c_str());
+          ImGui::TableSetColumnIndex(2); ImGui::TextDisabled("Avg MAP");
+          ImGui::TableSetColumnIndex(3); ImGui::Text("%s kPa", dtostr(reg.avgMap, 1).c_str());
+
+          // Row 2: Avg AFR & Avg Timing
+          ImGui::TableNextRow();
+          ImGui::TableSetColumnIndex(0); ImGui::TextDisabled("Avg AFR");
+          ImGui::TableSetColumnIndex(1); ImGui::Text("%s", dtostr(reg.avgAfr, 2).c_str());
+          ImGui::TableSetColumnIndex(2); ImGui::TextDisabled("Avg Timing");
+          ImGui::TableSetColumnIndex(3); ImGui::Text("%s°", dtostr(reg.avgTiming, 1).c_str());
+
+          // Row 3: Peak EGT
+          ImGui::TableNextRow();
+          ImGui::TableSetColumnIndex(0); ImGui::TextDisabled("Peak EGT");
+          ImGui::TableSetColumnIndex(1);
+          if (reg.peakEgt > 1600.0) {
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s °F", dtostr(reg.peakEgt, 0).c_str());
+          } else {
+            ImGui::Text("%s °F", dtostr(reg.peakEgt, 0).c_str());
+          }
+
+          ImGui::EndTable();
+        }
+
+        ImGui::Spacing();
+
+        // Cycle Jump Buttons
+        if (!reg.intervals.empty()) {
+          if (ui::UI::ButtonSecondary(ICON_FA_LOCATION_DOT " Jump Next Event")) {
+            // Find next interval after cursor position
+            double targetTime = reg.intervals.front().startSec;
+            for (const auto &interval : reg.intervals) {
+              if (interval.startSec > cursor.timeSec + 0.1) {
+                targetTime = interval.startSec;
+                break;
+              }
+            }
+            cursor.timeSec = targetTime;
+            cursor.active = true;
+          }
+        }
+
+        ImGui::Unindent(8.0f);
+      }
+
+      // 3. 10px Vertical Spacing Between Cards
+      ImGui::Dummy(ImVec2(0.0f, 10.0f));
+
+      ImGui::PopID();
+    }
+
+    ImGui::End();
+  }
+
+  nlohmann::json DriveRegimePanel::saveState() const
+  {
+    auto j = PlotPanel::saveState();
+    nlohmann::json regArray = nlohmann::json::array();
+    for (const auto &reg : summaries_) {
+      regArray.push_back({
+        {"id", reg.id},
+        {"showShading", reg.showShading},
+        {"color", {reg.color.x, reg.color.y, reg.color.z, reg.color.w}}
+        });
+    }
+    j["regimes"] = regArray;
+    return j;
+  }
+
+  void DriveRegimePanel::loadState(const nlohmann::json &state)
+  {
+    PlotPanel::loadState(state);
+    reanalyze();
+
+    if (state.contains("regimes") && state["regimes"].is_array()) {
+      for (const auto &item : state["regimes"]) {
+        std::string id = item.value("id", "");
+        for (auto &reg : summaries_) {
+          if (reg.id == id) {
+            reg.showShading = item.value("showShading", false);
+            if (item.contains("color") && item["color"].is_array() && item["color"].size() == 4) {
+              reg.color = ImVec4(item["color"][0], item["color"][1], item["color"][2], item["color"][3]);
+            }
+          }
+        }
+      }
+    }
+  }
+
+} // namespace ui
+
+
+## File: src/ui/driveregimepanel.h
+
+#pragma once
+
+#include <vector>
+#include <string>
+#include "core/logsession.h"
+#include "core/regime.h"
+#include "ui/plotpanel.h"
+
+namespace ui {
+
+  class DriveRegimePanel : public PlotPanel {
+  public:
+    explicit DriveRegimePanel(std::string title = "Drive Regime Summary");
+
+    void render(PlotCursor &cursor) override;
+    bool wantsClose() const override { return !open_; }
+    void setSession(const core::LogSession *session) override;
+
+    std::string panelTypeId() const override { return "DriveRegimePanel"; }
+    nlohmann::json saveState() const override;
+    void loadState(const nlohmann::json &state) override;
+
+    const std::vector<core::RegimeSummary> &regimes() const { return summaries_; }
+    std::vector<core::RegimeSummary> &regimes() { return summaries_; }
+
+  private:
+    void reanalyze();
+
+    const core::LogSession *session_ = nullptr;
+    bool open_ = true;
+
+    std::vector<core::RegimeSummary> summaries_;
   };
 
 } // namespace ui
@@ -2587,15 +3352,40 @@ namespace ui {
 ## File: src/ui/scatterpanel.cpp
 
 #include "ui/scatterpanel.h"
+#include "ui/ui_helpers.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <numeric>
 #include <utility>
 
 #include "3rdparty/nlohmann/json.hpp"
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "implot.h"
+
+namespace {
+  std::string sanitizeToUtf8(const std::string &input) {
+    std::string output;
+    output.reserve(input.size() * 2);
+
+    for (size_t i = 0; i < input.size(); ++i) {
+      unsigned char c = static_cast<unsigned char>(input[i]);
+
+      // Check if it's a raw single-byte degree symbol (0xB0) in ANSI/Latin-1/Win-1252
+      // and make sure it's not already part of a valid UTF-8 multi-byte sequence (0xC2 0xB0)
+      if (c == 0xB0) {
+        bool isAlreadyUtf8 = (i > 0 && static_cast<unsigned char>(input[i - 1]) == 0xC2);
+        if (!isAlreadyUtf8) {
+          output.push_back(static_cast<char>(0xC2)); // Inject UTF-8 leading byte
+        }
+      }
+      output.push_back(input[i]);
+    }
+    return output;
+  }
+} // anonymous namespace
 
 namespace ui {
 
@@ -2634,6 +3424,7 @@ namespace ui {
     cachedYValues_ = nullptr;
     cachedXUnit_.clear();
     cachedYUnit_.clear();
+    cachedZUnit_.clear();
 
     if (session_ == nullptr) {
       rebuildColorData();
@@ -2659,7 +3450,7 @@ namespace ui {
     cachedYValues_ = &yChannel->values();
     cachedXUnit_ = xChannel->unit();
     cachedYUnit_ = yChannel->unit();
-
+    cachedZUnit_ = selectedColorChannel_.empty() ? "" : session_->findChannel(selectedColorChannel_)->unit();
     rebuildColorData();
   }
 
@@ -2669,6 +3460,9 @@ namespace ui {
     j["xChannel"] = selectedXChannel_;
     j["yChannel"] = selectedYChannel_;
     j["colorChannel"] = selectedColorChannel_;
+    j["enableColorFilter"] = enableColorFilter_;
+    j["colorFilterMin"] = colorFilterMin_;
+    j["colorFilterMax"] = colorFilterMax_;
     return j;
   }
 
@@ -2687,6 +3481,15 @@ namespace ui {
     if (state.contains("colorChannel") && state["colorChannel"].is_string()) {
       selectedColorChannel_ = state["colorChannel"].get<std::string>();
     }
+    if (state.contains("enableColorFilter") && state["enableColorFilter"].is_boolean()) {
+      enableColorFilter_ = state["enableColorFilter"].get<bool>();
+    }
+    if (state.contains("colorFilterMin") && state["colorFilterMin"].is_number()) {
+      colorFilterMin_ = state["colorFilterMin"].get<double>();
+    }
+    if (state.contains("colorFilterMax") && state["colorFilterMax"].is_number()) {
+      colorFilterMax_ = state["colorFilterMax"].get<double>();
+    }
     if (changed) {
       rebindChannels(); // also rebuilds color data
     } else {
@@ -2696,34 +3499,69 @@ namespace ui {
 
   void ScatterPanel::rebuildColorData()
   {
-    cachedPointColors_.clear();
+    filteredXValues_.clear();
+    filteredYValues_.clear();
+    filteredPointColors_.clear();
 
-    if (selectedColorChannel_.empty() || session_ == nullptr || cachedXValues_ == nullptr) {
-      return; // "None" selected, or no base data to color yet
+    if (selectedColorChannel_.empty() || session_ == nullptr || cachedXValues_ == nullptr || cachedYValues_ == nullptr) {
+      return;
     }
 
     const core::Channel *colorChannel = session_->findChannel(selectedColorChannel_);
     if (colorChannel == nullptr || colorChannel->values().size() != cachedXValues_->size()) {
-      return; // channel missing or misaligned -- fall back to flat color
+      return;
     }
 
     const std::vector<double> &colorValues = colorChannel->values();
+    const std::vector<double> &xValues = *cachedXValues_;
+    const std::vector<double> &yValues = *cachedYValues_;
 
-    colorChannelMin_ = colorValues.front();
-    colorChannelMax_ = colorValues.front();
+    double normMin = colorValues.front();
+    double normMax = colorValues.front();
+
     for (double v : colorValues) {
-      if (v < colorChannelMin_) colorChannelMin_ = v;
-      if (v > colorChannelMax_) colorChannelMax_ = v;
+      if (std::isnan(v)) continue;
+      if (v < normMin) normMin = v;
+      if (v > normMax) normMax = v;
     }
 
-    const double range = colorChannelMax_ - colorChannelMin_;
-    cachedPointColors_.resize(colorValues.size());
-    for (size_t i = 0; i < colorValues.size(); ++i) {
-      float t = (range > 1e-9) ? static_cast<float>((colorValues[i] - colorChannelMin_) / range)
-        : 0.5f;
-      ImVec4 color = ImPlot::SampleColormap(t, ImPlotColormap_Viridis);
-      cachedPointColors_[i] = ImGui::ColorConvertFloat4ToU32(color);
+    colorChannelMin_ = normMin;
+    colorChannelMax_ = normMax;
+
+    if (!colorFilterMinMaxSet_) {
+      colorFilterMin_ = normMin;
+      colorFilterMax_ = normMax;
+      colorFilterMinMaxSet_ = true;
     }
+
+    const double range = normMax - normMin;
+    size_t totalPoints = colorValues.size();
+
+    filteredXValues_.reserve(totalPoints);
+    filteredYValues_.reserve(totalPoints);
+    filteredPointColors_.reserve(totalPoints);
+
+    for (size_t i = 0; i < totalPoints; ++i) {
+      double xVal = xValues[i];
+      double yVal = yValues[i];
+      double zVal = colorValues[i];
+
+      if (std::isnan(xVal) || std::isnan(yVal) || std::isnan(zVal)) continue;
+
+      if (enableColorFilter_) {
+        if (zVal < colorFilterMin_ || zVal > colorFilterMax_) {
+          continue;
+        }
+      }
+
+      float t = (range > 1e-9) ? static_cast<float>((zVal - normMin) / range) : 0.5f;
+      ImVec4 color = ImPlot::SampleColormap(t, ImPlotColormap_Viridis);
+
+      filteredXValues_.push_back(xVal);
+      filteredYValues_.push_back(yVal);
+      filteredPointColors_.push_back(ImGui::ColorConvertFloat4ToU32(color));
+    }
+    computeFilteredStats();
   }
 
   void ScatterPanel::render(PlotCursor &cursor)
@@ -2738,11 +3576,46 @@ namespace ui {
     const bool haveSession = (session_ != nullptr && !session_->channels().empty());
 
     if (haveSession) {
-      if (ImGui::Button("Channels...")) {
-        ImGui::OpenPopup("ScatterChannelsPopup");
+      if (ui::UI::Button("Channels...", {}, {}, "Open channel selection popup")) {
+        ImGui::OpenPopup(ui::popups::ScatterPanelChannels);
       }
 
-      if (ImGui::BeginPopup("ScatterChannelsPopup")) {
+      ImGui::SameLine();
+      ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+      ImGui::SameLine();
+      ImGui::Checkbox("Overlay Stats", &showStatsOverlay_);
+
+      if (!selectedColorChannel_.empty()) {
+        ImGui::SameLine();
+        ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+        ImGui::SameLine();
+
+        if (ImGui::Checkbox("Filter Z", &enableColorFilter_)) {
+          rebuildColorData();
+        }
+
+        if (enableColorFilter_) {
+          ImGui::SameLine();
+          ImGui::SetNextItemWidth(180.0f);
+
+          // Dual-handle min/max range control
+          float leftVal = static_cast<float>(colorFilterMin_);
+          float rightVal = static_cast<float>(colorFilterMax_);
+          if (ImGui::DragFloatRange2("##ZRange", &leftVal, &rightVal, 1.0f,
+            static_cast<float>(colorChannelMin_),
+            static_cast<float>(colorChannelMax_),
+            "Min: %.0f", "Max: %.0f")) {
+            colorFilterMin_ = static_cast<double>(leftVal);
+            colorFilterMax_ = static_cast<double>(rightVal);
+            rebuildColorData();
+          }
+          if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Filter %s values between Min and Max", selectedColorChannel_.c_str());
+          }
+        }
+      }
+
+      if (ImGui::BeginPopup(ui::popups::ScatterPanelChannels)) {
         ImGui::SetNextItemWidth(180.0f);
         if (ImGui::BeginCombo("X Axis", selectedXChannel_.c_str())) {
           for (const auto &channel : session_->channels()) {
@@ -2813,8 +3686,7 @@ namespace ui {
       yAxisLabel += " (" + cachedYUnit_ + ")";
     }
 
-    const bool haveColorData =
-      !cachedPointColors_.empty() && cachedPointColors_.size() == xValues.size();
+    const bool haveColorData = !filteredPointColors_.empty() && filteredPointColors_.size() == filteredXValues_.size();
 
     if (haveColorData) {
       ImPlot::PushColormap(ImPlotColormap_Viridis);
@@ -2825,14 +3697,23 @@ namespace ui {
     if (ImPlot::BeginPlot("##Scatter", ImVec2(-1, -1))) {
       ImPlot::SetupAxes(xAxisLabel.c_str(), yAxisLabel.c_str());
 
+      const bool haveFiltered = !filteredPointColors_.empty();
+      const double *plotX = haveFiltered ? filteredXValues_.data() : xValues.data();
+      const double *plotY = haveFiltered ? filteredYValues_.data() : yValues.data();
+      int plotCount = haveFiltered ? static_cast<int>(filteredXValues_.size()) : static_cast<int>(xValues.size());
+
       if (haveColorData) {
+        const uint32_t *plotColors = filteredPointColors_.data();
         ImPlotSpec spec;
-        spec.MarkerSize = 2.f;
-        spec.MarkerFillColors = cachedPointColors_.data();
-        ImPlot::PlotScatter(legendLabel.c_str(), xValues.data(), yValues.data(), static_cast<int>(xValues.size()), spec);
+        spec.Marker = ImPlotMarker_Circle;
+        spec.MarkerSize = 1.f;
+        spec.MarkerFillColors = filteredPointColors_.data();
+        spec.MarkerLineColors = filteredPointColors_.data();
+        ImPlot::PlotScatter(legendLabel.c_str(), plotX, plotY, plotCount, spec);
       } else {
-        ImPlot::PlotScatter(legendLabel.c_str(), xValues.data(), yValues.data(), static_cast<int>(xValues.size()));
+        ImPlot::PlotScatter(legendLabel.c_str(), plotX, plotY, plotCount);
       }
+
 
       // Highlight the sample nearest the shared cursor time
       if (haveRealData && cursor.active && cachedTimeSec_ != nullptr && !cachedTimeSec_->empty()) {
@@ -2858,6 +3739,60 @@ namespace ui {
         ImPlot::PlotScatter("Cursor", &highlightX, &highlightY, 1, cursorSpec);
       }
 
+      if (showStatsOverlay_ && stats_.valid) {
+        ImVec2 plotPos = ImPlot::GetPlotPos();
+        ImVec2 plotSize = ImPlot::GetPlotSize();
+        ImVec2 overlayPos = ImVec2(plotPos.x + 10.0f, plotPos.y + plotSize.y - 10.0f);
+
+        ImGui::SetNextWindowPos(overlayPos, ImGuiCond_Always, ImVec2(0.0f, 1.0f)); // Anchor bottom-left
+        ImGui::SetNextWindowBgAlpha(0.75f);
+
+        const ImGuiWindowFlags overlayFlags = ImGuiWindowFlags_NoDecoration |
+          ImGuiWindowFlags_AlwaysAutoResize |
+          ImGuiWindowFlags_NoSavedSettings |
+          ImGuiWindowFlags_NoFocusOnAppearing |
+          ImGuiWindowFlags_NoNav |
+          ImGuiWindowFlags_NoMove |
+          ImGuiWindowFlags_NoDocking;
+
+        std::string windowId = "##ScatterStatsOverlay_" + title();
+        if (ImGui::Begin(windowId.c_str(), nullptr, overlayFlags)) {
+          ImGui::TextDisabled("Filtered Stats (%zu pts)", stats_.pointCount);
+          ImGui::Separator();
+
+          if (stats_.timeInZoneSec > 0.0) {
+            ImGui::Text("Dwell Time: %.2f s", stats_.timeInZoneSec);
+          }
+
+          auto xUnitSanitized = sanitizeToUtf8(cachedXUnit_);
+          auto yUnitSanitized = sanitizeToUtf8(cachedYUnit_);
+          if (!selectedColorChannel_.empty()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Peak %s: %.1f", selectedColorChannel_.c_str(), stats_.maxZ);
+            ImGui::SameLine();
+            ImGui::TextDisabled("(@ %.0f / %.1f)", stats_.maxXAtMaxZ, stats_.maxYAtMaxZ);
+
+            ImGui::Text("Mean %s: %.1f", selectedColorChannel_.c_str(), stats_.avgZ);
+
+            auto zUnitSanitized = sanitizeToUtf8(cachedZUnit_);
+            ImGui::Text("Centroid: %.0f %s | %.1f %s | %.2f %s",
+              stats_.avgX, xUnitSanitized.c_str(),
+              stats_.avgY, yUnitSanitized.c_str(),
+              stats_.avgZ, zUnitSanitized.c_str()
+            );
+          } else {
+            ImGui::Text("Centroid: %.0f %s | %.1f %s",
+              stats_.avgX, xUnitSanitized.c_str(),
+              stats_.avgY, yUnitSanitized.c_str()
+            );
+          }
+
+          ImGui::Text("X/Y Correlation (r): %+.2f", stats_.correlationXY);
+
+          ImGui::End();
+        }
+      }
+
+
       ImPlot::EndPlot();
     }
 
@@ -2866,6 +3801,75 @@ namespace ui {
     }
 
     ImGui::End();
+  }
+
+  void ScatterPanel::computeFilteredStats()
+  {
+    stats_ = ScatterStats{};
+
+    const bool haveFiltered = enableColorFilter_ && !filteredPointColors_.empty();
+    const double *xVals = haveFiltered ? filteredXValues_.data() : (cachedXValues_ ? cachedXValues_->data() : nullptr);
+    const double *yVals = haveFiltered ? filteredYValues_.data() : (cachedYValues_ ? cachedYValues_->data() : nullptr);
+    size_t count = haveFiltered ? filteredXValues_.size() : (cachedXValues_ ? cachedXValues_->size() : 0);
+
+    if (!xVals || !yVals || count == 0) return;
+
+    stats_.pointCount = count;
+    stats_.valid = true;
+
+    // Dwell Time calculation based on log duration
+    if (cachedTimeSec_ && cachedTimeSec_->size() >= 2) {
+      double totalLogDuration = cachedTimeSec_->back() - cachedTimeSec_->front();
+      double dt = totalLogDuration / static_cast<double>(cachedTimeSec_->size());
+      stats_.timeInZoneSec = count * dt;
+    }
+
+    const core::Channel *colorCh = session_ ? session_->findChannel(selectedColorChannel_) : nullptr;
+    const double *zVals = colorCh ? colorCh->values().data() : nullptr;
+
+    double sumX = 0.0, sumY = 0.0, sumZ = 0.0;
+    double maxZ = -std::numeric_limits<double>::infinity();
+    double maxXAtMaxZ = 0.0, maxYAtMaxZ = 0.0;
+
+    for (size_t i = 0; i < count; ++i) {
+      double x = xVals[i];
+      double y = yVals[i];
+      sumX += x;
+      sumY += y;
+
+      if (zVals) {
+        double z = zVals[i];
+        sumZ += z;
+        if (z > maxZ) {
+          maxZ = z;
+          maxXAtMaxZ = x;
+          maxYAtMaxZ = y;
+        }
+      }
+    }
+
+    stats_.avgX = sumX / count;
+    stats_.avgY = sumY / count;
+    if (zVals) {
+      stats_.avgZ = sumZ / count;
+      stats_.maxZ = maxZ;
+      stats_.maxXAtMaxZ = maxXAtMaxZ;
+      stats_.maxYAtMaxZ = maxYAtMaxZ;
+    }
+
+    // Pearson Correlation Coefficient (r) calculation between X and Y
+    double varX = 0.0, varY = 0.0, covXY = 0.0;
+    for (size_t i = 0; i < count; ++i) {
+      double dx = xVals[i] - stats_.avgX;
+      double dy = yVals[i] - stats_.avgY;
+      covXY += dx * dy;
+      varX += dx * dx;
+      varY += dy * dy;
+    }
+
+    if (varX > 1e-9 && varY > 1e-9) {
+      stats_.correlationXY = covXY / std::sqrt(varX * varY);
+    }
   }
 
 } // namespace ui
@@ -2907,6 +3911,7 @@ namespace ui {
     void generatePlaceholderData();
     void rebindChannels();
     void rebuildColorData();
+    void computeFilteredStats();
 
     std::string selectedXChannel_;
     std::string selectedYChannel_;
@@ -2919,14 +3924,38 @@ namespace ui {
     const std::vector<double> *cachedYValues_ = nullptr;
     std::string cachedXUnit_;
     std::string cachedYUnit_;
+    std::string cachedZUnit_;
 
     // Only populated when selectedColorChannel_ is non-empty and found.
-    std::vector<uint32_t> cachedPointColors_;
     double colorChannelMin_ = 0.0;
     double colorChannelMax_ = 0.0;
 
     std::vector<double> placeholderXValues_;
     std::vector<double> placeholderYValues_;
+
+    bool enableColorFilter_ = false;
+    double colorFilterMin_ = 0.0;
+    double colorFilterMax_ = 0.0;
+    bool colorFilterMinMaxSet_ = false;
+
+    // Filtered buffer for plotting
+    std::vector<double> filteredXValues_;
+    std::vector<double> filteredYValues_;
+    std::vector<uint32_t> filteredPointColors_;
+
+    bool showStatsOverlay_ = true;
+    struct ScatterStats {
+      size_t pointCount = 0;
+      double timeInZoneSec = 0.0;
+      double avgX = 0.0;
+      double avgY = 0.0;
+      double avgZ = 0.0;
+      double maxZ = 0.0;
+      double maxXAtMaxZ = 0.0;
+      double maxYAtMaxZ = 0.0;
+      double correlationXY = 0.0; // Pearson r
+      bool valid = false;
+    } stats_;
   };
 
 } // namespace ui
@@ -3042,7 +4071,7 @@ namespace ui {
 
   void StatusPanel::renderChannelPickerPopup()
   {
-    if (ImGui::Button("Channels...")) {
+    if (ui::UI::Button("Channels...", {}, {}, "Open channel selection popup")) {
       ImGui::OpenPopup(ui::popups::StatusPanelChannels);
     }
 
@@ -3053,19 +4082,19 @@ namespace ui {
         return;
       }
 
-      if (ImGui::Button("Select All")) {
+      if (ui::UI::Button("Select All", {}, {}, "Select all channels")) {
         for (const auto &channel : session_->channels()) {
           setVisible(channel.name(), true);
         }
       }
       ImGui::SameLine();
-      if (ImGui::Button("Unselect All")) {
+      if (ui::UI::Button("Unselect All", {}, {}, "Unselect all channels")) {
         for (const auto &channel : session_->channels()) {
           setVisible(channel.name(), false);
         }
       }
       ImGui::SameLine();
-      if (ImGui::Button("Status Channels Only")) {
+      if (ui::UI::Button("Status Channels Only", {}, {}, "Show only status channels")) {
         for (const auto &channel : session_->channels()) {
           setVisible(channel.name(), channel.isBoolean());
         }
@@ -3252,17 +4281,36 @@ namespace ui {
 #include <fstream>
 #include <sstream>
 #include <utility>
+#include <random>
 
 #include "3rdparty/nlohmann/json.hpp"
 #include "3rdparty/portable-file-dialogs.h"
 #include "imgui.h"
 #include "imgui_internal.h"
 
+namespace {
+  std::string generateUniqueId(size_t length = 8) {
+    static const char charset[] =
+      "0123456789"
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+      "abcdefghijklmnopqrstuvwxyz";
+    static std::mt19937 rng(std::random_device{}());
+    static std::uniform_int_distribution<> dist(0, sizeof(charset) - 2);
+    std::string id;
+    id.reserve(length);
+    for (size_t i = 0; i < length; ++i) {
+      id += charset[dist(rng)];
+    }
+    return id;
+  }
+}
+
 namespace ui {
 
   TableEditorPanel::TableEditorPanel(std::string title, std::string panelTypeIdValue,
     std::string displayName, core::Table2D initialTable, int xDecimalPlaces, int yDecimalPlaces)
     : PlotPanel(std::move(title))
+    , tableUniqueId_(generateUniqueId())
     , panelTypeIdValue_(std::move(panelTypeIdValue))
     , displayName_(std::move(displayName))
     , table_(std::move(initialTable))
@@ -3388,55 +4436,55 @@ namespace ui {
   {
     bool hasSelection = !selectedCells_.empty();
 
-    ImGui::BeginDisabled(!hasSelection);
+    if (batchToolbarVisible_) {
+      ImGui::BeginDisabled(!hasSelection);
 
-    ImGui::SetNextItemWidth(80.0f);
-    ImGui::InputDouble("##batchVal", &batchValue_, 0.0, 0.0, "%.2f");
+      ImGui::SetNextItemWidth(80.0f);
+      ImGui::InputDouble("##batchVal", &batchValue_, 0.0, 0.0, "%.2f");
 
-    ImGui::SameLine();
-    if (ImGui::Button("* Scale")) {
-      applyBatchMultiply(batchValue_);
+      ImGui::SameLine();
+      if (ui::UI::Button("* Scale", {}, {}, "Multiply selected cells by factor")) {
+        applyBatchMultiply(batchValue_);
+      }
+
+      ImGui::SameLine();
+      if (ui::UI::Button("+ Offset", {}, {}, "Add offset to selected cells")) {
+        applyBatchOffset(batchValue_);
+      }
+
+      ImGui::SameLine();
+      if (ui::UI::Button("= Set", {}, {}, "Set all selected cells to value")) {
+        applyBatchSetValue(batchValue_);
+      }
+
+      ImGui::SameLine();
+      if (ui::UI::Button("Interpolate", {}, {}, "Bilinear interpolation between bounding corners")) {
+        interpolateSelectedRegion();
+      }
+
+      ImGui::SameLine();
+      if (ui::UI::Button("Extrapolate VE", {}, {}, "Extrapolate values for selected cells")) {
+        showExtrapolateModal_ = true;
+        wasExtrapolateModalOpen_ = false;
+        ImGui::OpenPopup(ui::popups::ExtrapolateVe);
+      }
+      renderExtrapolateModal();
+
+      ImGui::EndDisabled();
+
+      if (hasSelection) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%zu cells selected)", selectedCells_.size());
+      }
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Multiply selected cells by factor");
-
-    ImGui::SameLine();
-    if (ImGui::Button("+ Offset")) {
-      applyBatchOffset(batchValue_);
-    }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add offset to selected cells");
-
-    ImGui::SameLine();
-    if (ImGui::Button("= Set")) {
-      applyBatchSetValue(batchValue_);
-    }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Set all selected cells to value");
-
-    ImGui::SameLine();
-    if (ImGui::Button("Interpolate")) {
-      interpolateSelectedRegion();
-    }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bilinear interpolation between bounding corners");
-
-    ImGui::SameLine();
-    if (ImGui::Button("Extrapolate VE")) {
-      showExtrapolateModal_ = true;
-      wasExtrapolateModalOpen_ = false;
-      ImGui::OpenPopup(ui::popups::ExtrapolateVe);
-    }
-    renderExtrapolateModal();
-
-    ImGui::EndDisabled();
 
     if (customToolbarCallback_) {
-      ImGui::SameLine();
-      ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+      if (batchToolbarVisible_) {
+        ImGui::SameLine();
+        ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+      }
       ImGui::SameLine();
       customToolbarCallback_();
-    }
-
-    if (hasSelection) {
-      ImGui::SameLine();
-      ImGui::TextDisabled("(%zu cells selected)", selectedCells_.size());
     }
   }
 
@@ -3469,20 +4517,20 @@ namespace ui {
       // Dynamically compute preview while modal is active
       applyExtrapolationPreview();
 
-      if (ImGui::Button("Apply", ImVec2(100, 0))) {
-        showPreview_ = false;            // Commit the extrapolated values
-        showExtrapolateModal_ = false;  // Close flag
+      if (ui::UI::Button("Apply", {}, ImVec2(100, 0)), "Commit the extrapolated values") {
+        showPreview_ = false;
+        showExtrapolateModal_ = false;
         wasExtrapolateModalOpen_ = false;
         ImGui::CloseCurrentPopup();
         notifyDataChanged();
       }
       ImGui::SameLine();
-      if (ImGui::Button("Cancel", ImVec2(100, 0))) {
+      if (ui::UI::Button("Cancel", {}, {}, "Discard changes and close popup")) {
         if (showPreview_) {
           table_ = tableBackup_;      // Revert changes
           showPreview_ = false;
         }
-        showExtrapolateModal_ = false;  // Close flag
+        showExtrapolateModal_ = false;
         wasExtrapolateModalOpen_ = false;
         ImGui::CloseCurrentPopup();
       }
@@ -3625,6 +4673,7 @@ namespace ui {
           table_.setValue(r, c, newValues[r][c]);
         }
       }
+      tableUniqueId_ = generateUniqueId();
     } else {
       int startR = static_cast<int>(table_.rowCount()) - 1;
       int startC = 0;
@@ -3689,7 +4738,8 @@ namespace ui {
       for (size_t c = 0; c < cols; ++c) {
         table_.setValue(r, c, zVals[r * cols + c]);
       }
-    }    
+    }
+    tableUniqueId_ = generateUniqueId();
     notifyDataChanged();
     return true;
   }
@@ -3754,7 +4804,7 @@ namespace ui {
 
     ImGui::EndChild();
 
-    if (ImGui::Button("Space evenly")) {
+    if (ui::UI::Button("Space evenly", {}, {}, "Distribute bins evenly")) {
       if (axisEditorValues_.size() >= 2) {
         double first = axisEditorValues_.front();
         double last = axisEditorValues_.back();
@@ -3767,13 +4817,14 @@ namespace ui {
     ImGui::Separator();
 
     bool accepted = false;
-    if (ImGui::Button("OK")) {
+    if (ui::UI::Button("OK")) {
       ImGui::CloseCurrentPopup();
       accepted = true;
+      tableUniqueId_ = generateUniqueId();
       notifyDataChanged();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Cancel")) {
+    if (ui::UI::Button("Cancel", {}, {}, "Discard changes and close popup")) {
       ImGui::CloseCurrentPopup();
       if (editingAxis_ == AxisEditing::X)
         axisEditorValues_ = table_.xBreakpoints();
@@ -3837,7 +4888,7 @@ namespace ui {
       ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
       ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
 
-    std::string tableId = "ValueGrid###" + title();
+    std::string tableId = "ValueGrid###" + title() + "_" + tableUniqueId_;
     if (ImGui::BeginTable(tableId.c_str(), static_cast<int>(cols + 1), flags, ImVec2(0.0f, 400.0f))) {
       ImGui::TableSetupScrollFreeze(1, 1);
       ImGui::TableSetupColumn("Load \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
@@ -3982,7 +5033,7 @@ namespace ui {
 
     ImGui::TextDisabled("LMB Drag: Rotate | RMB Drag: Pan | Mouse Wheel: Zoom");
     ImGui::SameLine();
-    if (ImGui::Button("Reset View##3d_reset")) {
+    if (ui::UI::Button("Reset View##3d_reset")) {
       cameraYaw_ = 45.0f;
       cameraPitch_ = 30.0f;
       cameraZoom_ = 1.0f;
@@ -4189,7 +5240,7 @@ namespace ui {
 
   void TableEditorPanel::render(PlotCursor & /*cursor*/)
   {
-    if (ImGui::Button("Edit vertical axis")) {
+    if (ui::UI::Button("Edit vertical axis")) {
       axisEditorValues_ = table_.yBreakpoints();
       axisEditorBinCount_ = static_cast<int>(axisEditorValues_.size());
       editingAxis_ = AxisEditing::Y;
@@ -4198,7 +5249,7 @@ namespace ui {
 
     ImGui::SameLine();
 
-    if (ImGui::Button("Edit horizontal axis")) {
+    if (ui::UI::Button("Edit horizontal axis")) {
       axisEditorValues_ = table_.xBreakpoints();
       axisEditorBinCount_ = static_cast<int>(axisEditorValues_.size());
       editingAxis_ = AxisEditing::X;
@@ -4207,13 +5258,13 @@ namespace ui {
 
     ImGui::SameLine();
 
-    if (ImGui::Button("Import / Export...")) {
+    if (ui::UI::Button("Import / Export...")) {
       ImGui::OpenPopup(ui::popups::TableImportExportMenu);
     }
 
     ImGui::SameLine();
 
-    if (ImGui::Button(show3DView_ ? "Show 2D Table Grid" : "Show 3D Surface View")) {
+    if (ui::UI::Button(show3DView_ ? "Show 2D Table Grid" : "Show 3D Surface View")) {
       show3DView_ = !show3DView_;
     }
 
@@ -4373,6 +5424,8 @@ namespace ui {
     void applyBatchSetValue(double value);
     void interpolateSelectedRegion();
     void applyExtrapolationPreview();
+    void setBatchToolbarVisible(bool visible) { batchToolbarVisible_ = visible; }
+    bool isBatchToolbarVisible() const { return batchToolbarVisible_; }
 
     void setSelection(const std::set<std::pair<int, int>> &cells);
     const std::set<std::pair<int, int>> &selectedCells() const { return selectedCells_; }
@@ -4399,6 +5452,7 @@ namespace ui {
     void notifyDataChanged() { if (onDataChanged_) onDataChanged_(); }
 
   private:
+    std::string tableUniqueId_;
     std::string panelTypeIdValue_;
     std::string displayName_;
     core::Table2D table_;
@@ -4428,6 +5482,7 @@ namespace ui {
     double batchValue_ = 1.05;
 
     core::Table2D tableBackup_;
+    bool batchToolbarVisible_ = true;
     bool showExtrapolateModal_ = false;
     bool wasExtrapolateModalOpen_ = false;
     bool showPreview_ = true;
@@ -4455,9 +5510,425 @@ namespace ui {
 } // namespace ui
 
 
+## File: src/ui/tableoverlaypanel.cpp
+
+#include "ui/tableoverlaypanel.h"
+#include "ui/ui_helpers.h"
+#include "3rdparty/nlohmann/json.hpp"
+#include "3rdparty/IconsFontAwesome7.h"
+
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <cstdio>
+#include "imgui.h"
+#include "implot.h"
+
+namespace ui {
+
+  TableOverlayPanel::TableOverlayPanel(std::string title)
+    : PlotPanel(std::move(title))
+    , innerTable_("##InnerTable", "TableOverlayInner", "Overlay Table",
+      core::Table2D(core::generateEvenBreakpoints(500, 7000, 16),
+        core::generateEvenBreakpoints(20, 100, 16)))
+  {
+    applyCustomColoring();
+
+    innerTable_.setOnDataChangedCallback([this]() {
+      computeOverlayMatrix();
+      });
+    innerTable_.setCustomToolbarCallback([this]() {
+      ImGui::SameLine();
+      if (ImGui::Checkbox("Filter Overlay", &enableOverlayFilter_)) {
+        computeOverlayMatrix();
+      }
+      if (enableOverlayFilter_) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(180.0f);
+        if (ImGui::DragFloatRange2("##OverlayRange", &overlayFilterMin_, &overlayFilterMax_, 1.0f,
+          static_cast<float>(overlayMin_),
+          static_cast<float>(overlayMax_),
+          "Min: %.0f", "Max: %.0f")) {
+          computeOverlayMatrix();
+        }
+      }
+      });
+    innerTable_.setBatchToolbarVisible(false);
+  }
+
+  void TableOverlayPanel::setSession(const core::LogSession *session)
+  {
+    session_ = session;
+    rebindChannels();
+    computeOverlayMatrix();
+  }
+
+  void TableOverlayPanel::rebindChannels()
+  {
+    if (!session_) return;
+
+    // Fallbacks if specified channels aren't present in current log
+    if (!session_->findChannel(xAxisChannel_)) {
+      if (session_->findChannel("RPM")) xAxisChannel_ = "RPM";
+    }
+    if (!session_->findChannel(yAxisChannel_)) {
+      if (session_->findChannel("MAP")) yAxisChannel_ = "MAP";
+      else if (session_->findChannel("Fuel - Load (MAP)")) yAxisChannel_ = "Fuel - Load (MAP)";
+    }
+    if (!session_->findChannel(overlayChannel_)) {
+      if (session_->findChannel("EGT")) overlayChannel_ = "EGT";
+      else if (session_->findChannel("EGT1")) overlayChannel_ = "EGT1";
+    }
+  }
+
+  void TableOverlayPanel::computeOverlayMatrix()
+  {
+    const size_t rows = innerTable_.table().rowCount();
+    const size_t cols = innerTable_.table().columnCount();
+
+    binnedOverlayData_.assign(rows, std::vector<double>(cols, 0.0));
+    binnedSampleCounts_.assign(rows, std::vector<size_t>(cols, 0));
+
+    hasOverlayData_ = false;
+    overlayMin_ = std::numeric_limits<double>::max();
+    overlayMax_ = -std::numeric_limits<double>::max();
+
+    if (!session_ || rows == 0 || cols == 0) return;
+
+    const core::Channel *xCh = session_->findChannel(xAxisChannel_);
+    const core::Channel *yCh = session_->findChannel(yAxisChannel_);
+    const core::Channel *ovCh = session_->findChannel(overlayChannel_);
+
+    if (!xCh || !yCh || !ovCh) return;
+
+    const auto &xBp = innerTable_.table().xBreakpoints();
+    const auto &yBp = innerTable_.table().yBreakpoints();
+    const size_t numSamples = session_->rowCount();
+
+    std::vector<std::vector<double>> sumVal(rows, std::vector<double>(cols, 0.0));
+    std::vector<std::vector<double>> minVal(rows, std::vector<double>(cols, std::numeric_limits<double>::max()));
+    std::vector<std::vector<double>> maxVal(rows, std::vector<double>(cols, -std::numeric_limits<double>::max()));
+
+    for (size_t i = 0; i < numSamples; ++i) {
+      if (!session_->isRowInCropRange(i)) continue;
+
+      double x = xCh->values()[i];
+      double y = yCh->values()[i];
+      double z = ovCh->values()[i];
+
+      if (std::isnan(x) || std::isnan(y) || std::isnan(z)) continue;
+
+      // Find nearest grid bin (Euclidean distance on normalized space)
+      size_t bestR = 0, bestC = 0;
+      double minDist = std::numeric_limits<double>::max();
+
+      for (size_t r = 0; r < rows; ++r) {
+        for (size_t c = 0; c < cols; ++c) {
+          double dX = (x - xBp[c]) / 1000.0;
+          double dY = (y - yBp[r]) / 10.0;
+          double dist = (dX * dX) + (dY * dY);
+
+          if (dist < minDist) {
+            minDist = dist;
+            bestR = r;
+            bestC = c;
+          }
+        }
+      }
+
+      sumVal[bestR][bestC] += z;
+      if (z < minVal[bestR][bestC]) minVal[bestR][bestC] = z;
+      if (z > maxVal[bestR][bestC]) maxVal[bestR][bestC] = z;
+      binnedSampleCounts_[bestR][bestC]++;
+    }
+
+    for (size_t r = 0; r < rows; ++r) {
+      for (size_t c = 0; c < cols; ++c) {
+        size_t count = binnedSampleCounts_[r][c];
+        if (count == 0) continue;
+
+        hasOverlayData_ = true;
+        double cellRes = 0.0;
+
+        switch (aggregation_) {
+        case OverlayAggregation::Max:
+          cellRes = maxVal[r][c];
+          break;
+        case OverlayAggregation::Min:
+          cellRes = minVal[r][c];
+          break;
+        case OverlayAggregation::Average:
+          cellRes = sumVal[r][c] / static_cast<double>(count);
+          break;
+        case OverlayAggregation::Count:
+          cellRes = static_cast<double>(count);
+          break;
+        }
+
+        binnedOverlayData_[r][c] = cellRes;
+
+        if (cellRes < overlayMin_) overlayMin_ = cellRes;
+        if (cellRes > overlayMax_) overlayMax_ = cellRes;
+      }
+    }
+
+    if (overlayMax_ <= overlayMin_) overlayMax_ = overlayMin_ + 1.0;
+    if (enableOverlayFilter_ && !overlayFilterMinMaxSet_) {
+      overlayFilterMin_ = static_cast<float>(overlayMin_);
+      overlayFilterMax_ = static_cast<float>(overlayMax_);
+      overlayFilterMinMaxSet_ = true;
+    }
+  }
+
+  void TableOverlayPanel::applyCustomColoring()
+  {
+    // Custom cell background color derived from binned overlay data
+    innerTable_.setCustomHeatmapColoring([this](double /*val*/, size_t row, size_t col) -> ImU32 {
+      if (!hasOverlayData_ || row >= binnedSampleCounts_.size() || col >= binnedSampleCounts_[row].size()) {
+        return IM_COL32(30, 30, 35, 255);
+      }
+
+      // 1. Unvisited Cell Polish: Keep unvisited cells dark gray
+      if (binnedSampleCounts_[row][col] == 0) {
+        return IM_COL32(20, 22, 28, 255);
+      }
+
+      double overlayVal = binnedOverlayData_[row][col];
+
+      // 2. Range Filter Check: If value is outside [Min, Max], keep background dark
+      if (enableOverlayFilter_) {
+        if (overlayVal < overlayFilterMin_ || overlayVal > overlayFilterMax_) {
+          return IM_COL32(25, 28, 35, 255);
+        }
+      }
+
+      // Normalize t against overall overlay range
+      float t = static_cast<float>((overlayVal - overlayMin_) / (overlayMax_ - overlayMin_));
+      t = std::clamp(t, 0.0f, 1.0f);
+
+      // 3. Viridis Background with 0.45 Alpha (so text is sharp)
+      ImVec4 color = ImPlot::SampleColormap(t, ImPlotColormap_Viridis);
+      color.w = 0.45f;
+
+      return ImGui::ColorConvertFloat4ToU32(color);
+      });
+
+    // Custom cell hover tooltip displaying overlay metrics
+    innerTable_.setCustomHoverTooltip([this](double cellVal, size_t row, size_t col) -> std::string {
+      if (row >= binnedSampleCounts_.size() || col >= binnedSampleCounts_[row].size()) return {};
+      size_t hits = binnedSampleCounts_[row][col];
+      if (hits == 0) return "Unvisited Cell";
+
+      char buf[128];
+      snprintf(buf, sizeof(buf), "Base Value: %.2f\n%s (%s): %.1f\nSamples: %zu",
+        cellVal, overlayChannel_.c_str(),
+        aggregation_ == OverlayAggregation::Max ? "Max" :
+        aggregation_ == OverlayAggregation::Average ? "Avg" :
+        aggregation_ == OverlayAggregation::Min ? "Min" : "Count",
+        binnedOverlayData_[row][col], hits);
+      return std::string(buf);
+      });
+
+    innerTable_.setCustomTextColoring([this](double /*val*/, size_t row, size_t col) -> ImU32 {
+      if (row >= binnedSampleCounts_.size() || col >= binnedSampleCounts_[row].size()) return {};
+      size_t hits = binnedSampleCounts_[row][col];
+      if (hits == 0) return ImGui::ColorConvertFloat4ToU32(ImVec4{ 0.6f, 0.6f, 0.6f, 1.0f });
+      return ImGui::ColorConvertFloat4ToU32(ImVec4{ 0.2f, 0.8f, 1.0f, 1.0f });
+      });
+  }
+
+  void TableOverlayPanel::render(PlotCursor &cursor)
+  {
+    std::string windowLabel = "Table Overlay###" + title();
+    ImGui::Begin(windowLabel.c_str(), &open_);
+
+    if (session_ == nullptr) {
+      ImGui::TextDisabled("No log session loaded.");
+      ImGui::End();
+      return;
+    }
+
+    // --- TOP TOOLBAR ---
+    ImGui::PushItemWidth(130.0f);
+
+    // 1. X Axis Channel Picker
+    if (ImGui::BeginCombo("##XCh", ("X: " + xAxisChannel_).c_str())) {
+      for (const auto &ch : session_->channels()) {
+        if (ImGui::Selectable(ch.name().c_str(), ch.name() == xAxisChannel_)) {
+          xAxisChannel_ = ch.name();
+          computeOverlayMatrix();
+        }
+      }
+      ImGui::EndCombo();
+    }
+
+    ImGui::SameLine();
+
+    // 2. Y Axis Channel Picker
+    if (ImGui::BeginCombo("##YCh", ("Y: " + yAxisChannel_).c_str())) {
+      for (const auto &ch : session_->channels()) {
+        if (ImGui::Selectable(ch.name().c_str(), ch.name() == yAxisChannel_)) {
+          yAxisChannel_ = ch.name();
+          computeOverlayMatrix();
+        }
+      }
+      ImGui::EndCombo();
+    }
+
+    ImGui::SameLine();
+    ImGui::Text("|");
+    ImGui::SameLine();
+
+    // 3. Overlay Channel Picker
+    if (ImGui::BeginCombo("##OvCh", ("Overlay: " + overlayChannel_).c_str())) {
+      for (const auto &ch : session_->channels()) {
+        if (ImGui::Selectable(ch.name().c_str(), ch.name() == overlayChannel_)) {
+          overlayChannel_ = ch.name();
+          computeOverlayMatrix();
+        }
+      }
+      ImGui::EndCombo();
+    }
+
+    ImGui::SameLine();
+
+    // 4. Overlay Aggregation Picker
+    const char *aggNames[] = { "Max", "Average", "Min", "Hit Count" };
+    int currentAgg = static_cast<int>(aggregation_);
+    if (ImGui::Combo("##Agg", &currentAgg, aggNames, IM_ARRAYSIZE(aggNames))) {
+      aggregation_ = static_cast<OverlayAggregation>(currentAgg);
+      computeOverlayMatrix();
+    }
+
+    ImGui::PopItemWidth();
+
+    ImGui::SameLine();
+    if (ui::UI::ButtonPrimary(ICON_FA_REPEAT " Recalculate")) {
+      computeOverlayMatrix();
+    }
+
+    ImGui::Separator();
+
+    // Delegate rendering to embedded TableEditorPanel
+    innerTable_.render(cursor);
+
+    ImGui::End();
+  }
+
+  nlohmann::json TableOverlayPanel::saveState() const
+  {
+    auto j = PlotPanel::saveState();
+    j["xAxisChannel"] = xAxisChannel_;
+    j["yAxisChannel"] = yAxisChannel_;
+    j["overlayChannel"] = overlayChannel_;
+    j["aggregation"] = static_cast<int>(aggregation_);
+    j["baseSource"] = static_cast<int>(baseSource_);
+    j["innerTable"] = innerTable_.saveState();
+    j["enableOverlayFilter"] = enableOverlayFilter_;
+    j["overlayFilterMin"] = overlayFilterMin_;
+    j["overlayFilterMax"] = overlayFilterMax_;
+    return j;
+  }
+
+  void TableOverlayPanel::loadState(const nlohmann::json &state)
+  {
+    PlotPanel::loadState(state);
+    if (state.contains("xAxisChannel")) xAxisChannel_ = state["xAxisChannel"].get<std::string>();
+    if (state.contains("yAxisChannel")) yAxisChannel_ = state["yAxisChannel"].get<std::string>();
+    if (state.contains("overlayChannel")) overlayChannel_ = state["overlayChannel"].get<std::string>();
+    if (state.contains("aggregation")) aggregation_ = static_cast<OverlayAggregation>(state["aggregation"].get<int>());
+    if (state.contains("baseSource")) baseSource_ = static_cast<BaseTableSource>(state["baseSource"].get<int>());
+    if (state.contains("innerTable")) innerTable_.loadState(state["innerTable"]);
+    if (state.contains("enableOverlayFilter")) enableOverlayFilter_ = state["enableOverlayFilter"].get<bool>();
+    if (state.contains("overlayFilterMin")) overlayFilterMin_ = state["overlayFilterMin"].get<float>();
+    if (state.contains("overlayFilterMax")) overlayFilterMax_ = state["overlayFilterMax"].get<float>();
+    rebindChannels();
+    computeOverlayMatrix();
+  }
+
+} // namespace ui
+
+
+## File: src/ui/tableoverlaypanel.h
+
+#pragma once
+
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "core/logsession.h"
+#include "ui/plotpanel.h"
+#include "ui/tableeditorpanel.h"
+
+namespace ui {
+
+  enum class BaseTableSource {
+    ManualPasted,  // User-edited / imported table (e.g. pasted Ignition Timing)
+    LoggedAverage, // Cell values show the average of a selected log channel
+    Empty          // Plain grid showing only heatmap values
+  };
+
+  enum class OverlayAggregation {
+    Max,    // Peak value per cell (ideal for EGT, Knock)
+    Average,// Mean value per cell
+    Min,    // Minimum value per cell
+    Count   // Log sample hit count per cell
+  };
+
+  class TableOverlayPanel : public PlotPanel {
+  public:
+    explicit TableOverlayPanel(std::string title);
+
+    void render(PlotCursor &cursor) override;
+    bool wantsClose() const override { return !open_; }
+    void setSession(const core::LogSession *session) override;
+
+    std::string panelTypeId() const override { return "TableOverlayPanel"; }
+    nlohmann::json saveState() const override;
+    void loadState(const nlohmann::json &state) override;
+
+  private:
+    void rebindChannels();
+    void computeOverlayMatrix();
+    void applyCustomColoring();
+
+    const core::LogSession *session_ = nullptr;
+    bool open_ = true;
+
+    // Axis & Channel selection
+    std::string xAxisChannel_ = "RPM";
+    std::string yAxisChannel_ = "MAP";
+    std::string baseValueChannel_ = "Ignition"; // Used when BaseTableSource == LoggedAverage
+    std::string overlayChannel_ = "EGT1";
+
+    BaseTableSource baseSource_ = BaseTableSource::ManualPasted;
+    OverlayAggregation aggregation_ = OverlayAggregation::Max;
+
+    // Binned matrix storage aligned with innerTable_'s grid dimensions
+    std::vector<std::vector<double>> binnedOverlayData_;
+    std::vector<std::vector<size_t>> binnedSampleCounts_;
+    double overlayMin_ = 0.0;
+    double overlayMax_ = 0.0;
+    bool hasOverlayData_ = false;
+
+    bool enableOverlayFilter_ = false;
+    float overlayFilterMin_ = 0.0f;
+    float overlayFilterMax_ = 0.0f;
+    bool overlayFilterMinMaxSet_ = false;
+
+    // Embedded Table Editor for full grid manipulation, import/export, and rendering
+    TableEditorPanel innerTable_;
+  };
+
+} // namespace ui
+
+
 ## File: src/ui/timeseriespanel.cpp
 
 #include "ui/timeseriespanel.h"
+#include "ui/ui_helpers.h"
+#include "3rdparty/IconsFontAwesome7.h"
 
 #include <algorithm>
 #include <cctype>
@@ -4467,6 +5938,7 @@ namespace ui {
 
 #include "3rdparty/nlohmann/json.hpp"
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "implot.h"
 
 namespace ui {
@@ -4669,7 +6141,7 @@ namespace ui {
 
   void TimeSeriesPanel::renderHeaderControls(PlotCursor &cursor)
   {
-    if (ImGui::Button(showSidebar_ ? "< Hide Channels" : "> Show Channels")) {
+    if (ui::UI::Button(showSidebar_ ? "< Hide Channels" : "> Show Channels")) {
       showSidebar_ = !showSidebar_;
     }
 
@@ -4685,10 +6157,45 @@ namespace ui {
     }
 
     ImGui::SameLine();
-    ImGui::Text("|");
+    ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
     ImGui::SameLine();
 
     renderCropControls(cursor);
+
+    if (session_ && !session_->regimeSummaries().empty()) {
+      ImGui::SameLine();
+      ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+      ImGui::SameLine();
+
+      for (const auto &reg : session_->regimeSummaries()) {
+        if (!reg.showShading || reg.intervals.empty()) continue;
+
+        ImGui::PushStyleColor(ImGuiCol_Button, reg.color);
+        std::string btnLabel = std::string(ICON_FA_FLAG) + " " + reg.displayName;
+
+        if (ImGui::Button(btnLabel.c_str())) {
+          // Find the next interval start time after the current cursor position
+          double targetTime = reg.intervals.front().startSec; // Fallback / wrap to first
+
+          for (const auto &interval : reg.intervals) {
+            // Use a tiny epsilon (+0.1s) so pressing the button while standing on a start marker jumps to the NEXT one
+            if (interval.startSec > cursor.timeSec + 0.1) {
+              targetTime = interval.startSec;
+              break;
+            }
+          }
+
+          jumpCursorToIndex(getCursorIndex(targetTime), cursor, reg.displayName);
+        }
+        ImGui::PopStyleColor();
+
+        if (ImGui::IsItemHovered()) {
+          ImGui::SetTooltip("%s (%zu events)\nDwell: %.1f s | Peak EGT: %.0f °F\nClick to jump to next event (cycles)",
+            reg.displayName.c_str(), reg.intervals.size(), reg.totalDwellTimeSec, reg.peakEgt);
+        }
+        ImGui::SameLine();
+      }
+    }
   }
 
   void TimeSeriesPanel::renderCropControls(PlotCursor &cursor)
@@ -4699,7 +6206,7 @@ namespace ui {
 
     bool hasCrop = session_->cropRange().active;
 
-    if (ImGui::Button("Set [Start]")) {
+    if (ui::UI::Button("Set [Start]")) {
       double start = cursor.active ? cursor.timeSec : 0.0;
       double end = hasCrop ? session_->cropRange().endSec
         : (cachedTimeSec_ && !cachedTimeSec_->empty() ? cachedTimeSec_->back() : 0.0);
@@ -4708,7 +6215,7 @@ namespace ui {
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Set crop start marker at current cursor time");
 
     ImGui::SameLine();
-    if (ImGui::Button("Set [End]")) {
+    if (ui::UI::Button("Set [End]")) {
       double start = hasCrop ? session_->cropRange().startSec
         : (cachedTimeSec_ && !cachedTimeSec_->empty() ? cachedTimeSec_->front() : 0.0);
       double end = cursor.active ? cursor.timeSec : 0.0;
@@ -4718,7 +6225,7 @@ namespace ui {
 
     if (hasCrop) {
       ImGui::SameLine();
-      if (ImGui::Button("Reset Crop")) {
+      if (ui::UI::Button("Reset Crop")) {
         const_cast<core::LogSession *>(session_)->resetCropRange();
       }
 
@@ -4856,7 +6363,6 @@ namespace ui {
       for (int plotIdx = 0; plotIdx < subplotCount; ++plotIdx) {
         std::string plotID = "##Plot_" + std::to_string(plotIdx);
 
-        // Set next axis limits for the plot before BeginPlot
         if (pendingXAxisCenter_) {
           ImPlot::SetNextAxisLimits(ImAxis_X1, newMinX, newMaxX, ImGuiCond_Always);
         } else if (bPendingAfterLoad_) {
@@ -4941,6 +6447,26 @@ namespace ui {
             lastPlotPos = ImPlot::GetPlotPos();
             lastPlotSize = ImPlot::GetPlotSize();
             renderOverlay = true;
+          }
+
+          if (session_) {
+            // Render shaded vertical bands for active regimes
+            for (const auto &reg : session_->regimeSummaries()) {
+              if (!reg.showShading) continue;
+
+              for (const auto &interval : reg.intervals) {
+                double xMin = interval.startSec;
+                double xMax = interval.endSec;
+
+                // Draw vertical shaded region spanning full Y plot height
+                ImPlot::PlotInfLines("##Shade", &xMin, 1); // Or draw using ImPlot::PlotRect / DrawList
+                ImVec2 pMin = ImPlot::PlotToPixels(ImPlotPoint(xMin, yAxisMax_));
+                ImVec2 pMax = ImPlot::PlotToPixels(ImPlotPoint(xMax, yAxisMin_));
+
+                ImDrawList *drawList = ImPlot::GetPlotDrawList();
+                drawList->AddRectFilled(pMin, pMax, ImGui::ColorConvertFloat4ToU32(reg.color));
+              }
+            }
           }
 
           ImPlot::EndPlot();
@@ -5227,7 +6753,8 @@ namespace ui {
     inline constexpr const char *CustomChannels = "Custom Calculated Channels###CustomChannelsModal";
     inline constexpr const char *LoadError = "Load Error###LoadErrorModal";
     inline constexpr const char *StatusPanelChannels = "Status Panel Channels###StatusPanelChannelsPopup";
-
+    inline constexpr const char *ScatterPanelChannels = "Scatter Panel Channels###ScatterPanelChannelsPopup";
+    inline constexpr const char *ChannelMapping = "Channel Semantic Mapping###ChannelMappingModal";
   } // namespace popups
 
 
@@ -5256,11 +6783,8 @@ namespace ui {
     }
   public:
     static bool Button(const char *label, ButtonStyle style = ButtonStyle::Default, const ImVec2 &size = ImVec2(0, 0), const char *tooltip = nullptr) {
-      if (style == ButtonStyle::Default) {
-        return ImGui::Button(label, size);
-      }
 
-      ImVec4 normal;
+      std::optional<ImVec4> normal;
 
       switch (style) {
       case ButtonStyle::Primary:
@@ -5276,12 +6800,16 @@ namespace ui {
         normal = ImVec4(0.60f, 0.20f, 0.20f, 1.0f);
         break;
       default:
-        return ImGui::Button(label, size);
+        break;
       }
 
-      ImGui::PushStyleColor(ImGuiCol_Button, normal);
-      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Hover(normal));
-      ImGui::PushStyleColor(ImGuiCol_ButtonActive, Active(normal));
+      ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 2.0f);
+
+      if (normal) {
+        ImGui::PushStyleColor(ImGuiCol_Button, *normal);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Hover(*normal));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, Active(*normal));
+      }
 
       bool clicked = ImGui::Button(label, size);
 
@@ -5289,7 +6817,12 @@ namespace ui {
         ImGui::SetTooltip("%s", tooltip);
       }
 
-      ImGui::PopStyleColor(3);
+      if (normal) {
+        ImGui::PopStyleColor(3);
+      }
+
+      ImGui::PopStyleVar(1);
+      
       return clicked;
     }
 
@@ -5319,6 +6852,7 @@ namespace ui {
 #include "ui/veanalysispanel.h"
 #include "ui/ui_helpers.h"
 #include "3rdparty/nlohmann/json.hpp"
+#include "3rdparty/IconsFontAwesome7.h"
 
 #include <algorithm>
 #include <cmath>
@@ -5351,14 +6885,14 @@ namespace ui {
     baselineVePanel_.setOnDataChangedCallback(recalcCallback);
     targetAfrPanel_.setCustomToolbarCallback([this, recalcCallback] {
       ImGui::BeginDisabled(!hasBaselineVe() || session_ == nullptr);
-      if (ui::UI::ButtonPrimary("Apply Changes", {}, "Recomputes AFR Delta and Suggested VE.")) {
+      if (ui::UI::ButtonPrimary(ICON_FA_CHECK " Apply Changes", {}, "Recomputes AFR Delta and Suggested VE.")) {
         recalcCallback();
       }
       ImGui::EndDisabled();
       });
     baselineVePanel_.setCustomToolbarCallback([this, recalcCallback] {
       ImGui::BeginDisabled(!hasTargetAfr() || session_ == nullptr);
-      if (ui::UI::ButtonPrimary("Apply Changes", {}, "Recomputes AFR Delta and Suggested VE.")) {
+      if (ui::UI::ButtonPrimary(ICON_FA_CHECK " Apply Changes", {}, "Recomputes AFR Delta and Suggested VE.")) {
         recalcCallback();
       }
       ImGui::EndDisabled();
@@ -5368,9 +6902,9 @@ namespace ui {
   void VeAnalysisPanel::setSession(const core::LogSession *session)
   {
     session_ = session;
-    if (session_ != nullptr) {
-      engine::populateDefaultsForSession(config_, *session_);
-    }
+    //if (session_ != nullptr) {
+    //  engine::populateDefaultsForSession(config_, *session_);
+    //}
     computeObservedAfr();
   }
 
@@ -5381,9 +6915,9 @@ namespace ui {
       return;
     }
 
-    const core::Channel *rpmCh = session_->findChannel(config_.rpmChannel);
-    const core::Channel *loadCh = session_->findChannel(config_.loadChannel);
-    const core::Channel *afrCh = session_->findChannel(config_.afrChannel);
+    const core::Channel *rpmCh = session_->findChannel(session_->channelMapping().rpm);
+    const core::Channel *loadCh = session_->findChannel(session_->channelMapping().load);
+    const core::Channel *afrCh = session_->findChannel(session_->channelMapping().afr);
 
     if (!rpmCh || !loadCh || !afrCh) {
       hasObservedData_ = false;
@@ -5539,7 +7073,7 @@ namespace ui {
       if (std::abs(diff) < 1e-5) {
         return ImGui::ColorConvertFloat4ToU32(ImVec4{ 0.6f, 0.6f, 0.6f, 1.0f }); // Gray for unchanged
       }
-      return ImGui::ColorConvertFloat4ToU32(ImVec4{ 0.2f, 0.8f, 1.0f, 1.0f });      
+      return ImGui::ColorConvertFloat4ToU32(ImVec4{ 0.2f, 0.8f, 1.0f, 1.0f });
       };
 
     auto customToolbar = [this]() {
@@ -5576,9 +7110,9 @@ namespace ui {
     const size_t cols = veTable.columnCount();
     if (rows == 0 || cols == 0) return;
 
-    const core::Channel *rpmCh = session_->findChannel(config_.rpmChannel);
-    const core::Channel *loadCh = session_->findChannel(config_.loadChannel);
-    const core::Channel *afrCh = session_->findChannel(config_.afrChannel);
+    const core::Channel *rpmCh = session_->findChannel(session_->channelMapping().rpm);
+    const core::Channel *loadCh = session_->findChannel(session_->channelMapping().load);
+    const core::Channel *afrCh = session_->findChannel(session_->channelMapping().afr);
 
     std::vector<std::vector<size_t>> sampleCounts(rows, std::vector<size_t>(cols, 0));
 
@@ -5642,23 +7176,23 @@ namespace ui {
 
       bool changed = false;
 
-      auto renderChannelCombo = [this, &changed](const char *label, std::string &selectedChannel) {
-        if (ImGui::BeginCombo(label, selectedChannel.empty() ? "None" : selectedChannel.c_str())) {
-          if (ImGui::Selectable("None", selectedChannel.empty())) {
-            selectedChannel.clear();
-            changed = true;
-          }
-          for (const auto &ch : session_->channels()) {
-            bool isSelected = (ch.name() == selectedChannel);
-            if (ImGui::Selectable(ch.name().c_str(), isSelected)) {
-              selectedChannel = ch.name();
-              changed = true;
-            }
-            if (isSelected) ImGui::SetItemDefaultFocus();
-          }
-          ImGui::EndCombo();
-        }
-        };
+      //auto renderChannelCombo = [this, &changed](const char *label, std::string &selectedChannel) {
+      //  if (ImGui::BeginCombo(label, selectedChannel.empty() ? "None" : selectedChannel.c_str())) {
+      //    if (ImGui::Selectable("None", selectedChannel.empty())) {
+      //      selectedChannel.clear();
+      //      changed = true;
+      //    }
+      //    for (const auto &ch : session_->channels()) {
+      //      bool isSelected = (ch.name() == selectedChannel);
+      //      if (ImGui::Selectable(ch.name().c_str(), isSelected)) {
+      //        selectedChannel = ch.name();
+      //        changed = true;
+      //      }
+      //      if (isSelected) ImGui::SetItemDefaultFocus();
+      //    }
+      //    ImGui::EndCombo();
+      //  }
+      //  };
 
       if (ImGui::BeginTabBar("ObservedAfrSettingsTabBar")) {
 
@@ -5696,15 +7230,15 @@ namespace ui {
         }
 
 
-        if (ImGui::BeginTabItem("Channel Mapping")) {
-          ImGui::Spacing();
-          renderChannelCombo("RPM Channel", config_.rpmChannel);
-          renderChannelCombo("Load Channel", config_.loadChannel);
-          renderChannelCombo("AFR Channel", config_.afrChannel);
-          renderChannelCombo("TPSdot Channel", config_.tpsDotChannel);
-          renderChannelCombo("CLT Channel", config_.cltChannel);
-          ImGui::EndTabItem();
-        }
+        //if (ImGui::BeginTabItem("Channel Mapping")) {
+        //  ImGui::Spacing();
+        //  renderChannelCombo("RPM Channel", session_->channelMapping().rpm);
+        //  renderChannelCombo("Load Channel", session_->channelMapping().load);
+        //  renderChannelCombo("AFR Channel", session_->channelMapping().afr);
+        //  renderChannelCombo("TPSdot Channel", session_->channelMapping().tpsDot);
+        //  renderChannelCombo("CLT Channel", session_->channelMapping().clt);
+        //  ImGui::EndTabItem();
+        //}
 
         ImGui::EndTabBar();
       }
@@ -5716,7 +7250,7 @@ namespace ui {
       ImGui::Separator();
     }
 
-    if (ui::UI::ButtonPrimary("Recalculate Observed AFR")) {
+    if (ui::UI::ButtonPrimary(ICON_FA_REPEAT " Recalculate Observed AFR")) {
       computeObservedAfr();
     }
 
@@ -5815,9 +7349,9 @@ namespace ui {
       return;
     }
 
-    const core::Channel *rpmCh = session_->findChannel(config_.rpmChannel);
-    const core::Channel *loadCh = session_->findChannel(config_.loadChannel);
-    const core::Channel *afrCh = session_->findChannel(config_.afrChannel);
+    const core::Channel *rpmCh = session_->findChannel(session_->channelMapping().rpm);
+    const core::Channel *loadCh = session_->findChannel(session_->channelMapping().load);
+    const core::Channel *afrCh = session_->findChannel(session_->channelMapping().afr);
 
     if (!rpmCh || !loadCh || !afrCh) {
       hasAfrDelta_ = false;
@@ -5901,7 +7435,7 @@ namespace ui {
       return;
     }
 
-    if (ImGui::Button("Recalculate AFR Delta")) {
+    if (ui::UI::ButtonPrimary(ICON_FA_REPEAT " Recalculate AFR Delta")) {
       computeAfrDelta();
     }
 
@@ -6043,48 +7577,6 @@ namespace ui {
     return false;
   }
 
-  //void VeAnalysisPanel::renderReadOnlyTableTab(const char *tabName, TableEditorPanel &editorPanel, bool &tableSetFlag, const char *popupId)
-  //{
-  //  std::string editBtnLabel = std::string("Edit / Change ") + tabName + "...";
-  //  if (ImGui::Button(editBtnLabel.c_str())) {
-  //    ImGui::OpenPopup(popupId);
-  //  }
-
-  //  if (tableSetFlag) {
-  //    ImGui::SameLine();
-  //    if (ImGui::Button("Copy to Clipboard")) {
-  //      editorPanel.copyToClipboard(false);
-  //      suggestedVePanel_.showCopyToast();
-  //    }
-  //    suggestedVePanel_.renderToast();
-
-  //    renderReadOnlyTableGrid(editorPanel.table());
-  //  } else {
-  //    ImGui::Separator();
-  //    ImGui::TextDisabled("No %s data set yet. Click '%s' to enter or paste values.", tabName, editBtnLabel.c_str());
-  //  }
-
-  //  // Modal Editor Window
-  //  ImGui::SetNextWindowSize(ImVec2(800, 600), ImGuiCond_FirstUseEver);
-  //  if (ImGui::BeginPopupModal(popupId, nullptr, ImGuiWindowFlags_NoDocking)) {
-  //    PlotCursor dummyCursor;
-  //    editorPanel.render(dummyCursor);
-
-  //    ImGui::Separator();
-  //    if (ImGui::Button("OK", ImVec2(120, 0))) {
-  //      tableSetFlag = true;
-  //      computeObservedAfr(); // Re-bins log
-  //      computeAfrDelta();    // Re-syncs AFR Delta grid
-  //      ImGui::CloseCurrentPopup();
-  //    }
-  //    ImGui::SameLine();
-  //    if (ImGui::Button("Cancel", ImVec2(120, 0))) {
-  //      ImGui::CloseCurrentPopup();
-  //    }
-  //    ImGui::EndPopup();
-  //  }
-  //}
-
   void VeAnalysisPanel::renderTargetAfrTab()
   {
     PlotCursor dummyCursor;
@@ -6159,11 +7651,11 @@ namespace ui {
 
     // Persist analysis channel / sample thresholds
     j["config"] = {
-      {"rpmChannel", config_.rpmChannel},
-      {"loadChannel", config_.loadChannel},
-      {"afrChannel", config_.afrChannel},
-      {"tpsDotChannel", config_.tpsDotChannel},
-      {"cltChannel", config_.cltChannel},
+      //{"rpmChannel", session_->channelMapping().rpm},
+      //{"loadChannel", session_->channelMapping().load},
+      //{"afrChannel", session_->channelMapping().afr},
+      //{"tpsDotChannel", session_->channelMapping().tpsDot},
+      //{"cltChannel", session_->channelMapping().clt},
       {"minSamplesPerBin", config_.minSamplesPerBin},
       {"enableTpsDotFilter", config_.enableTpsDotFilter},
       {"maxTpsDot", config_.maxTpsDot},
@@ -6191,11 +7683,11 @@ namespace ui {
     // Restore analysis config
     if (state.contains("config") && state["config"].is_object()) {
       const auto &cfg = state["config"];
-      if (cfg.contains("rpmChannel")) config_.rpmChannel = cfg["rpmChannel"].get<std::string>();
-      if (cfg.contains("loadChannel")) config_.loadChannel = cfg["loadChannel"].get<std::string>();
-      if (cfg.contains("afrChannel")) config_.afrChannel = cfg["afrChannel"].get<std::string>();
-      if (cfg.contains("tpsDotChannel")) config_.tpsDotChannel = cfg["tpsDotChannel"].get<std::string>();
-      if (cfg.contains("cltChannel")) config_.cltChannel = cfg["cltChannel"].get<std::string>();
+      //if (cfg.contains("rpmChannel")) session_->channelMapping().rpm = cfg["rpmChannel"].get<std::string>();
+      //if (cfg.contains("loadChannel")) session_->channelMapping().load = cfg["loadChannel"].get<std::string>();
+      //if (cfg.contains("afrChannel")) session_->channelMapping().afr = cfg["afrChannel"].get<std::string>();
+      //if (cfg.contains("tpsDotChannel")) session_->channelMapping().tpsDot = cfg["tpsDotChannel"].get<std::string>();
+      //if (cfg.contains("cltChannel")) session_->channelMapping().clt = cfg["cltChannel"].get<std::string>();
       if (cfg.contains("minSamplesPerBin")) config_.minSamplesPerBin = cfg["minSamplesPerBin"].get<size_t>();
 
       if (cfg.contains("enableTpsDotFilter")) config_.enableTpsDotFilter = cfg["enableTpsDotFilter"].get<bool>();
@@ -6255,7 +7747,6 @@ namespace ui {
     void computeObservedAfr();
     void computeSuggestedVe();
     void renderObservedAfrTab();
-    //void renderReadOnlyTableTab(const char *tabName, TableEditorPanel &editorPanel, bool &tableSetFlag, const char *popupId);
     void renderTargetAfrTab();
     void renderBaselineVeTab();
     void renderSuggestedVeTab();

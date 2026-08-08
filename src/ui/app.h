@@ -21,6 +21,7 @@ namespace pfd {
 } // namespace pfd
 
 namespace ui {
+  class DriveRegimePanel;
 
   // Owns the main window's per-frame UI: dockspace + panels.
   // Does not own the GLFW/OpenGL/ImGui lifecycle -- that's main.cpp's job,
@@ -39,6 +40,7 @@ namespace ui {
     void renderMenuBar();
     void renderLoadErrorPopup();
     void renderCustomChannelModal();
+    void renderChannelMappingModal();
 
     // File dialogs are non-blocking: opening one just creates it, and
     // pollPendingDialogs_() checks each frame whether the user has
@@ -63,6 +65,8 @@ namespace ui {
     PlotPanel *addScatterPanel(const std::string &initialXChannel = "", const std::string &initialYChannel = "", std::string explicitTitle = "");
     PlotPanel *addStatusPanel(std::string explicitTitle = "");
     PlotPanel *addVeAnalysisPanel(std::string explicitTitle = "");
+    PlotPanel *addTableOverlayPanel(std::string explicitTitle = "");
+    DriveRegimePanel *getOrAddDriveRegimePanel();
 
     int getNextPanelIdForPrefix(const std::string &prefix) const;
 
@@ -70,6 +74,7 @@ namespace ui {
     bool firstFrame_ = true;
 
     bool showCustomChannelModal_ = false;
+    bool showChannelMappingModal_ = false;
     char customNameBuf_[64] = "";
     char customUnitBuf_[32] = "";
     char customFormulaBuf_[256] = "";

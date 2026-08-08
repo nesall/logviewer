@@ -89,8 +89,11 @@ add_executable(logviewer
   src/core/channel.cpp
   src/core/table2d.h
   src/core/table2d.cpp
+  src/core/regime.h
   src/engine/ve_analyzer.h
   src/engine/ve_analyzer.cpp
+  src/engine/regime_analyzer.h
+  src/engine/regime_analyzer.cpp
   src/io/logparser.h
   src/io/megasquirtcsvparser.h
   src/io/megasquirtcsvparser.cpp
@@ -110,9 +113,23 @@ add_executable(logviewer
   src/ui/tableeditorpanel.cpp
   src/ui/veanalysispanel.h
   src/ui/veanalysispanel.cpp
+  src/ui/tableoverlaypanel.h
+  src/ui/tableoverlaypanel.cpp
+  src/ui/driveregimepanel.h
+  src/ui/driveregimepanel.cpp
   src/ui/ui_helpers.h
   src/core/formula_evaluator.h
   src/core/formula_evaluator.cpp
+)
+
+add_custom_command(TARGET logviewer POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets"
+    "${CMAKE_BINARY_DIR}/assets"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets"
+    "$<TARGET_FILE_DIR:logviewer>/assets"
+  COMMENT "Copying assets to both top-level build directory and target output folder"
 )
 
 # =============================================================================

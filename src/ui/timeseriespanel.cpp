@@ -1,5 +1,6 @@
 #include "ui/timeseriespanel.h"
 #include "ui/ui_helpers.h"
+#include "3rdparty/IconsFontAwesome7.h"
 
 #include <algorithm>
 #include <cctype>
@@ -9,6 +10,7 @@
 
 #include "3rdparty/nlohmann/json.hpp"
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "implot.h"
 
 namespace ui {
@@ -227,10 +229,45 @@ namespace ui {
     }
 
     ImGui::SameLine();
-    ImGui::Text("|");
+    ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
     ImGui::SameLine();
 
     renderCropControls(cursor);
+
+    if (session_ && !session_->regimeSummaries().empty()) {
+      ImGui::SameLine();
+      ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+      ImGui::SameLine();
+
+      for (const auto &reg : session_->regimeSummaries()) {
+        if (!reg.showShading || reg.intervals.empty()) continue;
+
+        ImGui::PushStyleColor(ImGuiCol_Button, reg.color);
+        std::string btnLabel = std::string(ICON_FA_FLAG) + " " + reg.displayName;
+
+        if (ImGui::Button(btnLabel.c_str())) {
+          // Find the next interval start time after the current cursor position
+          double targetTime = reg.intervals.front().startSec; // Fallback / wrap to first
+
+          for (const auto &interval : reg.intervals) {
+            // Use a tiny epsilon (+0.1s) so pressing the button while standing on a start marker jumps to the NEXT one
+            if (interval.startSec > cursor.timeSec + 0.1) {
+              targetTime = interval.startSec;
+              break;
+            }
+          }
+
+          jumpCursorToIndex(getCursorIndex(targetTime), cursor, reg.displayName);
+        }
+        ImGui::PopStyleColor();
+
+        if (ImGui::IsItemHovered()) {
+          ImGui::SetTooltip("%s (%zu events)\nDwell: %.1f s | Peak EGT: %.0f °F\nClick to jump to next event (cycles)",
+            reg.displayName.c_str(), reg.intervals.size(), reg.totalDwellTimeSec, reg.peakEgt);
+        }
+        ImGui::SameLine();
+      }
+    }
   }
 
   void TimeSeriesPanel::renderCropControls(PlotCursor &cursor)
@@ -398,7 +435,6 @@ namespace ui {
       for (int plotIdx = 0; plotIdx < subplotCount; ++plotIdx) {
         std::string plotID = "##Plot_" + std::to_string(plotIdx);
 
-        // Set next axis limits for the plot before BeginPlot
         if (pendingXAxisCenter_) {
           ImPlot::SetNextAxisLimits(ImAxis_X1, newMinX, newMaxX, ImGuiCond_Always);
         } else if (bPendingAfterLoad_) {
@@ -483,6 +519,26 @@ namespace ui {
             lastPlotPos = ImPlot::GetPlotPos();
             lastPlotSize = ImPlot::GetPlotSize();
             renderOverlay = true;
+          }
+
+          if (session_) {
+            // Render shaded vertical bands for active regimes
+            for (const auto &reg : session_->regimeSummaries()) {
+              if (!reg.showShading) continue;
+
+              for (const auto &interval : reg.intervals) {
+                double xMin = interval.startSec;
+                double xMax = interval.endSec;
+
+                // Draw vertical shaded region spanning full Y plot height
+                ImPlot::PlotInfLines("##Shade", &xMin, 1); // Or draw using ImPlot::PlotRect / DrawList
+                ImVec2 pMin = ImPlot::PlotToPixels(ImPlotPoint(xMin, yAxisMax_));
+                ImVec2 pMax = ImPlot::PlotToPixels(ImPlotPoint(xMax, yAxisMin_));
+
+                ImDrawList *drawList = ImPlot::GetPlotDrawList();
+                drawList->AddRectFilled(pMin, pMax, ImGui::ColorConvertFloat4ToU32(reg.color));
+              }
+            }
           }
 
           ImPlot::EndPlot();

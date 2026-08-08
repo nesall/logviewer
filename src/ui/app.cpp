@@ -23,6 +23,8 @@
 #include "ui/tableeditorpanel.h"
 #include "ui/timeseriespanel.h"
 #include "ui/veanalysispanel.h"
+#include "ui/tableoverlaypanel.h"
+#include "ui/driveregimepanel.h"
 
 namespace ui {
 
@@ -155,6 +157,8 @@ namespace ui {
     nlohmann::json root;
     root["logFilePath"] = session_.sourcePath();
 
+    root["channelMapping"] = session_.channelMapping().toJson();
+
     nlohmann::json customChannelsJson = nlohmann::json::array();
     for (const auto &channel : session_.channels()) {
       if (channel.isCustom()) {
@@ -250,6 +254,11 @@ namespace ui {
           refreshPanelsFromSession();
         }
 
+        if (root.contains("channelMapping") && root["channelMapping"].is_object()) {
+          auto mapping = core::ChannelMapping::fromJson(root["channelMapping"]);
+          session_.setChannelMapping(mapping);
+        }
+
         if (root.contains("imguiLayout") && root["imguiLayout"].is_string()) {
           std::string iniData = root["imguiLayout"].get<std::string>();
           ImGui::LoadIniSettingsFromMemory(iniData.c_str(), iniData.size());
@@ -275,6 +284,8 @@ namespace ui {
             else if (type == "Scatter") panel = addScatterPanel({}, {}, savedTitle);
             else if (type == "Status") panel = addStatusPanel(savedTitle);
             else if (type == "VeAnalysisPanel") panel = addVeAnalysisPanel(savedTitle);
+            else if (type == "TableOverlayPanel") panel = addTableOverlayPanel(savedTitle);
+            else if (type == "DriveRegimePanel") panel = getOrAddDriveRegimePanel();
 
 #ifdef _DEBUG2
             std::cout << "Restoring panel: " << type << " state: " << state.dump() << std::endl;
@@ -476,7 +487,9 @@ namespace ui {
       } else {
         res.success = mslParser_.parse(path, res.session, res.error, &loadProgress_);
       }
-
+      core::ChannelMapping mapping;
+      mapping.autoDetect(res.session);
+      res.session.setChannelMapping(mapping);
       return res;
       });
   }
@@ -528,6 +541,30 @@ namespace ui {
     panel->setSession(&session_);
     panels_.push_back(std::move(panel));
     return panels_.back().get();
+  }
+
+  PlotPanel *App::addTableOverlayPanel(std::string explicitTitle)
+  {
+    std::string panelId = explicitTitle.empty()
+      ? "Table Overlay " + std::to_string(getNextPanelIdForPrefix("Table Overlay"))
+      : explicitTitle;
+    auto panel = std::make_unique<TableOverlayPanel>(panelId);
+    panel->setSession(&session_);
+    panels_.push_back(std::move(panel));
+    return panels_.back().get();
+  }
+
+  DriveRegimePanel *App::getOrAddDriveRegimePanel()
+  {
+    for (const auto &panel : panels_) {
+      if (panel->panelTypeId() == "DriveRegimePanel") {
+        return static_cast<DriveRegimePanel *>(panel.get());
+      }
+    }
+    auto regimePanel = std::make_unique<DriveRegimePanel>();
+    regimePanel->setSession(&session_);
+    panels_.push_back(std::move(regimePanel));
+    return static_cast<DriveRegimePanel *>(panels_.back().get());
   }
 
   int App::getNextPanelIdForPrefix(const std::string &prefix) const
@@ -588,6 +625,7 @@ namespace ui {
         ImGui::EndMenu();
       }
       if (ImGui::BeginMenu("Panels")) {
+
         if (ImGui::MenuItem("Add Time Series Panel")) {
           addTimeSeriesPanel({ "RPM" });
         }
@@ -600,11 +638,20 @@ namespace ui {
         if (ImGui::MenuItem("Add VE Analyzer / Observed AFR")) {
           addVeAnalysisPanel();
         }
+        if (ImGui::MenuItem("Add Table Overlay Panel")) {
+          addTableOverlayPanel();
+        }
+        if (ImGui::MenuItem("Drive Regime Summary")) {
+          getOrAddDriveRegimePanel();
+        }
         ImGui::EndMenu();
       }
       if (ImGui::BeginMenu("Tools")) {
         if (ImGui::MenuItem("Custom Channels...")) {
           showCustomChannelModal_ = true;
+        }
+        if (ImGui::MenuItem("Channel Semantic Mapping...")) {
+          showChannelMappingModal_ = true;
         }
         ImGui::EndMenu();
       }
@@ -809,6 +856,108 @@ namespace ui {
     }
   }
 
+  void App::renderChannelMappingModal()
+  {
+    if (showChannelMappingModal_) {
+      ImGui::OpenPopup(ui::popups::ChannelMapping);
+    }
+
+    ImGui::SetNextWindowSize(ImVec2(480, 420), ImGuiCond_FirstUseEver);
+
+    if (ImGui::BeginPopupModal(ui::popups::ChannelMapping, &showChannelMappingModal_, ImGuiWindowFlags_None)) {
+      if (session_.rowCount() == 0) {
+        ImGui::TextDisabled("No log session loaded.");
+        if (ui::UI::Button("Close", {}, ImVec2(100, 0))) {
+          showChannelMappingModal_ = false;
+          ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+        return;
+      }
+
+      ImGui::TextDisabled("Map log channels to standard ECU telemetry slots:");
+      ImGui::Spacing();
+
+      // Work on a mutable copy of the session's mapping
+      core::ChannelMapping mapping = session_.channelMapping();
+      bool changed = false;
+
+      auto renderMappingCombo = [this, &changed](const char *label, std::string &targetChannel) {
+        ImGui::PushID(label);
+        ImGui::SetNextItemWidth(220.0f);
+
+        // Check if channel is non-empty AND missing from session
+        bool isInvalid = !targetChannel.empty() && (session_.findChannel(targetChannel) == nullptr);
+
+        if (isInvalid) {
+          ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f)); // Bright Red
+        }
+
+        if (ImGui::BeginCombo(label, targetChannel.empty() ? "(None)" : targetChannel.c_str())) {
+          if (isInvalid) {
+            ImGui::PopStyleColor(); // Restore text color for dropdown options
+          }
+
+          if (ImGui::Selectable("(None)", targetChannel.empty())) {
+            targetChannel.clear();
+            changed = true;
+          }
+
+          for (const auto &ch : session_.channels()) {
+            bool isSelected = (ch.name() == targetChannel);
+            if (ImGui::Selectable(ch.name().c_str(), isSelected)) {
+              targetChannel = ch.name();
+              changed = true;
+            }
+            if (isSelected) ImGui::SetItemDefaultFocus();
+          }
+          ImGui::EndCombo();
+        } else if (isInvalid) {
+          ImGui::PopStyleColor(); // Restore text color if combo wasn't opened
+        }
+
+        ImGui::PopID();
+        };
+
+      renderMappingCombo("RPM", mapping.rpm);
+      renderMappingCombo("Load / MAP", mapping.load);
+      renderMappingCombo("AFR / Lambda", mapping.afr);
+      renderMappingCombo("Throttle (TPS)", mapping.tps);
+      renderMappingCombo("Accel (TPSdot)", mapping.tpsDot);
+      renderMappingCombo("Coolant (CLT)", mapping.clt);
+      renderMappingCombo("Exhaust Temp (EGT)", mapping.egt);
+      renderMappingCombo("Pulse Width (PW)", mapping.pw);
+      renderMappingCombo("Ignition Timing", mapping.timing);
+
+      ImGui::Separator();
+      ImGui::Spacing();
+
+      if (ui::UI::ButtonSecondary("Auto-Detect Defaults")) {
+        mapping.autoDetect(session_);
+        session_.setChannelMapping(mapping);
+        refreshPanelsFromSession(); // Triggers re-analysis across open panels
+      }
+
+      ImGui::SameLine();
+
+      if (ui::UI::ButtonPrimary("Apply & Recalculate", ImVec2(140, 0))) {
+        session_.setChannelMapping(mapping);
+        refreshPanelsFromSession(); // Notify panels to rerun VeAnalyzer and RegimeAnalyzer
+        showChannelMappingModal_ = false;
+        ImGui::CloseCurrentPopup();
+      }
+
+      ImGui::SameLine();
+
+      if (ui::UI::Button("Cancel", {}, ImVec2(90, 0))) {
+        showChannelMappingModal_ = false;
+        ImGui::CloseCurrentPopup();
+      }
+
+      ImGui::EndPopup();
+    }
+  }
+
   void App::render()
   {
     if (!pendingRecentWorkspaceLoad_.empty()) {
@@ -829,7 +978,7 @@ namespace ui {
     renderLoadProgressModal();
     renderLoadErrorPopup();
     renderCustomChannelModal();
-
+    renderChannelMappingModal();
 
     panels_.erase(
       std::remove_if(panels_.begin(), panels_.end(),
