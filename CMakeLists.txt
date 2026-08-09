@@ -90,6 +90,7 @@ add_executable(logviewer
   src/core/table2d.h
   src/core/table2d.cpp
   src/core/regime.h
+  src/core/regime.cpp
   src/engine/ve_analyzer.h
   src/engine/ve_analyzer.cpp
   src/engine/regime_analyzer.h

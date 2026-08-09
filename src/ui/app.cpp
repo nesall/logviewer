@@ -878,8 +878,15 @@ namespace ui {
       ImGui::TextDisabled("Map log channels to standard ECU telemetry slots:");
       ImGui::Spacing();
 
-      // Work on a mutable copy of the session's mapping
-      core::ChannelMapping mapping = session_.channelMapping();
+      // Use a persistent/static working copy while the modal is open so intermediate combo updates persist across frames
+      static core::ChannelMapping workingMapping;
+      static bool initialized = false;
+
+      if (!initialized) {
+        workingMapping = session_.channelMapping();
+        initialized = true;
+      }
+
       bool changed = false;
 
       auto renderMappingCombo = [this, &changed](const char *label, std::string &targetChannel) {
@@ -919,30 +926,26 @@ namespace ui {
         ImGui::PopID();
         };
 
-      renderMappingCombo("RPM", mapping.rpm);
-      renderMappingCombo("Load / MAP", mapping.load);
-      renderMappingCombo("AFR / Lambda", mapping.afr);
-      renderMappingCombo("Throttle (TPS)", mapping.tps);
-      renderMappingCombo("Accel (TPSdot)", mapping.tpsDot);
-      renderMappingCombo("Coolant (CLT)", mapping.clt);
-      renderMappingCombo("Exhaust Temp (EGT)", mapping.egt);
-      renderMappingCombo("Pulse Width (PW)", mapping.pw);
-      renderMappingCombo("Ignition Timing", mapping.timing);
+      for (const auto &slot : core::ChannelMapping::allSlots()) {
+        auto &s = workingMapping.refSlot(slot);
+        renderMappingCombo(slot.c_str(), s);
+      }
 
       ImGui::Separator();
       ImGui::Spacing();
 
       if (ui::UI::ButtonSecondary("Auto-Detect Defaults")) {
-        mapping.autoDetect(session_);
-        session_.setChannelMapping(mapping);
+        workingMapping.autoDetect(session_);
+        session_.setChannelMapping(workingMapping);
         refreshPanelsFromSession(); // Triggers re-analysis across open panels
       }
 
       ImGui::SameLine();
 
       if (ui::UI::ButtonPrimary("Apply & Recalculate", ImVec2(140, 0))) {
-        session_.setChannelMapping(mapping);
+        session_.setChannelMapping(workingMapping);
         refreshPanelsFromSession(); // Notify panels to rerun VeAnalyzer and RegimeAnalyzer
+        initialized = false;
         showChannelMappingModal_ = false;
         ImGui::CloseCurrentPopup();
       }
@@ -950,11 +953,16 @@ namespace ui {
       ImGui::SameLine();
 
       if (ui::UI::Button("Cancel", {}, ImVec2(90, 0))) {
+        initialized = false;
         showChannelMappingModal_ = false;
         ImGui::CloseCurrentPopup();
       }
 
       ImGui::EndPopup();
+    } else {
+      // Reset initialization state when popup closes
+      static bool initialized = false;
+      initialized = false;
     }
   }
 

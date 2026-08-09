@@ -6,6 +6,39 @@
 
 namespace core {
 
+  std::vector<std::string> ChannelMapping::allSlots()
+  {
+    return {
+      "RPM",
+      "Load / MAP",
+      "AFR / Lambda",
+      "Throttle (TPS)",
+      "Accel (TPSdot)",
+      "Coolant (CLT)",
+      "Exhaust Temp (EGT)",
+      "Pulse Width (PW)",
+      "Ignition Timing",
+      "Manifold Air Temperature",
+      "Duty Cycle"
+    };
+  }
+  
+  std::string &ChannelMapping::refSlot(const std::string &slotName)
+  {
+    if (slotName == "RPM") return rpm;
+    if (slotName == "Load / MAP") return load;
+    if (slotName == "AFR / Lambda") return afr;
+    if (slotName == "Throttle (TPS)") return tps;
+    if (slotName == "Accel (TPSdot)") return tpsDot;
+    if (slotName == "Coolant (CLT)") return clt;
+    if (slotName == "Exhaust Temp (EGT)") return egt;
+    if (slotName == "Pulse Width (PW)") return pw;
+    if (slotName == "Ignition Timing") return timing;
+    if (slotName == "Manifold Air Temperature") return mat;
+    if (slotName == "Duty Cycle") return duty;
+    throw std::invalid_argument("Invalid slot name");
+  }
+
   void ChannelMapping::autoDetect(const LogSession &session)
   {
     // Helper lambda to find the first channel present in the session from a candidate list
@@ -20,13 +53,13 @@ namespace core {
 
     // Candidate lists ordered by format prevalence
     rpm = findFirstMatch({
-      "RPM",                       // MegaSquirt / Haltech / Standard
+      "RPM",                       // Megasqurt / Haltech / Standard
       "Filtered RPM",              // Haltech alternative
       "Engine Speed"
       });
 
     load = findFirstMatch({
-      "MAP",                       // MegaSquirt
+      "MAP",                       // Megasqurt
       "Fuel - Load (MAP)",         // Haltech NSP
       "Manifold Pressure",         // Haltech raw
       "Ignition - Load (MAP)",     // Haltech alternative
@@ -35,7 +68,7 @@ namespace core {
       });
 
     afr = findFirstMatch({
-      "AFR",                       // MegaSquirt
+      "AFR",                       // Megasqurt
       "Wideband O2 1",             // Haltech
       "Wideband O2 Overall",       // Haltech
       "WBC1 Lambda",               // Haltech
@@ -44,31 +77,36 @@ namespace core {
       });
 
     egt = findFirstMatch({
-      "EGT1",                      // MegaSquirt
+      "EGT1",                      // Megasqurt
       "Exhaust Gas Temperature 1"  // Haltech
       });
 
     tps = findFirstMatch({
-      "TPS",                       // MegaSquirt
+      "TPS",                       // Megasqurt
       "Throttle Position",         // Haltech
       "Throttle Position - Cable"  // Haltech
       });
 
     tpsDot = findFirstMatch({
-      "TPSdot",                    // MegaSquirt
+      "TPSdot",                    // Megasqurt
       "Throttle Position Derivative", // Haltech
       "Throttle Position Derivative - Cable", // Haltech
       "MAPdot"
       });
 
     clt = findFirstMatch({
-      "CLT",                       // MegaSquirt
+      "CLT",                       // Megasqurt
       "Coolant Temperature"        // Haltech
       });
 
     timing = findFirstMatch({
-      "SPK: Spark Advance",        // MegaSquirt
+      "SPK: Spark Advance",        // Megasqurt
       "Ignition Timing"            // Haltech
+      });
+
+    duty = findFirstMatch({
+      "Duty Cycle1", // Megasqurt
+      "Duty1"
       });
   }
 
@@ -83,7 +121,9 @@ namespace core {
         {"clt", clt},
         {"egt", egt},
         {"pw", pw},
-        {"timing", timing}
+        {"timing", timing},
+        {"mat", mat},
+        {"duty", duty}
     };
   }
 
@@ -99,6 +139,8 @@ namespace core {
     if (j.contains("egt")) mapping.egt = j["egt"].get<std::string>();
     if (j.contains("pw")) mapping.pw = j["pw"].get<std::string>();
     if (j.contains("timing")) mapping.timing = j["timing"].get<std::string>();
+    if (j.contains("mat")) mapping.mat = j["mat"].get<std::string>();
+    if (j.contains("duty")) mapping.duty = j["duty"].get<std::string>();
     return mapping;
   }
 

@@ -20,16 +20,17 @@ namespace ui {
     nlohmann::json saveState() const override;
     void loadState(const nlohmann::json &state) override;
 
-    const std::vector<core::RegimeSummary> &regimes() const { return summaries_; }
-    std::vector<core::RegimeSummary> &regimes() { return summaries_; }
+    const std::vector<core::RegimeSummary> &regimes() const;
+    std::vector<core::RegimeSummary> &regimes();
 
   private:
     void reanalyze();
+    void renderConfigModal();
 
     const core::LogSession *session_ = nullptr;
-    bool open_ = true;
-
-    std::vector<core::RegimeSummary> summaries_;
+    bool open_ = true;    
+    bool showConfigModal_ = false;
+    std::vector<core::RegimeDef> userDefinitions_;
   };
 
 } // namespace ui

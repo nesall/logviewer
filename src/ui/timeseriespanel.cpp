@@ -240,10 +240,10 @@ namespace ui {
       ImGui::SameLine();
 
       for (const auto &reg : session_->regimeSummaries()) {
-        if (!reg.showShading || reg.intervals.empty()) continue;
+        if (!reg.def.showShading || reg.intervals.empty()) continue;
 
-        ImGui::PushStyleColor(ImGuiCol_Button, reg.color);
-        std::string btnLabel = std::string(ICON_FA_FLAG) + " " + reg.displayName;
+        ImGui::PushStyleColor(ImGuiCol_Button, reg.def.color);
+        std::string btnLabel = std::string(ICON_FA_FLAG) + " " + reg.def.displayName;
 
         if (ImGui::Button(btnLabel.c_str())) {
           // Find the next interval start time after the current cursor position
@@ -257,13 +257,13 @@ namespace ui {
             }
           }
 
-          jumpCursorToIndex(getCursorIndex(targetTime), cursor, reg.displayName);
+          jumpCursorToIndex(getCursorIndex(targetTime), cursor, reg.def.displayName);
         }
         ImGui::PopStyleColor();
 
         if (ImGui::IsItemHovered()) {
           ImGui::SetTooltip("%s (%zu events)\nDwell: %.1f s | Peak EGT: %.0f °F\nClick to jump to next event (cycles)",
-            reg.displayName.c_str(), reg.intervals.size(), reg.totalDwellTimeSec, reg.peakEgt);
+            reg.def.displayName.c_str(), reg.intervals.size(), reg.totalDwellTimeSec, reg.peakEgt);
         }
         ImGui::SameLine();
       }
@@ -524,7 +524,7 @@ namespace ui {
           if (session_) {
             // Render shaded vertical bands for active regimes
             for (const auto &reg : session_->regimeSummaries()) {
-              if (!reg.showShading) continue;
+              if (!reg.def.showShading) continue;
 
               for (const auto &interval : reg.intervals) {
                 double xMin = interval.startSec;
@@ -536,7 +536,7 @@ namespace ui {
                 ImVec2 pMax = ImPlot::PlotToPixels(ImPlotPoint(xMax, yAxisMin_));
 
                 ImDrawList *drawList = ImPlot::GetPlotDrawList();
-                drawList->AddRectFilled(pMin, pMax, ImGui::ColorConvertFloat4ToU32(reg.color));
+                drawList->AddRectFilled(pMin, pMax, ImGui::ColorConvertFloat4ToU32(reg.def.color));
               }
             }
           }

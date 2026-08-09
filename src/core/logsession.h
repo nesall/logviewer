@@ -23,6 +23,11 @@ namespace core {
     std::string egt = "EGT1";
     std::string pw = "PW";
     std::string timing = "Ignition Timing";
+    std::string mat = "MAT";
+    std::string duty = "DutyCycle";
+
+    static std::vector<std::string> allSlots();
+    std::string &refSlot(const std::string &slotName);
 
     // Auto-detects defaults from a loaded log session
     void autoDetect(const LogSession &session);
@@ -73,8 +78,8 @@ namespace core {
     const ChannelMapping &channelMapping() const { return channelMapping_; }
     void setChannelMapping(ChannelMapping mapping) { channelMapping_ = std::move(mapping); }
 
-    const std::vector<RegimeSummary> &regimeSummaries() const { return regimeSummaries_; }
     std::vector<RegimeSummary> &regimeSummaries() { return regimeSummaries_; }
+    const std::vector<RegimeSummary> &regimeSummaries() const { return regimeSummaries_; }
     void setRegimeSummaries(std::vector<RegimeSummary> summaries) { regimeSummaries_ = std::move(summaries); }
 
   private:
