@@ -20,11 +20,13 @@ namespace core {
     std::string tps = "TPS";
     std::string tpsDot = "TPSdot";
     std::string clt = "CLT";
-    std::string egt = "EGT1";
+    std::string egt1 = "EGT1";
+    std::string egt2 = "EGT2";
     std::string pw = "PW";
     std::string timing = "Ignition Timing";
     std::string mat = "MAT";
-    std::string duty = "DutyCycle";
+    std::string duty1 = "Duty Cycle1";
+    std::string duty2 = "Duty Cycle2";
 
     static std::vector<std::string> allSlots();
     std::string &refSlot(const std::string &slotName);

@@ -262,8 +262,20 @@ namespace ui {
         ImGui::PopStyleColor();
 
         if (ImGui::IsItemHovered()) {
-          ImGui::SetTooltip("%s (%zu events)\nDwell: %.1f s | Peak EGT: %.0f °F\nClick to jump to next event (cycles)",
-            reg.def.displayName.c_str(), reg.intervals.size(), reg.totalDwellTimeSec, reg.peakEgt);
+          if (!reg.warningMessage.empty()) {
+            // Show warning banner first if present
+            ImGui::SetTooltip("%s (%zu events)\nDwell: %.1f s\nWarning: %s\nClick to jump to next event (cycles)",
+              reg.def.displayName.c_str(),
+              reg.intervals.size(),
+              reg.totalDwellTimeSec,
+              reg.warningMessage.c_str());
+          } else {
+            // Standard tooltip
+            ImGui::SetTooltip("%s (%zu events)\nDwell: %.1f s\nClick to jump to next event (cycles)",
+              reg.def.displayName.c_str(),
+              reg.intervals.size(),
+              reg.totalDwellTimeSec);
+          }
         }
         ImGui::SameLine();
       }
@@ -415,95 +427,84 @@ namespace ui {
     int maxPerPlot = std::max(1, maxChannelsPerPlot_);
     int subplotCount = (numActive > 0) ? ((numActive + maxPerPlot - 1) / maxPerPlot) : 1;
 
-    // Calculate new X limits BEFORE starting subplots if a jump was requested
+    // Capture state BEFORE the loop so all subplots behave identically this frame
+    bool doJump = pendingXAxisCenter_;
+    bool doLoadLimits = bPendingAfterLoad_;
+
     double newMinX = 0.0;
     double newMaxX = 0.0;
-    if (pendingXAxisCenter_) {
-      // Pick a reasonable view span (e.g., 20 seconds, or 10% of total log duration)
-      double totalDuration = timeSec.back() - timeSec.front();
-      double viewSpan = (totalDuration > 0.0) ? (totalDuration * 0.10) : 20.0;
-      if (viewSpan < 1.0) viewSpan = 1.0; // clamp minimum span
 
-      newMinX = targetXCenterTime_ - (viewSpan * 0.5);
-      newMaxX = targetXCenterTime_ + (viewSpan * 0.5);
+    if (doJump) {
+      double currentSpan = xAxisMax_ - xAxisMin_;
+      if (currentSpan <= 0.1) {
+        double totalDuration = (cachedTimeSec_ && !cachedTimeSec_->empty()) ? (cachedTimeSec_->back() - cachedTimeSec_->front()) : 20.0;
+        currentSpan = (totalDuration > 0.0) ? (totalDuration * 0.10) : 20.0;
+        if (currentSpan < 1.0) currentSpan = 1.0;
+      }
+      double halfSpan = currentSpan * 0.5;
+      newMinX = targetXCenterTime_ - halfSpan;
+      newMaxX = targetXCenterTime_ + halfSpan;
     }
 
-    bool renderOverlay = false;
-    ImVec2 lastPlotPos, lastPlotSize;
-
-    if (ImPlot::BeginSubplots("##TimeSeriesSubplots", subplotCount, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkAllX | ImPlotSubplotFlags_NoLegend)) {
+    if (ImPlot::BeginSubplots("##TimeSeriesSubplots", subplotCount, 1, ImVec2(-1, -1),
+      ImPlotSubplotFlags_LinkAllX | ImPlotSubplotFlags_NoLegend)) {
       for (int plotIdx = 0; plotIdx < subplotCount; ++plotIdx) {
         std::string plotID = "##Plot_" + std::to_string(plotIdx);
 
-        if (pendingXAxisCenter_) {
+        if (doJump) {
           ImPlot::SetNextAxisLimits(ImAxis_X1, newMinX, newMaxX, ImGuiCond_Always);
-        } else if (bPendingAfterLoad_) {
+        } else if (doLoadLimits) {
           ImPlot::SetNextAxisLimits(ImAxis_X1, xAxisMin_, xAxisMax_, ImGuiCond_Always);
           ImPlot::SetNextAxisLimits(ImAxis_Y1, yAxisMin_, yAxisMax_, ImGuiCond_Always);
-          bPendingAfterLoad_ = false;
         }
 
         if (ImPlot::BeginPlot(plotID.c_str(), ImVec2(-1, -1))) {
           ImPlot::SetupAxes("Time (s)", "Normalized", ImPlotAxisFlags_None, ImPlotAxisFlags_NoTickLabels);
 
-          auto plotLimits = ImPlot::GetPlotLimits();
-          xAxisMin_ = plotLimits.X.Min;
-          xAxisMax_ = plotLimits.X.Max;
-          yAxisMin_ = plotLimits.Y.Min;
-          yAxisMax_ = plotLimits.Y.Max;
-
-          if (hasRealData && numActive > 0) {
-            int startIdx = plotIdx * maxPerPlot;
-            int endIdx = std::min(startIdx + maxPerPlot, numActive);
-
-            for (int i = startIdx; i < endIdx; ++i) {
-              const auto *ch = activeChannels[i];
-              const auto &rawVals = ch->values();
-              if (rawVals.empty()) continue;
-
-              double minVal = channelStates_[ch->name()].cachedMin;
-              double maxVal = channelStates_[ch->name()].cachedMax;
-              double range = maxVal - minVal;
-
-              std::vector<double> normVals(rawVals.size());
-              for (size_t s = 0; s < rawVals.size(); ++s) {
-                normVals[s] = (range > 1e-6) ? ((rawVals[s] - minVal) / range) : 0.5;
-              }
-
-              ImPlotSpec spec;
-              spec.LineColor = channelStates_[ch->name()].color;
-              ImPlot::PlotLine(ch->name().c_str(), timeSec.data(), normVals.data(), static_cast<int>(timeSec.size()), spec);
-
-              if (session_ != nullptr && session_->cropRange().active) {
-                double cropStart = session_->cropRange().startSec;
-                double cropEnd = session_->cropRange().endSec;
-
-                ImPlot::DragLineX(101, &cropStart, ImVec4(0.2f, 0.8f, 1.0f, 0.8f), 1.5f, ImPlotDragToolFlags_NoInputs);
-                ImPlot::TagX(cropStart, ImVec4(0.2f, 0.8f, 1.0f, 0.8f), "Start");
-
-                ImPlot::DragLineX(102, &cropEnd, ImVec4(0.2f, 0.8f, 1.0f, 0.8f), 1.5f, ImPlotDragToolFlags_NoInputs);
-                ImPlot::TagX(cropEnd, ImVec4(0.2f, 0.8f, 1.0f, 0.8f), "End");
-              }
-            }
-          } else {
-            ImPlot::PlotLine("Placeholder", timeSec.data(), placeholderValue_.data(),
-              static_cast<int>(timeSec.size()));
+          // Store bounds only from the primary (first) subplot to prevent cross-contamination
+          if (plotIdx == 0) {
+            auto plotLimits = ImPlot::GetPlotLimits();
+            xAxisMin_ = plotLimits.X.Min;
+            xAxisMax_ = plotLimits.X.Max;
+            yAxisMin_ = plotLimits.Y.Min;
+            yAxisMax_ = plotLimits.Y.Max;
           }
 
+          // Determine channel subset for THIS specific subplot
+          int startIdx = plotIdx * maxPerPlot;
+          int endIdx = std::min(startIdx + maxPerPlot, numActive);
+
+          std::vector<const core::Channel *> subplotChannels;
+          if (hasRealData && numActive > 0) {
+            for (int i = startIdx; i < endIdx; ++i) {
+              subplotChannels.push_back(activeChannels[i]);
+            }
+          }
+
+          // Plot channels for this subplot
+          for (const auto *ch : subplotChannels) {
+            const auto &rawVals = ch->values();
+            if (rawVals.empty()) continue;
+
+            double minVal = channelStates_[ch->name()].cachedMin;
+            double maxVal = channelStates_[ch->name()].cachedMax;
+            double range = maxVal - minVal;
+
+            std::vector<double> normVals(rawVals.size());
+            for (size_t s = 0; s < rawVals.size(); ++s) {
+              normVals[s] = (range > 1e-6) ? ((rawVals[s] - minVal) / range) : 0.5;
+            }
+
+            ImPlotSpec spec;
+            spec.LineColor = channelStates_[ch->name()].color;
+            ImPlot::PlotLine(ch->name().c_str(), timeSec.data(), normVals.data(),
+              static_cast<int>(timeSec.size()), spec);
+          }
+
+          // Handle hover cursor, crop markers, and shaded regimes ...
           if (ImPlot::IsPlotHovered()) {
             cursor.timeSec = ImPlot::GetPlotMousePos().x;
             cursor.active = true;
-          }
-
-          if (artifactCursor_.active) {
-            double artifactX = artifactCursor_.timeSec;
-            // Draw a dashed or dimmed vertical line
-            ImPlot::DragLineX(1, &artifactX, artifactCursor_.color, 1.0f, ImPlotDragToolFlags_NoInputs);
-
-            // Optional: Tag annotation at the top of the plot
-            if (!artifactCursor_.label.empty()) {
-              ImPlot::TagX(artifactCursor_.timeSec, artifactCursor_.color, "%s", artifactCursor_.label.c_str());
-            }
           }
 
           if (cursor.active) {
@@ -511,45 +512,115 @@ namespace ui {
             ImPlot::DragLineX(0, &markerX, ImVec4(1.0f, 1.0f, 0.0f, 0.8f), 1.0f, ImPlotDragToolFlags_NoInputs);
           }
 
-          if (ImPlot::IsPlotHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-            artifactCursor_.active = false;
-          }
+          // Query current subplot geometry for overlays
+          ImVec2 currentPlotPos = ImPlot::GetPlotPos();
+          ImVec2 currentPlotSize = ImPlot::GetPlotSize();
 
-          if (plotIdx == subplotCount - 1) {
-            lastPlotPos = ImPlot::GetPlotPos();
-            lastPlotSize = ImPlot::GetPlotSize();
-            renderOverlay = true;
-          }
+          const ImGuiWindowFlags overlayFlags = ImGuiWindowFlags_NoDecoration |
+            ImGuiWindowFlags_AlwaysAutoResize |
+            ImGuiWindowFlags_NoSavedSettings |
+            ImGuiWindowFlags_NoFocusOnAppearing |
+            ImGuiWindowFlags_NoNav |
+            ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoDocking;
 
-          if (session_) {
-            // Render shaded vertical bands for active regimes
-            for (const auto &reg : session_->regimeSummaries()) {
-              if (!reg.def.showShading) continue;
+          // -------------------------------------------------------------------
+          // 1. Bottom-Left Overlay: Channel Ranges for THIS Subplot
+          // -------------------------------------------------------------------
+          if (hasRealData && !subplotChannels.empty()) {
+            ImVec2 bottomLeftPos = ImVec2(currentPlotPos.x + 10.0f,
+              currentPlotPos.y + currentPlotSize.y - 10.0f);
 
-              for (const auto &interval : reg.intervals) {
-                double xMin = interval.startSec;
-                double xMax = interval.endSec;
+            ImGui::SetNextWindowPos(bottomLeftPos, ImGuiCond_Always, ImVec2(0.0f, 1.0f));
+            ImGui::SetNextWindowBgAlpha(0.75f);
 
-                // Draw vertical shaded region spanning full Y plot height
-                ImPlot::PlotInfLines("##Shade", &xMin, 1); // Or draw using ImPlot::PlotRect / DrawList
-                ImVec2 pMin = ImPlot::PlotToPixels(ImPlotPoint(xMin, yAxisMax_));
-                ImVec2 pMax = ImPlot::PlotToPixels(ImPlotPoint(xMax, yAxisMin_));
+            std::string rangeWindowID = "##RangeOverlay_" + title() + "_" + std::to_string(plotIdx);
+            bool open = true;
 
-                ImDrawList *drawList = ImPlot::GetPlotDrawList();
-                drawList->AddRectFilled(pMin, pMax, ImGui::ColorConvertFloat4ToU32(reg.def.color));
+            if (ImGui::Begin(rangeWindowID.c_str(), &open, overlayFlags)) {
+              for (const auto *channel : subplotChannels) {
+                const auto &st = channelStates_[channel->name()];
+                ImGui::PushID(channel->name().c_str());
+
+                ImGui::TextColored(st.color, "%s:", channel->name().c_str());
+                ImGui::SameLine();
+
+                // Interactive Min label
+                char minBuf[32];
+                std::snprintf(minBuf, sizeof(minBuf), "[%.1f", st.cachedMin);
+                ImGui::TextUnformatted(minBuf);
+                if (ImGui::IsItemHovered()) {
+                  ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                  ImGui::SetTooltip("Click to jump to Min (%.2f)", st.cachedMin);
+                }
+                if (ImGui::IsItemClicked()) {
+                  jumpCursorToIndex(st.minIdx, cursor);
+                }
+
+                ImGui::SameLine(0, 2.0f);
+                ImGui::TextUnformatted("-");
+                ImGui::SameLine(0, 2.0f);
+
+                // Interactive Max label
+                char maxBuf[32];
+                std::snprintf(maxBuf, sizeof(maxBuf), "%.1f]", st.cachedMax);
+                ImGui::TextUnformatted(maxBuf);
+                if (ImGui::IsItemHovered()) {
+                  ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                  ImGui::SetTooltip("Click to jump to Max (%.2f)", st.cachedMax);
+                }
+                if (ImGui::IsItemClicked()) {
+                  jumpCursorToIndex(st.maxIdx, cursor);
+                }
+
+                ImGui::PopID();
               }
             }
+            ImGui::End();
+          }
+
+          // -------------------------------------------------------------------
+          // 2. Bottom-Right Overlay: Cursor Readouts for THIS Subplot
+          // -------------------------------------------------------------------
+          if (cursor.active && !subplotChannels.empty()) {
+            size_t cursorIdx = getCursorIndex(cursor.timeSec);
+            ImVec2 bottomRightPos = ImVec2(currentPlotPos.x + currentPlotSize.x - 10.0f,
+              currentPlotPos.y + currentPlotSize.y - 10.0f);
+
+            ImGui::SetNextWindowPos(bottomRightPos, ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+            ImGui::SetNextWindowBgAlpha(0.85f);
+
+            std::string overlayWindowID = "##CursorOverlay_" + title() + "_" + std::to_string(plotIdx);
+            bool open = true;
+
+            if (ImGui::Begin(overlayWindowID.c_str(), &open, overlayFlags)) {
+              for (const auto *channel : subplotChannels) {
+                const auto &st = channelStates_[channel->name()];
+                double val = (cursorIdx < channel->values().size()) ? channel->values()[cursorIdx] : 0.0;
+
+                ImGui::TextColored(st.color, "%s:", channel->name().c_str());
+                ImGui::SameLine();
+                if (!channel->unit().empty()) {
+                  ImGui::Text("%.2f %s", val, channel->unit().c_str());
+                } else {
+                  ImGui::Text("%.2f", val);
+                }
+              }
+            }
+            ImGui::End();
           }
 
           ImPlot::EndPlot();
         }
       }
-
       ImPlot::EndSubplots();
     }
+    if (doJump) pendingXAxisCenter_ = false;
+    if (doLoadLimits) bPendingAfterLoad_ = false;
 
-    // Reset pending jump flag after applying limits to all subplots
-    pendingXAxisCenter_ = false;
+#if 0
+    bool renderOverlay = false;
+    ImVec2 lastPlotPos, lastPlotSize;
 
     // Common overlay window flags
     const ImGuiWindowFlags overlayFlags = ImGuiWindowFlags_NoDecoration |
@@ -660,6 +731,7 @@ namespace ui {
       }
       ImGui::End();
     }
+#endif
   }
 
   void TimeSeriesPanel::render(PlotCursor &cursor)

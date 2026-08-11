@@ -7,11 +7,11 @@
 
 namespace engine {
 
-  std::unordered_map<core::RegimeType, core::RegimeDef> getDefaultRegimeDefs();
+  std::vector<core::RegimeDef> getDefaultRegimeDefs(const core::LogSession &session);
 
   class RegimeAnalyzer {
   public:
-    static std::vector<core::RegimeSummary> analyzeSession(const core::LogSession &session, const std::vector<core::RegimeDef> &definitions);
+    static std::vector<core::RegimeSummary> analyzeSession(const core::LogSession &session, const std::vector<core::RegimeDef> &definitions = {});
   };
 
 } // namespace engine

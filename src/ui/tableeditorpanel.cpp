@@ -570,9 +570,9 @@ namespace ui {
     if (cols == 0 || rows == 0) {
       ImGui::TextDisabled("No breakpoints defined yet.");
       return;
-    }
-
-    // --- 1. Compute Min/Max for Table Heatmap Normalization ---
+    }       
+    
+    // --- 1. Compute Min/Max Heatmap Values ---
     double minVal = (std::numeric_limits<double>::max)();
     double maxVal = -(std::numeric_limits<double>::max)();
 
@@ -585,11 +585,9 @@ namespace ui {
     }
     if (maxVal <= minVal) maxVal = minVal + 1.0;
 
-    // Thermal Heatmap Gradient Generator (Cool Blue -> Green -> Yellow -> Orange -> Red)
     auto getHeatmapColor = [&](double value) -> ImU32 {
       float t = static_cast<float>((value - minVal) / (maxVal - minVal));
-      if (t < 0.0f) t = 0.0f;
-      if (t > 1.0f) t = 1.0f;
+      t = std::clamp(t, 0.0f, 1.0f);
 
       float r = 0.0f, g = 0.0f, b = 0.0f;
       if (t < 0.25f) {
@@ -605,8 +603,6 @@ namespace ui {
         float f = (t - 0.75f) / 0.25f;
         r = 1.0f; g = 0.4f * (1.0f - f); b = 0.0f;
       }
-
-      // Use alpha = 0.35f so cell text and selections remain crisp and readable
       return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, 0.35f));
       };
 
@@ -615,6 +611,12 @@ namespace ui {
       ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
 
     std::string tableId = "ValueGrid###" + title() + "_" + tableUniqueId_;
+
+    // Track new hover state for current frame
+    const ImU32 headerHighlightColor = IM_COL32(230, 160, 30, 220);
+    int nextHoveredRow = -1;
+    int nextHoveredCol = -1;
+
     if (ImGui::BeginTable(tableId.c_str(), static_cast<int>(cols + 1), flags, ImVec2(0.0f, 400.0f))) {
       ImGui::TableSetupScrollFreeze(1, 1);
       ImGui::TableSetupColumn("Load \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
@@ -625,118 +627,119 @@ namespace ui {
       }
       ImGui::TableHeadersRow();
 
+      // Highlight the hovered X-Axis column header
+      if (hoveredGridCol_ >= 0 && hoveredGridCol_ < static_cast<int>(cols)) {
+        ImGui::TableSetColumnIndex(hoveredGridCol_ + 1);
+        ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, headerHighlightColor);
+      }
+
       ImGuiIO &io = ImGui::GetIO();
 
       for (size_t r = rows; r-- > 0; ) {
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0);
-        ImGui::Text("%s", formatValue(yBreakpoints[r], yDecimalPlaces_).c_str());
+
+        if (hoveredGridRow_ == static_cast<int>(r)) {
+          ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, headerHighlightColor);
+          ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", formatValue(yBreakpoints[r], yDecimalPlaces_).c_str());
+        } else {
+          ImGui::Text("%s", formatValue(yBreakpoints[r], yDecimalPlaces_).c_str());
+        }
 
         for (size_t c = 0; c < cols; ++c) {
           ImGui::TableSetColumnIndex(static_cast<int>(c + 1));
           ImGui::PushID(static_cast<int>(r * cols + c));
 
           double v = table_.value(r, c);
+          bool selected = isCellSelected(static_cast<int>(r), static_cast<int>(c));
 
-          const bool isPreviewingExtrapolation = showPreview_ && showExtrapolateModal_;
-
-          if (isPreviewingExtrapolation && selectedCells_.count({ static_cast<int>(r), static_cast<int>(c) })) {
-            // Highlight extrapolated cells in purple/magenta
-            ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, IM_COL32(180, 50, 200, 150));
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%.2f", v); // Yellow text for changes
+          // Background color logic
+          if (selected) {
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImGuiCol_HeaderActive));
           } else {
-
-            bool selected = isCellSelected(static_cast<int>(r), static_cast<int>(c));
-
-            // --- 2. Apply Cell Heatmap Background ---
-            if (selected) {
-              ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImGuiCol_HeaderActive));
+            if (customHeatmapColorFunc_) {
+              ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, customHeatmapColorFunc_(v, r, c));
             } else {
-              if (customHeatmapColorFunc_) {
-                ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, customHeatmapColorFunc_(v, r, c));
-              } else {
-                ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, getHeatmapColor(v));
+              ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, getHeatmapColor(v));
+            }
+          }
+
+          // Cell editing or selectable rendering
+          if (editingRow_ == static_cast<int>(r) && editingCol_ == static_cast<int>(c)) {
+            ImGui::SetNextItemWidth(55.0f);
+            ImGui::SetKeyboardFocusHere();
+
+            bool committed = ImGui::InputDouble("##cell_edit", &v, 0.0, 0.0, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue);
+            if (committed) {
+              table_.setValue(r, c, v);
+              notifyDataChanged();
+              editingRow_ = -1;
+              editingCol_ = -1;
+            } else if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsItemDeactivated()) {
+              editingRow_ = -1;
+              editingCol_ = -1;
+            }
+          } else {
+            char cellText[32];
+            std::snprintf(cellText, sizeof(cellText), "%.2f", v);
+
+            bool hasCustomTextColor = false;
+            if (customTextColorFunc_) {
+              if (auto cclr = customTextColorFunc_(v, r, c)) {
+                ImGui::PushStyleColor(ImGuiCol_Text, *cclr);
+                hasCustomTextColor = true;
               }
             }
 
-            if (editingRow_ == static_cast<int>(r) && editingCol_ == static_cast<int>(c)) {
-              ImGui::SetNextItemWidth(55.0f);
-              ImGui::SetKeyboardFocusHere();
+            ImGuiSelectableFlags selFlags = ImGuiSelectableFlags_AllowDoubleClick;
+            ImGui::Selectable(cellText, selected, selFlags);
 
-              bool committed = ImGui::InputDouble("##cell_edit", &v, 0.0, 0.0, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue);
+            if (hasCustomTextColor) {
+              ImGui::PopStyleColor();
+            }
 
-              if (committed) {
-                table_.setValue(r, c, v);
-                notifyDataChanged();
-                editingRow_ = -1;
-                editingCol_ = -1;
-              } else if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsItemDeactivated()) {
-                editingRow_ = -1;
-                editingCol_ = -1;
-              }
-            } else {
-              char cellText[32];
-              std::snprintf(cellText, sizeof(cellText), "%.2f", v);
+            // Capture Hover State for Axis Highlighting
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
+              nextHoveredRow = static_cast<int>(r);
+              nextHoveredCol = static_cast<int>(c);
 
-              bool hasCustomTextColor = false;
-              if (customTextColorFunc_) {
-                if (auto cclr = customTextColorFunc_(v, r, c)) {
-                  ImGui::PushStyleColor(ImGuiCol_Text, *cclr);
-                  hasCustomTextColor = true;
-                }
+              // Selection Logic
+              if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && anchorRow_ >= 0 && !io.KeyCtrl && !io.KeyShift) {
+                selectRectangularRegion(anchorRow_, anchorCol_, static_cast<int>(r), static_cast<int>(c));
               }
 
-              ImGuiSelectableFlags selFlags = ImGuiSelectableFlags_AllowDoubleClick;
-              ImGui::Selectable(cellText, selected, selFlags);
-
-              if (hasCustomTextColor) {
-                ImGui::PopStyleColor();
-              }
-
-              bool isHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
-              bool isSelectionLogic = false;
-              if (isHovered) {
-                // 1. Drag Select
-                if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && anchorRow_ >= 0 && !io.KeyCtrl && !io.KeyShift) {
-                  selectRectangularRegion(anchorRow_, anchorCol_, static_cast<int>(r), static_cast<int>(c));
-                  isSelectionLogic = true;
-                }
-
-                // 2. Initial Click Down
-                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                  if (io.KeyCtrl) {
-                    std::pair<int, int> cellKey = { static_cast<int>(r), static_cast<int>(c) };
-                    if (selectedCells_.count(cellKey)) {
-                      selectedCells_.erase(cellKey);
-                    } else {
-                      selectedCells_.insert(cellKey);
-                    }
-                    anchorRow_ = static_cast<int>(r);
-                    anchorCol_ = static_cast<int>(c);
-                  } else if (io.KeyShift && anchorRow_ >= 0) {
-                    selectRectangularRegion(anchorRow_, anchorCol_, static_cast<int>(r), static_cast<int>(c));
+              if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                if (io.KeyCtrl) {
+                  std::pair<int, int> cellKey = { static_cast<int>(r), static_cast<int>(c) };
+                  if (selectedCells_.count(cellKey)) {
+                    selectedCells_.erase(cellKey);
                   } else {
-                    clearSelection();
-                    anchorRow_ = static_cast<int>(r);
-                    anchorCol_ = static_cast<int>(c);
-                    selectedCells_.insert({ anchorRow_, anchorCol_ });
+                    selectedCells_.insert(cellKey);
                   }
+                  anchorRow_ = static_cast<int>(r);
+                  anchorCol_ = static_cast<int>(c);
+                } else if (io.KeyShift && anchorRow_ >= 0) {
+                  selectRectangularRegion(anchorRow_, anchorCol_, static_cast<int>(r), static_cast<int>(c));
+                } else {
+                  clearSelection();
+                  anchorRow_ = static_cast<int>(r);
+                  anchorCol_ = static_cast<int>(c);
+                  selectedCells_.insert({ anchorRow_, anchorCol_ });
+                }
 
-                  if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                    editingRow_ = static_cast<int>(r);
-                    editingCol_ = static_cast<int>(c);
-                  }
-                  isSelectionLogic = true;
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                  editingRow_ = static_cast<int>(r);
+                  editingCol_ = static_cast<int>(c);
                 }
               }
+            }
 
-              if (ImGui::IsItemHovered() && customHoverTooltipFunc_) {
-                auto tooltip = customHoverTooltipFunc_(v, r, c);
-                if (!tooltip.empty()) {
-                  ImGui::BeginTooltip();
-                  ImGui::TextUnformatted(tooltip.c_str());
-                  ImGui::EndTooltip();
-                }
+            if (ImGui::IsItemHovered() && customHoverTooltipFunc_) {
+              auto tooltip = customHoverTooltipFunc_(v, r, c);
+              if (!tooltip.empty()) {
+                ImGui::BeginTooltip();
+                ImGui::TextUnformatted(tooltip.c_str());
+                ImGui::EndTooltip();
               }
             }
           }
@@ -745,6 +748,10 @@ namespace ui {
       }
       ImGui::EndTable();
     }
+
+    // Store coordinate state for the next frame
+    hoveredGridRow_ = nextHoveredRow;
+    hoveredGridCol_ = nextHoveredCol;
   }
 
   void TableEditorPanel::render3DSurfaceMesh()

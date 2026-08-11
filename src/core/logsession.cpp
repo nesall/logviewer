@@ -6,36 +6,54 @@
 
 namespace core {
 
+  const std::string slotRPM = "RPM";
+  const std::string slotLoad = "Load / MAP";
+  const std::string slotAFR = "AFR / Lambda";
+  const std::string slotTPS = "Throttle (TPS)";
+  const std::string slotTPSDot = "Accel (TPSdot)";
+  const std::string slotCLT = "Coolant (CLT)";
+  const std::string slotEGT1 = "Exhaust Temp (EGT1)";
+  const std::string slotEGT2 = "Exhaust Temp (EGT2)";
+  const std::string slotPW = "Pulse Width (PW)";
+  const std::string slotTiming = "Ignition Timing";
+  const std::string slotMAT = "Manifold Air Temperature";
+  const std::string slotDuty1 = "Duty Cycle1";
+  const std::string slotDuty2 = "Duty Cycle2";
+
   std::vector<std::string> ChannelMapping::allSlots()
   {
     return {
-      "RPM",
-      "Load / MAP",
-      "AFR / Lambda",
-      "Throttle (TPS)",
-      "Accel (TPSdot)",
-      "Coolant (CLT)",
-      "Exhaust Temp (EGT)",
-      "Pulse Width (PW)",
-      "Ignition Timing",
-      "Manifold Air Temperature",
-      "Duty Cycle"
+      slotRPM,
+      slotLoad,
+      slotAFR,
+      slotTPS,
+      slotTPSDot,
+      slotCLT,
+      slotEGT1,
+      slotEGT2,
+      slotPW,
+      slotTiming,
+      slotMAT,
+      slotDuty1,
+      slotDuty2 
     };
   }
   
   std::string &ChannelMapping::refSlot(const std::string &slotName)
   {
-    if (slotName == "RPM") return rpm;
-    if (slotName == "Load / MAP") return load;
-    if (slotName == "AFR / Lambda") return afr;
-    if (slotName == "Throttle (TPS)") return tps;
-    if (slotName == "Accel (TPSdot)") return tpsDot;
-    if (slotName == "Coolant (CLT)") return clt;
-    if (slotName == "Exhaust Temp (EGT)") return egt;
-    if (slotName == "Pulse Width (PW)") return pw;
-    if (slotName == "Ignition Timing") return timing;
-    if (slotName == "Manifold Air Temperature") return mat;
-    if (slotName == "Duty Cycle") return duty;
+    if (slotName == slotRPM) return rpm;
+    if (slotName == slotLoad) return load;
+    if (slotName == slotAFR) return afr;
+    if (slotName == slotTPS) return tps;
+    if (slotName == slotTPSDot) return tpsDot;
+    if (slotName == slotCLT) return clt;
+    if (slotName == slotEGT1) return egt1;
+    if (slotName == slotEGT2) return egt2;
+    if (slotName == slotPW) return pw;
+    if (slotName == slotTiming) return timing;
+    if (slotName == slotMAT) return mat;
+    if (slotName == slotDuty1) return duty1;
+    if (slotName == slotDuty2) return duty2;
     throw std::invalid_argument("Invalid slot name");
   }
 
@@ -76,9 +94,14 @@ namespace core {
       "Lambda1"
       });
 
-    egt = findFirstMatch({
+    egt1 = findFirstMatch({
       "EGT1",                      // Megasqurt
       "Exhaust Gas Temperature 1"  // Haltech
+      });
+
+    egt2 = findFirstMatch({
+      "EGT2",                      // Megasqurt
+      "Exhaust Gas Temperature 2"  // Haltech
       });
 
     tps = findFirstMatch({
@@ -99,14 +122,25 @@ namespace core {
       "Coolant Temperature"        // Haltech
       });
 
+    mat = findFirstMatch({
+      "MAT",                      // Megasqurt
+      "Intake Air Temperature",   // Haltech
+      "Manifold Air Temperature"  // Haltech
+      });
+
     timing = findFirstMatch({
       "SPK: Spark Advance",        // Megasqurt
       "Ignition Timing"            // Haltech
       });
 
-    duty = findFirstMatch({
+    duty1 = findFirstMatch({
       "Duty Cycle1", // Megasqurt
       "Duty1"
+      });
+
+    duty2 = findFirstMatch({
+      "Duty Cycle2", // Megasqurt
+      "Duty2"
       });
   }
 
@@ -119,11 +153,13 @@ namespace core {
         {"tps", tps},
         {"tpsDot", tpsDot},
         {"clt", clt},
-        {"egt", egt},
+        {"egt1", egt1},
+        {"egt2", egt2},
         {"pw", pw},
         {"timing", timing},
         {"mat", mat},
-        {"duty", duty}
+        {"duty1", duty1},
+        {"duty2", duty2}
     };
   }
 
@@ -136,11 +172,13 @@ namespace core {
     if (j.contains("tps")) mapping.tps = j["tps"].get<std::string>();
     if (j.contains("tpsDot")) mapping.tpsDot = j["tpsDot"].get<std::string>();
     if (j.contains("clt")) mapping.clt = j["clt"].get<std::string>();
-    if (j.contains("egt")) mapping.egt = j["egt"].get<std::string>();
+    if (j.contains("egt1")) mapping.egt1 = j["egt1"].get<std::string>();
+    if (j.contains("egt2")) mapping.egt2 = j["egt2"].get<std::string>();
     if (j.contains("pw")) mapping.pw = j["pw"].get<std::string>();
     if (j.contains("timing")) mapping.timing = j["timing"].get<std::string>();
     if (j.contains("mat")) mapping.mat = j["mat"].get<std::string>();
-    if (j.contains("duty")) mapping.duty = j["duty"].get<std::string>();
+    if (j.contains("duty1")) mapping.duty1 = j["duty1"].get<std::string>();
+    if (j.contains("duty2")) mapping.duty2 = j["duty2"].get<std::string>();
     return mapping;
   }
 

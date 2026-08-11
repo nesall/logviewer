@@ -110,6 +110,9 @@ namespace ui {
     float guessTolerance_ = 10.f;
     float manualSlope_ = 1.f;
 
+    int hoveredGridRow_ = -1;
+    int hoveredGridCol_ = -1;
+
     std::vector<double> axisEditorValues_;
     int axisEditorBinCount_ = 0;
     enum class AxisEditing {

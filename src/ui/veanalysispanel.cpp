@@ -9,6 +9,7 @@
 #include "imgui.h"
 #include "imgui_internal.h"
 
+
 namespace ui {
 
   VeAnalysisPanel::VeAnalysisPanel(std::string title)
@@ -212,7 +213,7 @@ namespace ui {
       if (std::abs(diff) < 1e-5) return {};
       double percentChange = (curVe != 0.0) ? (diff / curVe) * 100.0 : 0.0;
       char buffer[64];
-      snprintf(buffer, sizeof(buffer), "Baseline: %.2f\nChange: %+0.2f (%+0.2f%%)", curVe, diff, percentChange);
+      snprintf(buffer, sizeof(buffer), "Baseline: %.2f\nChange: %+0.2f (%+0.2f%%)\nObs AFR: %.2f", curVe, diff, percentChange, observedAfrTable_.value(row, col));
       return std::string(buffer);
       };
 
@@ -226,6 +227,39 @@ namespace ui {
       };
 
     auto customToolbar = [this]() {
+      bool changed = false;
+
+      // Inline Controls for Correction Limits
+      ImGui::SetNextItemWidth(110.0f);
+      float gain = static_cast<float>(config_.adjustmentGain);
+      if (ImGui::SliderFloat("Gain (α)##sug_gain", &gain, 0.1f, 1.0f, "%.2f")) {
+        config_.adjustmentGain = static_cast<double>(gain);
+        changed = true;
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Correction Gain (0.50 = applies 50% of calculated delta per pass).");
+      }
+
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(90.0f);
+      float maxChange = static_cast<float>(config_.maxPercentChange * 100.0);
+      if (ImGui::InputFloat("Max Δ (%)##sug_max_change", &maxChange, 1.0f, 5.0f, "%.1f %%")) {
+        maxChange = std::clamp(maxChange, 1.0f, 50.0f);
+        config_.maxPercentChange = static_cast<double>(maxChange / 100.0);
+        changed = true;
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Hard cap on maximum allowed VE percentage shift per pass.");
+      }
+
+      if (changed) {
+        computeSuggestedVe();
+      }
+
+      ImGui::SameLine();
+      ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+      ImGui::SameLine();
+
       if (ui::UI::ButtonSecondary("Select Unvisited Cells", {}, "Highlights cells that lacked enough log samples for direct AFR analysis.")) {
         selectUnvisitedCellsOnSuggestedVe();
       }
@@ -234,7 +268,6 @@ namespace ui {
 
       ImGui::BeginDisabled(!hasTargetAfr() || !hasBaselineVe() || session_ == nullptr);
       if (ui::UI::ButtonDanger("Reset to Calculated VE", {}, "Recomputes Suggested VE from log data, discarding any manual edits.")) {
-        
         computeSuggestedVe();
       }
       ImGui::EndDisabled();
@@ -244,7 +277,6 @@ namespace ui {
     suggestedVePanel_.setCustomHeatmapColoring(customHeatmap);
     suggestedVePanel_.setCustomHoverTooltip(customTooltip);
     suggestedVePanel_.setCustomTextColoring(customTextColor);
-    // In VeAnalysisPanel constructor or initialization:
     suggestedVePanel_.setCustomToolbarCallback(customToolbar);
     suggestedVePanel_.setTable(result);
     hasSuggestedVe_ = true;
@@ -325,24 +357,6 @@ namespace ui {
 
       bool changed = false;
 
-      //auto renderChannelCombo = [this, &changed](const char *label, std::string &selectedChannel) {
-      //  if (ImGui::BeginCombo(label, selectedChannel.empty() ? "None" : selectedChannel.c_str())) {
-      //    if (ImGui::Selectable("None", selectedChannel.empty())) {
-      //      selectedChannel.clear();
-      //      changed = true;
-      //    }
-      //    for (const auto &ch : session_->channels()) {
-      //      bool isSelected = (ch.name() == selectedChannel);
-      //      if (ImGui::Selectable(ch.name().c_str(), isSelected)) {
-      //        selectedChannel = ch.name();
-      //        changed = true;
-      //      }
-      //      if (isSelected) ImGui::SetItemDefaultFocus();
-      //    }
-      //    ImGui::EndCombo();
-      //  }
-      //  };
-
       if (ImGui::BeginTabBar("ObservedAfrSettingsTabBar")) {
 
         if (ImGui::BeginTabItem("Filter Thresholds")) {
@@ -378,17 +392,6 @@ namespace ui {
           ImGui::EndTabItem();
         }
 
-
-        //if (ImGui::BeginTabItem("Channel Mapping")) {
-        //  ImGui::Spacing();
-        //  renderChannelCombo("RPM Channel", session_->channelMapping().rpm);
-        //  renderChannelCombo("Load Channel", session_->channelMapping().load);
-        //  renderChannelCombo("AFR Channel", session_->channelMapping().afr);
-        //  renderChannelCombo("TPSdot Channel", session_->channelMapping().tpsDot);
-        //  renderChannelCombo("CLT Channel", session_->channelMapping().clt);
-        //  ImGui::EndTabItem();
-        //}
-
         ImGui::EndTabBar();
       }
       if (changed) {
@@ -417,6 +420,10 @@ namespace ui {
       ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
       ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
 
+    const ImU32 headerHighlightColor = IM_COL32(230, 160, 30, 220);
+    int nextHoveredRow = -1;
+    int nextHoveredCol = -1;
+
     if (ImGui::BeginTable("ObservedAfrGridCropped", static_cast<int>(visibleCols + 1), flags, ImVec2(0.0f, 400.0f))) {
       ImGui::TableSetupScrollFreeze(1, 1);
       ImGui::TableSetupColumn("MAP \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
@@ -427,20 +434,44 @@ namespace ui {
       }
       ImGui::TableHeadersRow();
 
+      const size_t nofCols = maxObservedCol_ - minObservedCol_ + 1;
+      if (hoveredCol_ >= 0 && hoveredCol_ < static_cast<int>(nofCols)) {
+        ImGui::TableSetColumnIndex(hoveredCol_ + 1);
+        ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, headerHighlightColor);
+      }
+
       // Render in descending order (highest MAP/load at top) to match Target AFR orientation
       if (maxObservedRow_ >= minObservedRow_) {
         for (size_t r = maxObservedRow_; ; --r) {
-          ImGui::TableNextRow();
+          ImGui::TableNextRow();                  
           ImGui::TableSetColumnIndex(0);
-          ImGui::Text("%.1f", yBp[r]);
+          if (hoveredRow_ == static_cast<int>(r)) {
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, headerHighlightColor);
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%.1f", yBp[r]);
+          } else {
+            ImGui::Text("%.1f", yBp[r]);
+          }
 
           for (size_t c = minObservedCol_; c <= maxObservedCol_; ++c) {
             ImGui::TableSetColumnIndex(static_cast<int>(c - minObservedCol_ + 1));
             double val = observedAfrTable_.value(r, c);
-            if (val > 0.0) {
-              ImGui::Text("%.2f", val);
+            //if (val > 0.0) {
+            //  ImGui::Text("%.2f", val);
+            //} else {
+            //  ImGui::TextDisabled(" - ");
+            //}
+            const std::string idSuffix = "##cell_" + std::to_string(r) + "_" + std::to_string(c);
+            char cellText[64];
+            if (0 < val) {
+              snprintf(cellText, sizeof(cellText), "%.2f%s", val, idSuffix.c_str());
             } else {
-              ImGui::TextDisabled(" - ");
+              snprintf(cellText, sizeof(cellText), " - %s", idSuffix.c_str());
+            }
+            ImGui::Selectable(cellText, false, 0);
+
+            if (ImGui::IsItemHovered()) {
+              nextHoveredRow = static_cast<int>(r);
+              nextHoveredCol = static_cast<int>(c);
             }
           }
 
@@ -448,46 +479,8 @@ namespace ui {
         }
       }
       ImGui::EndTable();
-    }
-  }
-
-  void VeAnalysisPanel::renderReadOnlyTableGrid(const core::Table2D &table)
-  {
-    const auto &xBp = table.xBreakpoints();
-    const auto &yBp = table.yBreakpoints();
-    const size_t cols = xBp.size();
-    const size_t rows = yBp.size();
-
-    if (cols == 0 || rows == 0) {
-      ImGui::TextDisabled("Table is empty.");
-      return;
-    }
-
-    const ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-      ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
-      ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
-
-    if (ImGui::BeginTable("ReadOnlyGrid", static_cast<int>(cols + 1), flags, ImVec2(0.0f, 380.0f))) {
-      ImGui::TableSetupScrollFreeze(1, 1);
-      ImGui::TableSetupColumn("MAP \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-      for (size_t c = 0; c < cols; ++c) {
-        std::string header = std::to_string(static_cast<int>(xBp[c])) + "##col" + std::to_string(c);
-        ImGui::TableSetupColumn(header.c_str(), ImGuiTableColumnFlags_WidthFixed, 65.0f);
-      }
-      ImGui::TableHeadersRow();
-
-      // Render top-to-bottom matching TunerStudio layout (highest Y breakpoint at row 0)
-      for (size_t r = rows; r-- > 0; ) {
-        ImGui::TableNextRow();
-        ImGui::TableSetColumnIndex(0);
-        ImGui::Text("%.1f", yBp[r]);
-
-        for (size_t c = 0; c < cols; ++c) {
-          ImGui::TableSetColumnIndex(static_cast<int>(c + 1));
-          ImGui::Text("%.2f", table.value(r, c));
-        }
-      }
-      ImGui::EndTable();
+      hoveredRow_ = nextHoveredRow;
+      hoveredCol_ = nextHoveredCol;
     }
   }
 
@@ -650,6 +643,10 @@ namespace ui {
         return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, baseAlpha));
         };
 
+      const ImU32 headerHighlightColor = IM_COL32(230, 160, 30, 220);
+      int nextHoveredRow = -1;
+      int nextHoveredCol = -1;
+
       if (ImGui::BeginTable("AfrDeltaGrid", static_cast<int>(cols + 1), flags, ImVec2(0.0f, 380.0f))) {
         ImGui::TableSetupScrollFreeze(1, 1);
         ImGui::TableSetupColumn("MAP \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
@@ -660,10 +657,22 @@ namespace ui {
         }
         ImGui::TableHeadersRow();
 
+        if (hoveredCol_ >= 0 && hoveredCol_ < static_cast<int>(cols)) {
+          ImGui::TableSetColumnIndex(hoveredCol_ + 1);
+          ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, headerHighlightColor);
+        }
+
         for (size_t r = rows; r-- > 0; ) {
           ImGui::TableNextRow();
           ImGui::TableSetColumnIndex(0);
-          ImGui::Text("%.1f", yBp[r]);
+
+          ImGui::TableSetColumnIndex(0);
+          if (hoveredRow_ == static_cast<int>(r)) {
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, headerHighlightColor);
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%.1f", yBp[r]);
+          } else {
+            ImGui::Text("%.1f", yBp[r]);
+          }
 
           for (size_t c = 0; c < cols; ++c) {
             ImGui::TableSetColumnIndex(static_cast<int>(c + 1));
@@ -675,12 +684,32 @@ namespace ui {
             if (!std::isnan(delta)) {
               ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, getDeltaHeatMapColor(delta, hitCount));
 
+              // 1. Build the unique ID suffix (hidden)
+              const std::string idSuffix = "##cell_" + std::to_string(r) + "_" + std::to_string(c);
+
+              char cellText[64];
+              std::optional<ImVec4> textColor;
+
+              // 2. Format: [Visible Text]##[Unique ID]
               if (delta > 0.3) {
-                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "+%.2f", delta); // Lean
+                std::snprintf(cellText, sizeof(cellText), "+%.2f%s", delta, idSuffix.c_str());
+                textColor = ImVec4(1.0f, 0.4f, 0.4f, 1.0f); // Lean
               } else if (delta < -0.3) {
-                ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "%.2f", delta);  // Rich
+                std::snprintf(cellText, sizeof(cellText), "%.2f%s", delta, idSuffix.c_str());
+                textColor = ImVec4(0.4f, 0.7f, 1.0f, 1.0f); // Rich
               } else {
-                ImGui::Text("%.2f", delta);
+                std::snprintf(cellText, sizeof(cellText), "%.2f%s", delta, idSuffix.c_str());
+              }
+
+              // 3. Render Selectable filling the table cell
+              if (textColor.has_value()) {
+                ImGui::PushStyleColor(ImGuiCol_Text, textColor.value());
+              }
+
+              ImGui::Selectable(cellText, false, 0);
+
+              if (textColor.has_value()) {
+                ImGui::PopStyleColor();
               }
 
               // Hit count tooltip on cell hover
@@ -693,9 +722,16 @@ namespace ui {
                 ImGui::SetTooltip("Samples: %zu (Below min threshold %zu)", hitCount, config_.minSamplesPerBin);
               }
             }
+
+            if (ImGui::IsItemHovered()) {
+              nextHoveredRow = static_cast<int>(r);
+              nextHoveredCol = static_cast<int>(c);
+            }
           }
         }
         ImGui::EndTable();
+        hoveredRow_ = nextHoveredRow;
+        hoveredCol_ = nextHoveredCol;
       }
     } else {
       ImGui::TextDisabled("No AFR Delta available. Ensure a log is loaded and Target AFR is set.");
@@ -755,9 +791,15 @@ namespace ui {
 
     if (ImGui::BeginTabBar("VeAnalyzerTabBar")) {
 
+      ImGui::PushStyleColor(ImGuiCol_Tab, ImVec4(0.50f, 0.20f, 0.70f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_TabHovered, ImVec4(0.65f, 0.30f, 0.85f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_TabActive, ImVec4(0.58f, 0.25f, 0.78f, 1.0f));
       if (ImGui::BeginTabItem("Observed AFR")) {
+        ImGui::PopStyleColor(3);
         renderObservedAfrTab();
         ImGui::EndTabItem();
+      } else {
+        ImGui::PopStyleColor(3);
       }
 
       if (ImGui::BeginTabItem("Target AFR")) {
@@ -771,7 +813,7 @@ namespace ui {
       }
 
       if (ImGui::BeginTabItem("AFR Delta")) {
-        computeAfrDelta();
+        //computeAfrDelta();
         renderAfrDeltaTab();
         ImGui::EndTabItem();
       }
@@ -795,17 +837,12 @@ namespace ui {
   {
     auto j = PlotPanel::saveState();
 
-    // Persist input flags and view settings
     j["alignAfrDeltaToVeTable"] = alignAfrDeltaToVeTable_;
 
-    // Persist analysis channel / sample thresholds
     j["config"] = {
-      //{"rpmChannel", session_->channelMapping().rpm},
-      //{"loadChannel", session_->channelMapping().load},
-      //{"afrChannel", session_->channelMapping().afr},
-      //{"tpsDotChannel", session_->channelMapping().tpsDot},
-      //{"cltChannel", session_->channelMapping().clt},
       {"minSamplesPerBin", config_.minSamplesPerBin},
+      {"adjustmentGain", config_.adjustmentGain},
+      {"maxPercentChange", config_.maxPercentChange},
       {"enableTpsDotFilter", config_.enableTpsDotFilter},
       {"maxTpsDot", config_.maxTpsDot},
       {"enableCltFilter", config_.enableCltFilter},
@@ -814,7 +851,6 @@ namespace ui {
       {"minLoadThreshold", config_.minLoadThreshold}
     };
 
-    // Only serialize primary input tables (ignore calculated ones)
     j["targetAfr"] = targetAfrPanel_.saveState();
     j["baselineVe"] = baselineVePanel_.saveState();
 
@@ -829,16 +865,11 @@ namespace ui {
       alignAfrDeltaToVeTable_ = state["alignAfrDeltaToVeTable"].get<bool>();
     }
 
-    // Restore analysis config
     if (state.contains("config") && state["config"].is_object()) {
       const auto &cfg = state["config"];
-      //if (cfg.contains("rpmChannel")) session_->channelMapping().rpm = cfg["rpmChannel"].get<std::string>();
-      //if (cfg.contains("loadChannel")) session_->channelMapping().load = cfg["loadChannel"].get<std::string>();
-      //if (cfg.contains("afrChannel")) session_->channelMapping().afr = cfg["afrChannel"].get<std::string>();
-      //if (cfg.contains("tpsDotChannel")) session_->channelMapping().tpsDot = cfg["tpsDotChannel"].get<std::string>();
-      //if (cfg.contains("cltChannel")) session_->channelMapping().clt = cfg["cltChannel"].get<std::string>();
       if (cfg.contains("minSamplesPerBin")) config_.minSamplesPerBin = cfg["minSamplesPerBin"].get<size_t>();
-
+      if (cfg.contains("adjustmentGain")) config_.adjustmentGain = cfg["adjustmentGain"].get<double>();
+      if (cfg.contains("maxPercentChange")) config_.maxPercentChange = cfg["maxPercentChange"].get<double>();
       if (cfg.contains("enableTpsDotFilter")) config_.enableTpsDotFilter = cfg["enableTpsDotFilter"].get<bool>();
       if (cfg.contains("maxTpsDot")) config_.maxTpsDot = cfg["maxTpsDot"].get<double>();
       if (cfg.contains("enableCltFilter")) config_.enableCltFilter = cfg["enableCltFilter"].get<bool>();
@@ -847,7 +878,6 @@ namespace ui {
       if (cfg.contains("minLoadThreshold")) config_.minLoadThreshold = cfg["minLoadThreshold"].get<double>();
     }
 
-    // Restore input tables
     if (state.contains("targetAfr")) {
       targetAfrPanel_.loadState(state["targetAfr"]);
     }
@@ -855,7 +885,6 @@ namespace ui {
       baselineVePanel_.loadState(state["baselineVe"]);
     }
 
-    // Automatically recalculate all derived tables (Observed AFR, AFR Delta, Suggested VE)
     if (session_ != nullptr) {
       computeObservedAfr();
       computeAfrDelta();

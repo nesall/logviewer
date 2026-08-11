@@ -69,12 +69,10 @@ namespace ui {
         workingDefs.clear();
 
         if (!userDefinitions_.empty()) {
-          // 1. If custom/edited definitions exist, use them directly
           workingDefs = userDefinitions_;
         } else {
-          // 2. Otherwise, seed from the full default built-in map
-          auto defaultMap = engine::getDefaultRegimeDefs();
-          for (auto &[type, def] : defaultMap) {
+          auto defaultMap = engine::getDefaultRegimeDefs(*session_);
+          for (const auto &def : defaultMap) {
             workingDefs.push_back(def);
           }
         }
@@ -128,6 +126,8 @@ namespace ui {
 
         ImGui::ColorEdit4("Highlight Color", (float *)&def.color, ImGuiColorEditFlags_NoAlpha);
 
+        ImGui::Spacing();
+        ImGui::Spacing();
         ImGui::SeparatorText("Alert & Warning Thresholds");
 
         // Helper for optional double inputs (NaN = Disabled)
@@ -150,17 +150,74 @@ namespace ui {
         inputOptionalDouble("Peak CLT Warning (°F)", def.maxCltWarning, 5.0);
         inputOptionalDouble("Peak Duty Warning (%)", def.maxDutyWarning, 5.0);
 
-        ImGui::SeparatorText("Detection Bounds (Leave unchecked if unused)");
+        {
+          ImGui::Spacing();
+          ImGui::Spacing();
+          ImGui::SeparatorText("Detection Bounds");
 
-        inputOptionalDouble("Min RPM", def.minRpm, 100.0);
-        inputOptionalDouble("Max RPM", def.maxRpm, 100.0);
-        inputOptionalDouble("Min MAP (kPa)", def.minMap, 5.0);
-        inputOptionalDouble("Max MAP (kPa)", def.maxMap, 5.0);
-        inputOptionalDouble("Min TPS (%)", def.minTps, 5.0);
-        inputOptionalDouble("Max TPS (%)", def.maxTps, 5.0);
-        inputOptionalDouble("Min TPSdot (%/s)", def.minTpsDot, 5.0);
-        inputOptionalDouble("Max TPSdot (%/s)", def.maxTpsDot, 5.0);
+          for (int i = 0; i < static_cast<int>(def.boundsRules.size()); ++i) {
+            ImGui::PushID(i);
+            auto &rule = def.boundsRules[i];
 
+            // Channel Selector
+            ImGui::SetNextItemWidth(150.0f);
+            if (ImGui::BeginCombo("##bounds_ch", rule.channelName.c_str())) {
+              for (const auto &ch : session_->channels()) {
+                if (ImGui::Selectable(ch.name().c_str(), ch.name() == rule.channelName)) {
+                  rule.channelName = ch.name();
+                }
+              }
+              ImGui::EndCombo();
+            }
+
+            ImGui::SameLine();
+
+            // Min Bound Input
+            bool hasMin = !std::isnan(rule.minVal);
+            if (ImGui::Checkbox("Min##has_min", &hasMin)) {
+              rule.minVal = hasMin ? 0.0 : std::numeric_limits<double>::quiet_NaN();
+            }
+            ImGui::BeginDisabled(!hasMin);
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(90.0f);
+            ImGui::InputDouble("##min_val", &rule.minVal, 0.0, 0.0, "%.1f");
+            ImGui::EndDisabled();
+
+            ImGui::SameLine();
+
+            // Max Bound Input
+            bool hasMax = !std::isnan(rule.maxVal);
+            if (ImGui::Checkbox("Max##has_max", &hasMax)) {
+              rule.maxVal = hasMax ? 0.0 : std::numeric_limits<double>::quiet_NaN();
+            }
+            
+            ImGui::BeginDisabled(!hasMax);
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(90.0f);
+            ImGui::InputDouble("##max_val", &rule.maxVal, 0.0, 0.0, "%.1f");
+            ImGui::EndDisabled();
+
+            ImGui::SameLine();
+            if (ui::UI::ButtonDanger("X##del_bound")) {
+              def.boundsRules.erase(def.boundsRules.begin() + i);
+              ImGui::PopID();
+              break;
+            }
+
+            ImGui::PopID();
+          }
+
+          if (ImGui::Button("+ Add Detection Bound Rule")) {
+            core::ChannelBoundRule newRule;
+            if (!session_->channels().empty()) {
+              newRule.channelName = session_->channels().front().name();
+            }
+            def.boundsRules.push_back(newRule);
+          }
+        }
+
+        ImGui::Spacing();
+        ImGui::Spacing();
         ImGui::SeparatorText("Advanced Formula (ExprTk)");
         char formulaBuf[256];
         std::snprintf(formulaBuf, sizeof(formulaBuf), "%s", def.customFormula.c_str());
@@ -169,7 +226,60 @@ namespace ui {
         }
         ImGui::TextDisabled("Overrides numeric bounds above if non-empty.");
 
+        {
+          ImGui::Spacing();
+          ImGui::Spacing();
+          ImGui::SeparatorText("Card Metrics (From Session Channels)");
+
+          // Render existing configured metric rules
+          for (int m = 0; m < static_cast<int>(def.configuredMetrics.size()); ++m) {
+            ImGui::PushID(m);
+            auto &rule = def.configuredMetrics[m];
+
+            // 1. Channel Selector Combo
+            ImGui::SetNextItemWidth(160.0f);
+            if (ImGui::BeginCombo("##ch_combo", rule.channelName.empty() ? "Select Channel..." : rule.channelName.c_str())) {
+              for (const auto &ch : session_->channels()) {
+                if (ImGui::Selectable(ch.name().c_str(), ch.name() == rule.channelName)) {
+                  rule.channelName = ch.name();
+                }
+              }
+              ImGui::EndCombo();
+            }
+
+            ImGui::SameLine();
+
+            // 2. Aggregation Mode Combo
+            ImGui::SetNextItemWidth(100.0f);
+            const char *aggNames[] = { "Average", "Peak / Max", "Min" };
+            int currentAgg = static_cast<int>(rule.aggregation);
+            if (ImGui::Combo("##agg_combo", &currentAgg, aggNames, IM_ARRAYSIZE(aggNames))) {
+              rule.aggregation = static_cast<core::MetricAgg>(currentAgg);
+            }
+
+            ImGui::SameLine();
+
+            // 3. Remove Button
+            if (ui::UI::ButtonDanger("X##remove_metric")) {
+              def.configuredMetrics.erase(def.configuredMetrics.begin() + m);
+              ImGui::PopID();
+              break;
+            }
+
+            ImGui::PopID();
+          }
+
+          if (ImGui::Button("+ Add Metric Channel")) {
+            core::RegimeMetricRule newRule;
+            if (!session_->channels().empty()) {
+              newRule.channelName = session_->channels().front().name();
+            }
+            def.configuredMetrics.push_back(newRule);
+          }
+        }
+
         if (!def.isBuiltIn) {
+          ImGui::Spacing();
           ImGui::Spacing();
           ImGui::Separator();
           if (ui::UI::ButtonDanger("Delete Regime")) {
@@ -245,7 +355,6 @@ namespace ui {
     }
 
     // --- Regime Cards Loop ---
-// --- Regime Cards Loop ---
     for (auto &reg : summaries) {
       ImGui::PushID(reg.def.id.c_str());
 
@@ -255,7 +364,7 @@ namespace ui {
       bool hasAlert = !reg.warningMessage.empty();
       if (hasAlert) {
         // Append critical alert text to the header title
-        headerLabel += "  [ " + std::string(ICON_FA_TRIANGLE_EXCLAMATION) + " " + dtostr(reg.peakEgt, 0) + " °F ]";
+        headerLabel += "  [ " + std::string(ICON_FA_TRIANGLE_EXCLAMATION)/* + " " + dtostr(reg.getMetric(core::RegimeMetric::PeakEgt), 0) + " °F ]"*/;
 
         // Highlight header text color red/orange if critical alert is present
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.45f, 1.0f));
@@ -304,47 +413,45 @@ namespace ui {
         ImGui::TextDisabled("Dwell Time: %s s across %zu intervals", dtostr(reg.totalDwellTimeSec, 1).c_str(), reg.intervals.size());
         ImGui::Spacing();
 
-        // Compact 2-Pair Key/Value Grid
-        if (ImGui::BeginTable("CompactMetrics", 4, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV)) {
-          ImGui::TableSetupColumn("K1", ImGuiTableColumnFlags_WidthFixed, 65.0f);
-          ImGui::TableSetupColumn("V1", ImGuiTableColumnFlags_WidthFixed, 60.0f);
-          ImGui::TableSetupColumn("K2", ImGuiTableColumnFlags_WidthFixed, 65.0f);
-          ImGui::TableSetupColumn("V2", ImGuiTableColumnFlags_WidthFixed, 60.0f);
+        if (!reg.metricResults.empty()) {
+          if (ImGui::BeginTable("DynamicChannelMetrics", 4, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV)) {
+            ImGui::TableSetupColumn("K1", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+            ImGui::TableSetupColumn("V1", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+            ImGui::TableSetupColumn("K2", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+            ImGui::TableSetupColumn("V2", ImGuiTableColumnFlags_WidthStretch, 1.0f);
 
-          // Row 1: Avg RPM & Avg MAP
-          ImGui::TableNextRow();
-          ImGui::TableSetColumnIndex(0); ImGui::TextDisabled("Avg RPM");
-          ImGui::TableSetColumnIndex(1); ImGui::Text("%s", dtostr(reg.avgRpm, 0).c_str());
-          ImGui::TableSetColumnIndex(2); ImGui::TextDisabled("Avg MAP");
-          ImGui::TableSetColumnIndex(3); ImGui::Text("%s kPa", dtostr(reg.avgMap, 1).c_str());
+            for (size_t i = 0; i < reg.metricResults.size(); ++i) {
+              const auto &res = reg.metricResults[i];
 
-          // Row 2: Avg AFR & Avg Timing
-          ImGui::TableNextRow();
-          ImGui::TableSetColumnIndex(0); ImGui::TextDisabled("Avg AFR");
-          ImGui::TableSetColumnIndex(1); ImGui::Text("%s", dtostr(reg.avgAfr, 2).c_str());
-          ImGui::TableSetColumnIndex(2); ImGui::TextDisabled("Avg Timing");
-          ImGui::TableSetColumnIndex(3); ImGui::Text("%s°", dtostr(reg.avgTiming, 1).c_str());
+              if (i % 2 == 0) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+              } else {
+                ImGui::TableSetColumnIndex(2);
+              }
 
-          // Row 3: Engine Temperatures
-          ImGui::TableNextRow();
-          ImGui::TableSetColumnIndex(0); ImGui::TextDisabled("Avg CLT");
-          ImGui::TableSetColumnIndex(1); ImGui::Text("%s °F", dtostr(reg.avgClt, 0).c_str());
-          ImGui::TableSetColumnIndex(2); ImGui::TextDisabled("Avg MAT");
-          ImGui::TableSetColumnIndex(3); ImGui::Text("%s °F", dtostr(reg.avgMat, 0).c_str());
+              // Display Label (e.g., "Peak EGT" or "Avg AFR")
+              std::string aggPrefix = (res.rule.aggregation == core::MetricAgg::Peak) ? "Peak " :
+                (res.rule.aggregation == core::MetricAgg::Min) ? "Min " : "Avg ";
+              std::string label = res.rule.customLabel.empty() ? (aggPrefix + res.rule.channelName) : res.rule.customLabel;
+              //float columnWidth = ImGui::GetContentRegionAvail().x;
+              //float textWidth = ImGui::CalcTextSize(label.c_str()).x;
+              //if (columnWidth > textWidth) {
+              //  ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (columnWidth - textWidth));
+              //}
+              ImGui::TextDisabled("%s", label.c_str());
 
-          // Row 4: Fuel Headroom & Thermal Peak
-          ImGui::TableNextRow();
-          ImGui::TableSetColumnIndex(0); ImGui::TextDisabled("Peak Duty");
-          ImGui::TableSetColumnIndex(1); ImGui::Text("%s%%", dtostr(reg.peakDuty, 1).c_str());
-          ImGui::TableSetColumnIndex(2); ImGui::TextDisabled("Peak EGT");
-          ImGui::TableSetColumnIndex(3);
-          if (reg.peakEgt > 1600.0) {
-            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s °F", dtostr(reg.peakEgt, 0).c_str());
-          } else {
-            ImGui::Text("%s °F", dtostr(reg.peakEgt, 0).c_str());
+              // Display Value
+              ImGui::TableSetColumnIndex((i % 2 == 0) ? 1 : 3);
+              if (res.unit.empty()) {
+                ImGui::Text("%.1f", res.value);
+              } else {
+                ImGui::Text("%.1f %s", res.value, res.unit.c_str());
+              }
+            }
+
+            ImGui::EndTable();
           }
-
-          ImGui::EndTable();
         }
 
         ImGui::Spacing();
@@ -380,30 +487,23 @@ namespace ui {
   nlohmann::json DriveRegimePanel::saveState() const
   {
     auto j = PlotPanel::saveState();
-
-    // Save the full list of definitions (which includes their active color/shading properties)
     nlohmann::json defsArray = nlohmann::json::array();
     for (const auto &def : userDefinitions_) {
       defsArray.push_back(def.toJson());
     }
     j["definitions"] = defsArray;
-
     return j;
   }
 
   void DriveRegimePanel::loadState(const nlohmann::json &state)
   {
     PlotPanel::loadState(state);
-
-    // 1. Restore all Regime Definitions via RegimeDef::fromJson()
     userDefinitions_.clear();
     if (state.contains("definitions") && state["definitions"].is_array()) {
       for (const auto &dJson : state["definitions"]) {
         userDefinitions_.push_back(core::RegimeDef::fromJson(dJson));
       }
     }
-
-    // 2. Re-evaluate session with restored definitions
     reanalyze();
   }
 

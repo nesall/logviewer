@@ -10,6 +10,9 @@ namespace engine {
   struct VeAnalysisConfig {
     size_t minSamplesPerBin = 10;
 
+    double adjustmentGain = 0.50;  // Alpha (0.5 = apply 50% of correction)
+    double maxPercentChange = 0.10; // Hard cap (+/- 10% max adjustment per pass)
+
     // Transient & Environmental Filtering Rules
     bool enableTpsDotFilter = true;
     double maxTpsDot = 30.0; // Ignore rapid throttle movements (e.g., > 30 %/s)

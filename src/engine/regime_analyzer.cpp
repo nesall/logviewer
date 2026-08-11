@@ -13,14 +13,11 @@ namespace engine {
 
     constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
-    // Helper to extract channel values safely (returns NaN if index out of range or null)
     double getVal(const core::Channel *ch, size_t idx) {
       if (!ch || idx >= ch->values().size()) return kNaN;
       return ch->values()[idx];
     }
 
-    // Helper structure for pre-compiled ExprTk custom regime expressions
-// 1. Define CompiledRegimeExpr as move-constructible
     struct CompiledRegimeExpr {
       exprtk::symbol_table<double> symbolTable;
       exprtk::expression<double> expression;
@@ -89,46 +86,78 @@ namespace engine {
       }
     };
 
-    bool evaluateRegime(const core::RegimeDef &def, CompiledRegimeExpr &compiledExpr, size_t rowIndex, double rpm, double map, double tps, double tpsDot) {
-      // 1. If custom ExprTk formula is specified, evaluate it
+    bool evaluateRegime(const core::RegimeDef &def, CompiledRegimeExpr &compiledExpr, const core::LogSession &session, size_t rowIndex)
+    {
+      // 1. Custom ExprTk formula evaluation (if provided)
       if (!def.customFormula.empty()) {
         if (!compiledExpr.valid) return false;
-
         for (auto &bv : compiledExpr.boundVars) {
           double val = (*bv.data)[rowIndex];
           if (std::isnan(val)) return false;
           bv.currentVal = val;
         }
-
         double result = compiledExpr.expression.value();
         return (!std::isnan(result) && result != 0.0);
       }
 
-      // 2. Fast C++ path for standard min/max threshold bounds
-      if (!std::isnan(def.minRpm) && rpm < def.minRpm) return false;
-      if (!std::isnan(def.maxRpm) && rpm > def.maxRpm) return false;
-      if (!std::isnan(def.minMap) && map < def.minMap) return false;
-      if (!std::isnan(def.maxMap) && map > def.maxMap) return false;
-      if (!std::isnan(def.minTps) && tps < def.minTps) return false;
-      if (!std::isnan(def.maxTps) && tps > def.maxTps) return false;
-      if (!std::isnan(def.minTpsDot) && std::abs(tpsDot) < def.minTpsDot) return false;
-      if (!std::isnan(def.maxTpsDot) && std::abs(tpsDot) > def.maxTpsDot) return false;
+      // 2. Abstracted Channel Bounds evaluation
+      for (const auto &rule : def.boundsRules) {
+        const auto *ch = session.findChannel(rule.channelName);
+        if (!ch || rowIndex >= ch->values().size()) return false;
+
+        double val = ch->values()[rowIndex];
+        if (std::isnan(val)) return false;
+
+        if (!std::isnan(rule.minVal) && val < rule.minVal) return false;
+        if (!std::isnan(rule.maxVal) && val > rule.maxVal) return false;
+      }
 
       return true;
     }
 
   } // namespace
 
-  std::unordered_map<core::RegimeType, core::RegimeDef> engine::getDefaultRegimeDefs()
+  std::vector<core::RegimeDef> getDefaultRegimeDefs(const core::LogSession &session)
   {
-    return {
-      { core::RegimeType::FreewayCruise, { core::RegimeType::FreewayCruise, "freeway_cruise", "Freeway Cruise", ImVec4(0.2f, 0.7f, 1.0f, 0.25f), false, true, 2000, 4000, kNaN, 60, kNaN, 20, kNaN, 10, kNaN, 1600.0 /* EGT Warning */ } },
-      { core::RegimeType::OverrunFuelCut, { core::RegimeType::OverrunFuelCut, "overrun_fuel_cut", "Overrun Fuel Cut (DFCO)", ImVec4(0.8f, 0.3f, 0.3f, 0.25f), false, true, 1800, kNaN, kNaN, 22, kNaN, 2 } },
-      { core::RegimeType::HighGearLowRpmBoost, { core::RegimeType::HighGearLowRpmBoost, "lspi_risk", "Low RPM / High Boost (LSPI)", ImVec4(1.0f, 0.5f, 0.0f, 0.30f), false, true, 1500, 3000, 110, kNaN, 50, kNaN } },
-      { core::RegimeType::HighRpmVacuum, { core::RegimeType::HighRpmVacuum, "high_rpm_vacuum", "High RPM Vacuum / Decel", ImVec4(0.6f, 0.4f, 0.8f, 0.25f), false, true, 4500, kNaN, kNaN, 50, kNaN, 10 } },
-      { core::RegimeType::IdleStability, { core::RegimeType::IdleStability, "idle_stability", "Idle Stability", ImVec4(0.3f, 0.8f, 0.4f, 0.25f), false, true, 500, 1100, kNaN, 45, kNaN, 2 } },
-      { core::RegimeType::TransientTipIn, { core::RegimeType::TransientTipIn, "transient_tipin", "Transient Tip-In", ImVec4(0.9f, 0.9f, 0.2f, 0.25f), false, true, kNaN, kNaN, kNaN, kNaN, kNaN, kNaN, 35 } }
+    const auto cm = session.channelMapping();
+    std::vector<core::RegimeDef> defaults;
+    // 1. Freeway Cruise
+    core::RegimeDef cruise;
+    cruise.id = "freeway_cruise";
+    cruise.displayName = "Freeway Cruise";
+    cruise.color = ImVec4(0.2f, 0.7f, 1.0f, 0.25f);
+    cruise.isBuiltIn = true;
+    cruise.boundsRules = {
+      { cm.rpm, 2000.0, 4000.0 },
+      { cm.load, std::numeric_limits<double>::quiet_NaN(), 60.0 },
+      { cm.tps, std::numeric_limits<double>::quiet_NaN(), 20.0 }
     };
+    cruise.configuredMetrics = {
+      { cm.rpm, core::MetricAgg::Average, "Avg RPM" },
+      { cm.load, core::MetricAgg::Average, "Avg MAP" },
+      { cm.afr, core::MetricAgg::Average, "Avg AFR" },
+      { cm.timing, core::MetricAgg::Average, "Avg Timing" }
+    };
+    defaults.push_back(cruise);
+
+    // 2. Overrun Fuel Cut (DFCO)
+    core::RegimeDef dfco;
+    dfco.id = "overrun_fuel_cut";
+    dfco.displayName = "Overrun Fuel Cut (DFCO)";
+    dfco.color = ImVec4(0.8f, 0.3f, 0.3f, 0.25f);
+    dfco.isBuiltIn = true;
+    dfco.boundsRules = {
+      { cm.rpm, 1800.0, std::numeric_limits<double>::quiet_NaN() },
+      { cm.load, std::numeric_limits<double>::quiet_NaN(), 22.0 },
+      { cm.tps, std::numeric_limits<double>::quiet_NaN(), 2.0 }
+    };
+    dfco.configuredMetrics = {
+      { cm.rpm, core::MetricAgg::Average, "Avg RPM" },
+      { cm.load, core::MetricAgg::Average, "Avg MAP" }
+    };
+    defaults.push_back(dfco);
+
+    return defaults;
   }
 
   std::vector<core::RegimeSummary> RegimeAnalyzer::analyzeSession(const core::LogSession &session, const std::vector<core::RegimeDef> &definitions)
@@ -138,10 +167,7 @@ namespace engine {
 
     std::vector<core::RegimeDef> activeDefs = definitions;
     if (activeDefs.empty()) {
-      auto defaultMap = engine::getDefaultRegimeDefs();
-      for (auto &[type, def] : defaultMap) {
-        activeDefs.push_back(def);
-      }
+      activeDefs = getDefaultRegimeDefs(session);
     }
 
     const auto *timeSec = session.timeSec();
@@ -150,87 +176,82 @@ namespace engine {
     double totalLogTime = timeSec->back() - timeSec->front();
     if (totalLogTime <= 0.0) totalLogTime = 1.0;
 
-    // Find Channels
-    const auto &mapping = session.channelMapping();
-    const auto *rpmCh = session.findChannel(mapping.rpm);
-    const auto *mapCh = session.findChannel(mapping.load);
-    const auto *tpsCh = session.findChannel(mapping.tps);
-    const auto *tpsDotCh = session.findChannel(mapping.tpsDot);
-    const auto *afrCh = session.findChannel(mapping.afr);
-    const auto *egtCh = session.findChannel(mapping.egt);
-    const auto *pwCh = session.findChannel(mapping.pw);
-    const auto *timingCh = session.findChannel(mapping.timing);
-    const auto *cltCh = session.findChannel(mapping.clt);
-    const auto *matCh = session.findChannel(mapping.mat);
-    const auto *dutyCh = session.findChannel(mapping.duty);
+    const size_t numRegimes = activeDefs.size();
+    const size_t rowCount = session.rowCount();
 
-    // Initialize summaries array dynamically from activeDefs
-    std::vector<core::RegimeSummary> allRegimes(activeDefs.size());
-    std::vector<CompiledRegimeExpr> compiledExprs(activeDefs.size());
+    std::vector<core::RegimeSummary> allRegimes(numRegimes);
+    std::vector<CompiledRegimeExpr> compiledExprs(numRegimes);
 
-    for (size_t r = 0; r < activeDefs.size(); ++r) {
+    // Initialize accumulators
+    for (size_t r = 0; r < numRegimes; ++r) {
       allRegimes[r].def = activeDefs[r];
+
       if (!activeDefs[r].customFormula.empty()) {
         compiledExprs[r].compile(activeDefs[r].customFormula, session);
       }
-    }
 
-    const size_t numRegimes = allRegimes.size();
-    const size_t rowCount = session.rowCount();
+      // Pre-size and set unit meta for configured metrics
+      for (const auto &rule : activeDefs[r].configuredMetrics) {
+        core::CalculatedMetricValue res;
+        res.rule = rule;
+        const auto *ch = session.findChannel(rule.channelName);
+        res.unit = ch ? ch->unit() : "";
+
+        if (rule.aggregation == core::MetricAgg::Min) {
+          res.value = std::numeric_limits<double>::infinity();
+        } else if (rule.aggregation == core::MetricAgg::Peak) {
+          res.value = -std::numeric_limits<double>::infinity();
+        } else {
+          res.value = 0.0;
+        }
+        allRegimes[r].metricResults.push_back(res);
+      }
+    }
 
     std::vector<bool> matches(numRegimes, false);
     std::vector<double> matchStartTimes(numRegimes, 0.0);
     std::vector<bool> inInterval(numRegimes, false);
 
-    struct Acc {
-      double sumRpm = 0, sumMap = 0, sumAfr = 0, sumTiming = 0, sumClt = 0, sumMat = 0, sumDuty = 0;
-      double maxEgt = 0, maxClt = 0, maxMat = 0, maxDuty = 0;
-      size_t count = 0;
-    };
-    std::vector<Acc> accs(numRegimes);
-
+    // Process log row-by-row
     for (size_t i = 0; i < rowCount; ++i) {
       if (!session.isRowInCropRange(i)) continue;
 
       double t = (*timeSec)[i];
-      double rpm = getVal(rpmCh, i);
-      double map = getVal(mapCh, i);
-      double tps = getVal(tpsCh, i);
-      double tpsDot = getVal(tpsDotCh, i);
-      double afr = getVal(afrCh, i);
-      double egt = getVal(egtCh, i);
-      double clt = getVal(cltCh, i);
-      double mat = getVal(matCh, i);
-      double duty = getVal(dutyCh, i);
-      double timing = getVal(timingCh, i);
 
-      // Evaluate active regimes
       for (size_t r = 0; r < numRegimes; ++r) {
-        matches[r] = evaluateRegime(allRegimes[r].def, compiledExprs[r], i, rpm, map, tps, tpsDot);
+        matches[r] = evaluateRegime(allRegimes[r].def, compiledExprs[r], session, i);
 
         if (matches[r]) {
           if (!inInterval[r]) {
             inInterval[r] = true;
             matchStartTimes[r] = t;
           }
-          accs[r].sumRpm += std::isnan(rpm) ? 0 : rpm;
-          accs[r].sumMap += std::isnan(map) ? 0 : map;
-          accs[r].sumAfr += std::isnan(afr) ? 0 : afr;
-          accs[r].sumTiming += std::isnan(timing) ? 0 : timing;
-          accs[r].sumClt += std::isnan(clt) ? 0 : clt;
-          accs[r].sumMat += std::isnan(mat) ? 0 : mat;
-          accs[r].sumDuty += std::isnan(duty) ? 0 : duty;
 
-          if (!std::isnan(egt) && egt > accs[r].maxEgt) accs[r].maxEgt = egt;
-          if (!std::isnan(clt) && clt > accs[r].maxClt) accs[r].maxClt = clt;
-          if (!std::isnan(mat) && mat > accs[r].maxMat) accs[r].maxMat = mat;
-          if (!std::isnan(duty) && duty > accs[r].maxDuty) accs[r].maxDuty = duty;
-          accs[r].count++;
+          allRegimes[r].sampleCount++;
+
+          // Accumulate configured metric channels
+          for (size_t m = 0; m < allRegimes[r].metricResults.size(); ++m) {
+            auto &res = allRegimes[r].metricResults[m];
+            const auto *ch = session.findChannel(res.rule.channelName);
+            if (!ch) continue;
+
+            double val = getVal(ch, i);
+            if (std::isnan(val)) continue;
+
+            if (res.rule.aggregation == core::MetricAgg::Average) {
+              res.value += val;
+            } else if (res.rule.aggregation == core::MetricAgg::Peak) {
+              if (val > res.value) res.value = val;
+            } else if (res.rule.aggregation == core::MetricAgg::Min) {
+              if (val < res.value) res.value = val;
+            }
+          }
+
         } else {
           if (inInterval[r]) {
             inInterval[r] = false;
             double duration = t - matchStartTimes[r];
-            if (duration >= 0.5) { // Filter out micro noise < 0.5 sec
+            if (duration >= 0.5) { // Filter micro-transients < 0.5s
               allRegimes[r].intervals.push_back({ matchStartTimes[r], t });
             }
           }
@@ -238,11 +259,20 @@ namespace engine {
       }
     }
 
-    // Finalize Summaries
+    // Handle trailing active intervals at end of log
+    for (size_t r = 0; r < numRegimes; ++r) {
+      if (inInterval[r]) {
+        double duration = timeSec->back() - matchStartTimes[r];
+        if (duration >= 0.5) {
+          allRegimes[r].intervals.push_back({ matchStartTimes[r], timeSec->back() });
+        }
+      }
+    }
+
+    // Finalize summaries
     for (size_t r = 0; r < numRegimes; ++r) {
       auto &reg = allRegimes[r];
-      size_t count = accs[r].count;
-      reg.sampleCount = count;
+      size_t count = reg.sampleCount;
 
       for (const auto &inter : reg.intervals) {
         reg.totalDwellTimeSec += (inter.endSec - inter.startSec);
@@ -250,29 +280,16 @@ namespace engine {
       reg.percentageOfLog = (reg.totalDwellTimeSec / totalLogTime) * 100.0;
 
       if (count > 0) {
-        reg.avgRpm = accs[r].sumRpm / count;
-        reg.avgMap = accs[r].sumMap / count;
-        reg.avgAfr = accs[r].sumAfr / count;
-        reg.avgTiming = accs[r].sumTiming / count;
-        reg.avgClt = accs[r].sumClt / count;
-        reg.avgMat = accs[r].sumMat / count;
-        reg.avgDuty = accs[r].sumDuty / count;
-        reg.peakEgt = accs[r].maxEgt;
-        reg.peakClt = accs[r].maxClt;
-        reg.peakMat = accs[r].maxMat;
-        reg.peakDuty = accs[r].maxDuty;
-      }
-
-      // Context Warnings
-      if (!std::isnan(reg.def.maxEgtWarning) && reg.peakEgt > reg.def.maxEgtWarning) {
-        reg.warningMessage = "High EGT: " + std::to_string(static_cast<int>(reg.peakEgt)) + " °F (Limit: " +
-          std::to_string(static_cast<int>(reg.def.maxEgtWarning)) + " °F)";
-      } else if (!std::isnan(reg.def.maxCltWarning) && reg.peakClt > reg.def.maxCltWarning) {
-        reg.warningMessage = "High CLT: " + std::to_string(static_cast<int>(reg.peakClt)) + " °F";
-      } else if (!std::isnan(reg.def.maxDutyWarning) && reg.peakDuty > reg.def.maxDutyWarning) {
-        reg.warningMessage = "High Duty Cycle: " + std::to_string(static_cast<int>(reg.peakDuty)) + " %";
-      } else if (reg.def.type == core::RegimeType::HighGearLowRpmBoost && count > 0) {
-        reg.warningMessage = "High Engine Load at Low RPM";
+        for (auto &res : reg.metricResults) {
+          if (res.rule.aggregation == core::MetricAgg::Average) {
+            res.value /= static_cast<double>(count);
+          }
+          if (std::isinf(res.value)) res.value = 0.0;
+        }
+      } else {
+        for (auto &res : reg.metricResults) {
+          if (std::isinf(res.value)) res.value = 0.0;
+        }
       }
 
       if (reg.totalDwellTimeSec > 0.0) {

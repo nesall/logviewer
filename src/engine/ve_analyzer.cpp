@@ -1,59 +1,9 @@
 #include "engine/ve_analyzer.h"
 #include <cmath>
 #include <limits>
-
+#include <algorithm>
 
 namespace engine {
-
-  //void populateDefaultsForSession(VeAnalysisConfig &config, const core::LogSession &session) {
-  //  // Helper lambda to find the first channel present in the session from a candidate list
-  //  auto findFirstMatch = [&session](const std::vector<std::string> &candidates) -> std::string {
-  //    for (const auto &name : candidates) {
-  //      if (session.findChannel(name) != nullptr) {
-  //        return name;
-  //      }
-  //    }
-  //    return "";
-  //    };
-
-  //  // Candidate lists ordered by format prevalence
-  //  config.rpmChannel = findFirstMatch({
-  //    "RPM",                       // MegaSquirt / Haltech / Standard
-  //    "Filtered RPM",              // Haltech alternative
-  //    "Engine Speed"
-  //    });
-
-  //  config.loadChannel = findFirstMatch({
-  //    "MAP",                       // MegaSquirt
-  //    "Fuel - Load (MAP)",         // Haltech NSP[cite: 2]
-  //    "Manifold Pressure",         // Haltech raw[cite: 2]
-  //    "Ignition - Load (MAP)",     // Haltech alternative[cite: 2]
-  //    "Engine Demand",             // Haltech TPS-based load[cite: 2]
-  //    "TPS"                        // MegaSquirt Alpha-N
-  //    });
-
-  //  config.afrChannel = findFirstMatch({
-  //    "AFR",                       // MegaSquirt
-  //    "Wideband O2 1",             // Haltech[cite: 2]
-  //    "Wideband O2 Overall",       // Haltech[cite: 2]
-  //    "WBC1 Lambda",               // Haltech[cite: 2]
-  //    "AFR1",
-  //    "Lambda1"
-  //    });
-
-  //  config.tpsDotChannel = findFirstMatch({
-  //    "TPSdot",                    // MegaSquirt[cite: 1]
-  //    "Throttle Position Derivative", // Haltech[cite: 2]
-  //    "Throttle Position Derivative - Cable", // Haltech[cite: 2]
-  //    "MAPdot"
-  //    });
-
-  //  config.cltChannel = findFirstMatch({
-  //    "CLT",                       // MegaSquirt[cite: 1]
-  //    "Coolant Temperature"        // Haltech[cite: 2]
-  //    });
-  //}
-
 
   VeTransientFilter::VeTransientFilter(const core::LogSession &session, const VeAnalysisConfig &config)
     : config_(config)
@@ -157,7 +107,15 @@ namespace engine {
 
           if (0 < tgtAfr) {
             double oldVe = baselineVe.value(r, c);
-            double newVe = oldVe * (avgObservedAfr / tgtAfr);
+            double rawRatio = avgObservedAfr / tgtAfr;
+
+            double weightedRatio = 1.0 + config.adjustmentGain * (rawRatio - 1.0);
+
+            double minAllowedRatio = 1.0 - config.maxPercentChange;
+            double maxAllowedRatio = 1.0 + config.maxPercentChange;
+            double finalRatio = std::clamp(weightedRatio, minAllowedRatio, maxAllowedRatio);
+
+            double newVe = oldVe * finalRatio;
             correctedVe.setValue(r, c, newVe);
           }
         }

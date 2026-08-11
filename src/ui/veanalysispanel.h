@@ -29,7 +29,6 @@ namespace ui {
     void renderTargetAfrTab();
     void renderBaselineVeTab();
     void renderSuggestedVeTab();
-    void renderReadOnlyTableGrid(const core::Table2D &table);
     void selectUnvisitedCellsOnSuggestedVe();
 
     void computeAfrDelta();
@@ -66,6 +65,9 @@ namespace ui {
     size_t minObservedCol_ = 0;
     size_t maxObservedCol_ = 0;
     bool hasObservedData_ = false;
+
+    int hoveredRow_ = -1;
+    int hoveredCol_ = -1;
   };
 
 } // namespace ui
