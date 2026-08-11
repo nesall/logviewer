@@ -1,5 +1,6 @@
 #include "ui/statuspanel.h"
 #include "ui/ui_helpers.h"
+#include "utils/utils.h"
 
 #include <algorithm>
 #include <cctype>
@@ -13,14 +14,6 @@
 namespace ui {
 
   namespace {
-
-    std::string toLower(const std::string &s) {
-      std::string result = s;
-      for (char &c : result) {
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-      }
-      return result;
-    }
 
     // Truncates text with a trailing "..." so it fits within maxWidth pixels
     // at the current font, rather than letting ImGui silently clip it.
@@ -147,9 +140,9 @@ namespace ui {
         &filterText_);
 
       ImGui::BeginChild("StatusPanelChannelList", ImVec2(320, 360), ImGuiChildFlags_Borders);
-      const std::string filterLower = toLower(filterText_);
+      const std::string filterLower = utils::str::toLower(filterText_);
       for (const auto &channel : session_->channels()) {
-        if (!filterLower.empty() && toLower(channel.name()).find(filterLower) == std::string::npos) {
+        if (!filterLower.empty() && utils::str::toLower(channel.name()).find(filterLower) == std::string::npos) {
           continue;
         }
         bool visible = isVisible(channel);

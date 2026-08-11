@@ -1,5 +1,6 @@
 #include "ui/tableeditorpanel.h"
 #include "ui/ui_helpers.h"
+#include <utils/utils.h>
 
 #include <algorithm>
 #include <cmath>
@@ -14,29 +15,12 @@
 #include "imgui.h"
 #include "imgui_internal.h"
 
-namespace {
-  std::string generateUniqueId(size_t length = 8) {
-    static const char charset[] =
-      "0123456789"
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-      "abcdefghijklmnopqrstuvwxyz";
-    static std::mt19937 rng(std::random_device{}());
-    static std::uniform_int_distribution<> dist(0, sizeof(charset) - 2);
-    std::string id;
-    id.reserve(length);
-    for (size_t i = 0; i < length; ++i) {
-      id += charset[dist(rng)];
-    }
-    return id;
-  }
-}
-
 namespace ui {
 
   TableEditorPanel::TableEditorPanel(std::string title, std::string panelTypeIdValue,
     std::string displayName, core::Table2D initialTable, int xDecimalPlaces, int yDecimalPlaces)
     : PlotPanel(std::move(title))
-    , tableUniqueId_(generateUniqueId())
+    , tableUniqueId_(utils::str::generateUniqueId())
     , panelTypeIdValue_(std::move(panelTypeIdValue))
     , displayName_(std::move(displayName))
     , table_(std::move(initialTable))
@@ -399,7 +383,7 @@ namespace ui {
           table_.setValue(r, c, newValues[r][c]);
         }
       }
-      tableUniqueId_ = generateUniqueId();
+      tableUniqueId_ = utils::str::generateUniqueId();
     } else {
       int startR = static_cast<int>(table_.rowCount()) - 1;
       int startC = 0;
@@ -465,7 +449,7 @@ namespace ui {
         table_.setValue(r, c, zVals[r * cols + c]);
       }
     }
-    tableUniqueId_ = generateUniqueId();
+    tableUniqueId_ = utils::str::generateUniqueId();
     notifyDataChanged();
     return true;
   }
@@ -546,7 +530,7 @@ namespace ui {
     if (ui::UI::Button("OK")) {
       ImGui::CloseCurrentPopup();
       accepted = true;
-      tableUniqueId_ = generateUniqueId();
+      tableUniqueId_ = utils::str::generateUniqueId();
       notifyDataChanged();
     }
     ImGui::SameLine();

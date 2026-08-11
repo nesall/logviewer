@@ -1,5 +1,6 @@
 #include "ui/scatterpanel.h"
 #include "ui/ui_helpers.h"
+#include "utils/utils.h"
 
 #include <algorithm>
 #include <cmath>
@@ -11,28 +12,6 @@
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "implot.h"
-
-namespace {
-  std::string sanitizeToUtf8(const std::string &input) {
-    std::string output;
-    output.reserve(input.size() * 2);
-
-    for (size_t i = 0; i < input.size(); ++i) {
-      unsigned char c = static_cast<unsigned char>(input[i]);
-
-      // Check if it's a raw single-byte degree symbol (0xB0) in ANSI/Latin-1/Win-1252
-      // and make sure it's not already part of a valid UTF-8 multi-byte sequence (0xC2 0xB0)
-      if (c == 0xB0) {
-        bool isAlreadyUtf8 = (i > 0 && static_cast<unsigned char>(input[i - 1]) == 0xC2);
-        if (!isAlreadyUtf8) {
-          output.push_back(static_cast<char>(0xC2)); // Inject UTF-8 leading byte
-        }
-      }
-      output.push_back(input[i]);
-    }
-    return output;
-  }
-} // anonymous namespace
 
 namespace ui {
 
@@ -411,8 +390,8 @@ namespace ui {
             ImGui::Text("Dwell Time: %.2f s", stats_.timeInZoneSec);
           }
 
-          auto xUnitSanitized = sanitizeToUtf8(cachedXUnit_);
-          auto yUnitSanitized = sanitizeToUtf8(cachedYUnit_);
+          auto xUnitSanitized = utils::str::sanitizeToUtf8(cachedXUnit_);
+          auto yUnitSanitized = utils::str::sanitizeToUtf8(cachedYUnit_);
           if (!selectedColorChannel_.empty()) {
             ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Peak %s: %.1f", selectedColorChannel_.c_str(), stats_.maxZ);
             ImGui::SameLine();
@@ -420,7 +399,7 @@ namespace ui {
 
             ImGui::Text("Mean %s: %.1f", selectedColorChannel_.c_str(), stats_.avgZ);
 
-            auto zUnitSanitized = sanitizeToUtf8(cachedZUnit_);
+            auto zUnitSanitized = utils::str::sanitizeToUtf8(cachedZUnit_);
             ImGui::Text("Centroid: %.0f %s | %.1f %s | %.2f %s",
               stats_.avgX, xUnitSanitized.c_str(),
               stats_.avgY, yUnitSanitized.c_str(),

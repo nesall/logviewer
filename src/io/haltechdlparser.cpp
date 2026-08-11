@@ -1,4 +1,5 @@
 #include "io/haltechdlparser.h"
+#include "utils/utils.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -11,21 +12,6 @@
 namespace io {
 
   namespace {
-
-    std::vector<std::string> splitCsvLine(const std::string &line) {
-      std::vector<std::string> tokens;
-      size_t start = 0;
-      while (true) {
-        size_t commaPos = line.find(',', start);
-        if (commaPos == std::string::npos) {
-          tokens.push_back(line.substr(start));
-          break;
-        }
-        tokens.push_back(line.substr(start, commaPos - start));
-        start = commaPos + 1;
-      }
-      return tokens;
-    }
 
     // Convert 'HH:MM:SS.mmm' timestamp string into total elapsed seconds
     bool parseHaltechTimeSec(const std::string &token, double &outSec) {
@@ -115,7 +101,7 @@ namespace io {
         progress->store(std::min(p, 1.0f));
       }
 
-      std::vector<std::string> tokens = splitCsvLine(line);
+      std::vector<std::string> tokens = utils::str::splitCsvLine(line);
       if (tokens.empty()) continue;
 
       // Token 0: Timestamp (HH:MM:SS.mmm)

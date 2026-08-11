@@ -83,6 +83,8 @@ target_link_libraries(implot PUBLIC imgui)
 # =============================================================================
 add_executable(logviewer
   src/main.cpp
+  src/utils/utils.h
+  src/utils/utils.cpp
   src/core/logsession.h
   src/core/logsession.cpp
   src/core/channel.h

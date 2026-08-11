@@ -205,36 +205,54 @@ namespace core {
 
 namespace core {
 
+  const std::string slotRPM = "RPM";
+  const std::string slotLoad = "Load / MAP";
+  const std::string slotAFR = "AFR / Lambda";
+  const std::string slotTPS = "Throttle (TPS)";
+  const std::string slotTPSDot = "Accel (TPSdot)";
+  const std::string slotCLT = "Coolant (CLT)";
+  const std::string slotEGT1 = "Exhaust Temp (EGT1)";
+  const std::string slotEGT2 = "Exhaust Temp (EGT2)";
+  const std::string slotPW = "Pulse Width (PW)";
+  const std::string slotTiming = "Ignition Timing";
+  const std::string slotMAT = "Manifold Air Temperature";
+  const std::string slotDuty1 = "Duty Cycle1";
+  const std::string slotDuty2 = "Duty Cycle2";
+
   std::vector<std::string> ChannelMapping::allSlots()
   {
     return {
-      "RPM",
-      "Load / MAP",
-      "AFR / Lambda",
-      "Throttle (TPS)",
-      "Accel (TPSdot)",
-      "Coolant (CLT)",
-      "Exhaust Temp (EGT)",
-      "Pulse Width (PW)",
-      "Ignition Timing",
-      "Manifold Air Temperature",
-      "Duty Cycle"
+      slotRPM,
+      slotLoad,
+      slotAFR,
+      slotTPS,
+      slotTPSDot,
+      slotCLT,
+      slotEGT1,
+      slotEGT2,
+      slotPW,
+      slotTiming,
+      slotMAT,
+      slotDuty1,
+      slotDuty2 
     };
   }
   
   std::string &ChannelMapping::refSlot(const std::string &slotName)
   {
-    if (slotName == "RPM") return rpm;
-    if (slotName == "Load / MAP") return load;
-    if (slotName == "AFR / Lambda") return afr;
-    if (slotName == "Throttle (TPS)") return tps;
-    if (slotName == "Accel (TPSdot)") return tpsDot;
-    if (slotName == "Coolant (CLT)") return clt;
-    if (slotName == "Exhaust Temp (EGT)") return egt;
-    if (slotName == "Pulse Width (PW)") return pw;
-    if (slotName == "Ignition Timing") return timing;
-    if (slotName == "Manifold Air Temperature") return mat;
-    if (slotName == "Duty Cycle") return duty;
+    if (slotName == slotRPM) return rpm;
+    if (slotName == slotLoad) return load;
+    if (slotName == slotAFR) return afr;
+    if (slotName == slotTPS) return tps;
+    if (slotName == slotTPSDot) return tpsDot;
+    if (slotName == slotCLT) return clt;
+    if (slotName == slotEGT1) return egt1;
+    if (slotName == slotEGT2) return egt2;
+    if (slotName == slotPW) return pw;
+    if (slotName == slotTiming) return timing;
+    if (slotName == slotMAT) return mat;
+    if (slotName == slotDuty1) return duty1;
+    if (slotName == slotDuty2) return duty2;
     throw std::invalid_argument("Invalid slot name");
   }
 
@@ -275,9 +293,14 @@ namespace core {
       "Lambda1"
       });
 
-    egt = findFirstMatch({
+    egt1 = findFirstMatch({
       "EGT1",                      // Megasqurt
       "Exhaust Gas Temperature 1"  // Haltech
+      });
+
+    egt2 = findFirstMatch({
+      "EGT2",                      // Megasqurt
+      "Exhaust Gas Temperature 2"  // Haltech
       });
 
     tps = findFirstMatch({
@@ -298,14 +321,25 @@ namespace core {
       "Coolant Temperature"        // Haltech
       });
 
+    mat = findFirstMatch({
+      "MAT",                      // Megasqurt
+      "Intake Air Temperature",   // Haltech
+      "Manifold Air Temperature"  // Haltech
+      });
+
     timing = findFirstMatch({
       "SPK: Spark Advance",        // Megasqurt
       "Ignition Timing"            // Haltech
       });
 
-    duty = findFirstMatch({
+    duty1 = findFirstMatch({
       "Duty Cycle1", // Megasqurt
       "Duty1"
+      });
+
+    duty2 = findFirstMatch({
+      "Duty Cycle2", // Megasqurt
+      "Duty2"
       });
   }
 
@@ -318,11 +352,13 @@ namespace core {
         {"tps", tps},
         {"tpsDot", tpsDot},
         {"clt", clt},
-        {"egt", egt},
+        {"egt1", egt1},
+        {"egt2", egt2},
         {"pw", pw},
         {"timing", timing},
         {"mat", mat},
-        {"duty", duty}
+        {"duty1", duty1},
+        {"duty2", duty2}
     };
   }
 
@@ -335,11 +371,13 @@ namespace core {
     if (j.contains("tps")) mapping.tps = j["tps"].get<std::string>();
     if (j.contains("tpsDot")) mapping.tpsDot = j["tpsDot"].get<std::string>();
     if (j.contains("clt")) mapping.clt = j["clt"].get<std::string>();
-    if (j.contains("egt")) mapping.egt = j["egt"].get<std::string>();
+    if (j.contains("egt1")) mapping.egt1 = j["egt1"].get<std::string>();
+    if (j.contains("egt2")) mapping.egt2 = j["egt2"].get<std::string>();
     if (j.contains("pw")) mapping.pw = j["pw"].get<std::string>();
     if (j.contains("timing")) mapping.timing = j["timing"].get<std::string>();
     if (j.contains("mat")) mapping.mat = j["mat"].get<std::string>();
-    if (j.contains("duty")) mapping.duty = j["duty"].get<std::string>();
+    if (j.contains("duty1")) mapping.duty1 = j["duty1"].get<std::string>();
+    if (j.contains("duty2")) mapping.duty2 = j["duty2"].get<std::string>();
     return mapping;
   }
 
@@ -430,11 +468,13 @@ namespace core {
     std::string tps = "TPS";
     std::string tpsDot = "TPSdot";
     std::string clt = "CLT";
-    std::string egt = "EGT1";
+    std::string egt1 = "EGT1";
+    std::string egt2 = "EGT2";
     std::string pw = "PW";
     std::string timing = "Ignition Timing";
     std::string mat = "MAT";
-    std::string duty = "DutyCycle";
+    std::string duty1 = "Duty Cycle1";
+    std::string duty2 = "Duty Cycle2";
 
     static std::vector<std::string> allSlots();
     std::string &refSlot(const std::string &slotName);
@@ -511,7 +551,6 @@ namespace core {
 
 ## File: src/core/regime.cpp
 
-// core/regime.cpp
 #include "core/regime.h"
 #include "3rdparty/nlohmann/json.hpp"
 
@@ -523,115 +562,101 @@ namespace core {
 
 namespace core {
 
-  namespace {
-    std::string regimeTypeToString(RegimeType t) {
-      switch (t) {
-      case RegimeType::FreewayCruise: return "FreewayCruise";
-      case RegimeType::OverrunFuelCut: return "OverrunFuelCut";
-      case RegimeType::HighGearLowRpmBoost: return "HighGearLowRpmBoost";
-      case RegimeType::HighRpmVacuum: return "HighRpmVacuum";
-      case RegimeType::IdleStability: return "IdleStability";
-      case RegimeType::TransientTipIn: return "TransientTipIn";
-      default: return "Unknown";
-      }
-    }
-
-    RegimeType regimeTypeFromString(const std::string &s) {
-      if (s == "FreewayCruise") return RegimeType::FreewayCruise;
-      if (s == "OverrunFuelCut") return RegimeType::OverrunFuelCut;
-      if (s == "HighGearLowRpmBoost") return RegimeType::HighGearLowRpmBoost;
-      if (s == "HighRpmVacuum") return RegimeType::HighRpmVacuum;
-      if (s == "IdleStability") return RegimeType::IdleStability;
-      if (s == "TransientTipIn") return RegimeType::TransientTipIn;
-      return RegimeType::FreewayCruise;
-    }
-  } // anonymous namespace
-
-  nlohmann::json RegimeDef::toJson() const {
-    using nlohmann::json;
-    json j;
-    j["type"] = regimeTypeToString(type);
+  nlohmann::json RegimeDef::toJson() const
+  {
+    nlohmann::json j;
     j["id"] = id;
     j["displayName"] = displayName;
-
-    // color as array [r,g,b,a]
     j["color"] = { color.x, color.y, color.z, color.w };
-
     j["showShading"] = showShading;
     j["isBuiltIn"] = isBuiltIn;
 
-    auto putOptional = [&j](const char *key, double value) {
-      if (!std::isnan(value)) j[key] = value;
-      else j[key] = nullptr;
-      };
+    nlohmann::json boundsArr = nlohmann::json::array();
+    for (const auto &b : boundsRules) boundsArr.push_back(b.toJson());
+    j["boundsRules"] = boundsArr;
 
-    putOptional("minRpm", minRpm);
-    putOptional("maxRpm", maxRpm);
-    putOptional("minMap", minMap);
-    putOptional("maxMap", maxMap);
-    putOptional("minTps", minTps);
-    putOptional("maxTps", maxTps);
-    putOptional("minTpsDot", minTpsDot);
-    putOptional("maxTpsDot", maxTpsDot);
-    putOptional("minClt", minClt);
-
-    // Warnings (always numeric by default)
-    j["maxEgtWarning"] = maxEgtWarning;
-    j["maxCltWarning"] = maxCltWarning;
-    j["maxDutyWarning"] = maxDutyWarning;
+    nlohmann::json metricsArr = nlohmann::json::array();
+    for (const auto &m : configuredMetrics) metricsArr.push_back(m.toJson());
+    j["configuredMetrics"] = metricsArr;
 
     if (!customFormula.empty()) j["customFormula"] = customFormula;
-    else j["customFormula"] = nullptr;
-
     return j;
   }
 
-  RegimeDef RegimeDef::fromJson(const nlohmann::json &j) {
+  RegimeDef RegimeDef::fromJson(const nlohmann::json &j)
+  {
     RegimeDef d;
-
-    if (j.contains("type") && j["type"].is_string()) {
-      d.type = regimeTypeFromString(j["type"].get<std::string>());
-    } else {
-      d.type = RegimeType::FreewayCruise;
-    }
-
     if (j.contains("id") && j["id"].is_string()) d.id = j["id"].get<std::string>();
     if (j.contains("displayName") && j["displayName"].is_string()) d.displayName = j["displayName"].get<std::string>();
-
-    if (j.contains("color") && j["color"].is_array()) {
-      const auto &arr = j["color"];
-      float r = arr.size() > 0 && arr[0].is_number() ? arr[0].get<float>() : 0.2f;
-      float g = arr.size() > 1 && arr[1].is_number() ? arr[1].get<float>() : 0.6f;
-      float b = arr.size() > 2 && arr[2].is_number() ? arr[2].get<float>() : 0.9f;
-      float a = arr.size() > 3 && arr[3].is_number() ? arr[3].get<float>() : 0.25f;
-      d.color = ImVec4(r, g, b, a);
+    if (j.contains("color") && j["color"].is_array() && j["color"].size() == 4) {
+      d.color.x = j["color"][0].get<float>();
+      d.color.y = j["color"][1].get<float>();
+      d.color.z = j["color"][2].get<float>();
+      d.color.w = j["color"][3].get<float>();
     }
-
     if (j.contains("showShading") && j["showShading"].is_boolean()) d.showShading = j["showShading"].get<bool>();
     if (j.contains("isBuiltIn") && j["isBuiltIn"].is_boolean()) d.isBuiltIn = j["isBuiltIn"].get<bool>();
-
-    auto readOptional = [&j](const char *key) -> double {
-      if (j.contains(key) && j[key].is_number()) return j[key].get<double>();
-      return std::numeric_limits<double>::quiet_NaN();
-      };
-
-    d.minRpm = readOptional("minRpm");
-    d.maxRpm = readOptional("maxRpm");
-    d.minMap = readOptional("minMap");
-    d.maxMap = readOptional("maxMap");
-    d.minTps = readOptional("minTps");
-    d.maxTps = readOptional("maxTps");
-    d.minTpsDot = readOptional("minTpsDot");
-    d.maxTpsDot = readOptional("maxTpsDot");
-    d.minClt = readOptional("minClt");
-
-    if (j.contains("maxEgtWarning") && j["maxEgtWarning"].is_number()) d.maxEgtWarning = j["maxEgtWarning"].get<double>();
-    if (j.contains("maxCltWarning") && j["maxCltWarning"].is_number()) d.maxCltWarning = j["maxCltWarning"].get<double>();
-    if (j.contains("maxDutyWarning") && j["maxDutyWarning"].is_number()) d.maxDutyWarning = j["maxDutyWarning"].get<double>();
-
+    if (j.contains("boundsRules") && j["boundsRules"].is_array()) {
+      for (const auto &bJson : j["boundsRules"]) {
+        d.boundsRules.push_back(ChannelBoundRule::fromJson(bJson));
+      }
+    }
+    if (j.contains("configuredMetrics") && j["configuredMetrics"].is_array()) {
+      for (const auto &mJson : j["configuredMetrics"]) {
+        d.configuredMetrics.push_back(RegimeMetricRule::fromJson(mJson));
+      }
+    }
     if (j.contains("customFormula") && j["customFormula"].is_string()) d.customFormula = j["customFormula"].get<std::string>();
-
     return d;
+  }
+
+  nlohmann::json RegimeMetricRule::toJson() const
+  {
+    using nlohmann::json;
+    json j;
+    j["channelName"] = channelName;
+    switch (aggregation) {
+    case MetricAgg::Average: j["aggregation"] = "Average"; break;
+    case MetricAgg::Peak: j["aggregation"] = "Peak"; break;
+    case MetricAgg::Min: j["aggregation"] = "Min"; break;
+    default: j["aggregation"] = "Average"; break;
+    }
+    if (!customLabel.empty()) j["customLabel"] = customLabel;
+    else j["customLabel"] = nullptr;
+    return j;
+  }
+
+  RegimeMetricRule RegimeMetricRule::fromJson(const nlohmann::json &j)
+  {
+    RegimeMetricRule rule;
+    if (j.contains("channelName") && j["channelName"].is_string()) rule.channelName = j["channelName"].get<std::string>();
+    if (j.contains("aggregation") && j["aggregation"].is_string()) {
+      const std::string &aggStr = j["aggregation"].get<std::string>();
+      if (aggStr == "Average") rule.aggregation = MetricAgg::Average;
+      else if (aggStr == "Peak") rule.aggregation = MetricAgg::Peak;
+      else if (aggStr == "Min") rule.aggregation = MetricAgg::Min;
+    }
+    if (j.contains("customLabel") && j["customLabel"].is_string()) rule.customLabel = j["customLabel"].get<std::string>();
+    return rule;
+  }
+
+  nlohmann::json ChannelBoundRule::toJson() const
+  {
+    using nlohmann::json;
+    json j;
+    j["channelName"] = channelName;
+    j["minVal"] = minVal;
+    j["maxVal"] = maxVal;
+    return j;
+  }
+
+  ChannelBoundRule ChannelBoundRule::fromJson(const nlohmann::json &j)
+  {
+    ChannelBoundRule rule;
+    if (j.contains("channelName") && j["channelName"].is_string()) rule.channelName = j["channelName"].get<std::string>();
+    if (j.contains("minVal") && j["minVal"].is_number()) rule.minVal = j["minVal"].get<double>();
+    if (j.contains("maxVal") && j["maxVal"].is_number()) rule.maxVal = j["maxVal"].get<double>();
+    return rule;
   }
 
 } // namespace core
@@ -648,74 +673,72 @@ namespace core {
 
 namespace core {
 
+  enum class MetricAgg {
+    Average,
+    Peak,
+    Min
+  };
+
+  struct RegimeMetricRule {
+    std::string channelName; // Matches LogSession channel or ChannelMapping slot
+    MetricAgg aggregation = MetricAgg::Average;
+    std::string customLabel; // Optional override label (e.g., "Peak EGT"), defaults to channel name if empty
+
+    nlohmann::json toJson() const;
+    static RegimeMetricRule fromJson(const nlohmann::json &j);
+  };
+
   struct TimeInterval {
     double startSec = 0.0;
     double endSec = 0.0;
   };
 
-  enum class RegimeType {
-    FreewayCruise,
-    OverrunFuelCut,
-    HighGearLowRpmBoost,
-    HighRpmVacuum,
-    IdleStability,
-    TransientTipIn
+  struct ChannelBoundRule {
+    std::string channelName; // e.g., "RPM", "MAP", "TPSdot", or custom channel
+    double minVal = std::numeric_limits<double>::quiet_NaN();
+    double maxVal = std::numeric_limits<double>::quiet_NaN();
+
+    nlohmann::json toJson() const;
+    static ChannelBoundRule fromJson(const nlohmann::json &j);
   };
 
   struct RegimeDef {
-    RegimeType type;
-    std::string id;          // e.g., "freeway_cruise", "custom_boost_spool"
+    std::string id;          // e.g., "freeway_cruise", "custom_spool"
     std::string displayName; // e.g., "Freeway Cruise"
     ImVec4 color = ImVec4(0.2f, 0.6f, 0.9f, 0.25f);
     bool showShading = false;
-    bool isBuiltIn = false;  // Flag if you want to prevent deletion or reset to defaults
+    bool isBuiltIn = false;
 
-    // Core Channel Thresholds (leave NaN or nullopt if unused)
-    double minRpm = std::numeric_limits<double>::quiet_NaN();
-    double maxRpm = std::numeric_limits<double>::quiet_NaN();
-    double minMap = std::numeric_limits<double>::quiet_NaN();
-    double maxMap = std::numeric_limits<double>::quiet_NaN();
-    double minTps = std::numeric_limits<double>::quiet_NaN();
-    double maxTps = std::numeric_limits<double>::quiet_NaN();
-    double minTpsDot = std::numeric_limits<double>::quiet_NaN();
-    double maxTpsDot = std::numeric_limits<double>::quiet_NaN();
-    double minClt = std::numeric_limits<double>::quiet_NaN();
+    // Dynamic detection rules & card metrics
+    std::vector<ChannelBoundRule> boundsRules;
+    std::vector<RegimeMetricRule> configuredMetrics;
 
-    // Alert & Warning Thresholds (triggers card badges / warning messages)
+    // Warning alerts & ExprTk fallback
     double maxEgtWarning = 1600.0;
     double maxCltWarning = 220.0;
     double maxDutyWarning = 90.0;
-
-    // Optional: ExprTk Formula for complex logic beyond min/max bounds
-    // e.g., "[MAP] > 110.0 & [RPM] < 3000.0 & [TPS] > 50.0"
     std::string customFormula;
 
     nlohmann::json toJson() const;
     static RegimeDef fromJson(const nlohmann::json &j);
   };
 
+  struct CalculatedMetricValue {
+    RegimeMetricRule rule;
+    double value = 0.0;
+    std::string unit;
+  };
+
   struct RegimeSummary {
     RegimeDef def;
-
     std::vector<TimeInterval> intervals;
 
     size_t sampleCount = 0;
     double totalDwellTimeSec = 0.0;
     double percentageOfLog = 0.0;
 
-    // Aggregated Metrics
-    double avgRpm = 0.0;
-    double avgMap = 0.0;
-    double avgAfr = 0.0;
-    double avgTiming = 0.0;
-    double avgClt = 0.0;
-    double avgMat = 0.0;
-    double avgDuty = 0.0;
-    double peakEgt = 0.0;
-    double peakKnock = 0.0;
-    double peakClt = 0.0;
-    double peakMat = 0.0;
-    double peakDuty = 0.0;
+    // Evaluated results corresponding to def.configuredMetrics
+    std::vector<CalculatedMetricValue> metricResults;
 
     std::string warningMessage; // e.g., "High Cruise EGT: 1640°F Peak"
   };
@@ -1018,14 +1041,11 @@ namespace engine {
 
     constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
-    // Helper to extract channel values safely (returns NaN if index out of range or null)
     double getVal(const core::Channel *ch, size_t idx) {
       if (!ch || idx >= ch->values().size()) return kNaN;
       return ch->values()[idx];
     }
 
-    // Helper structure for pre-compiled ExprTk custom regime expressions
-// 1. Define CompiledRegimeExpr as move-constructible
     struct CompiledRegimeExpr {
       exprtk::symbol_table<double> symbolTable;
       exprtk::expression<double> expression;
@@ -1094,46 +1114,78 @@ namespace engine {
       }
     };
 
-    bool evaluateRegime(const core::RegimeDef &def, CompiledRegimeExpr &compiledExpr, size_t rowIndex, double rpm, double map, double tps, double tpsDot) {
-      // 1. If custom ExprTk formula is specified, evaluate it
+    bool evaluateRegime(const core::RegimeDef &def, CompiledRegimeExpr &compiledExpr, const core::LogSession &session, size_t rowIndex)
+    {
+      // 1. Custom ExprTk formula evaluation (if provided)
       if (!def.customFormula.empty()) {
         if (!compiledExpr.valid) return false;
-
         for (auto &bv : compiledExpr.boundVars) {
           double val = (*bv.data)[rowIndex];
           if (std::isnan(val)) return false;
           bv.currentVal = val;
         }
-
         double result = compiledExpr.expression.value();
         return (!std::isnan(result) && result != 0.0);
       }
 
-      // 2. Fast C++ path for standard min/max threshold bounds
-      if (!std::isnan(def.minRpm) && rpm < def.minRpm) return false;
-      if (!std::isnan(def.maxRpm) && rpm > def.maxRpm) return false;
-      if (!std::isnan(def.minMap) && map < def.minMap) return false;
-      if (!std::isnan(def.maxMap) && map > def.maxMap) return false;
-      if (!std::isnan(def.minTps) && tps < def.minTps) return false;
-      if (!std::isnan(def.maxTps) && tps > def.maxTps) return false;
-      if (!std::isnan(def.minTpsDot) && std::abs(tpsDot) < def.minTpsDot) return false;
-      if (!std::isnan(def.maxTpsDot) && std::abs(tpsDot) > def.maxTpsDot) return false;
+      // 2. Abstracted Channel Bounds evaluation
+      for (const auto &rule : def.boundsRules) {
+        const auto *ch = session.findChannel(rule.channelName);
+        if (!ch || rowIndex >= ch->values().size()) return false;
+
+        double val = ch->values()[rowIndex];
+        if (std::isnan(val)) return false;
+
+        if (!std::isnan(rule.minVal) && val < rule.minVal) return false;
+        if (!std::isnan(rule.maxVal) && val > rule.maxVal) return false;
+      }
 
       return true;
     }
 
   } // namespace
 
-  std::unordered_map<core::RegimeType, core::RegimeDef> engine::getDefaultRegimeDefs()
+  std::vector<core::RegimeDef> getDefaultRegimeDefs(const core::LogSession &session)
   {
-    return {
-      { core::RegimeType::FreewayCruise, { core::RegimeType::FreewayCruise, "freeway_cruise", "Freeway Cruise", ImVec4(0.2f, 0.7f, 1.0f, 0.25f), false, true, 2000, 4000, kNaN, 60, kNaN, 20, kNaN, 10, kNaN, 1600.0 /* EGT Warning */ } },
-      { core::RegimeType::OverrunFuelCut, { core::RegimeType::OverrunFuelCut, "overrun_fuel_cut", "Overrun Fuel Cut (DFCO)", ImVec4(0.8f, 0.3f, 0.3f, 0.25f), false, true, 1800, kNaN, kNaN, 22, kNaN, 2 } },
-      { core::RegimeType::HighGearLowRpmBoost, { core::RegimeType::HighGearLowRpmBoost, "lspi_risk", "Low RPM / High Boost (LSPI)", ImVec4(1.0f, 0.5f, 0.0f, 0.30f), false, true, 1500, 3000, 110, kNaN, 50, kNaN } },
-      { core::RegimeType::HighRpmVacuum, { core::RegimeType::HighRpmVacuum, "high_rpm_vacuum", "High RPM Vacuum / Decel", ImVec4(0.6f, 0.4f, 0.8f, 0.25f), false, true, 4500, kNaN, kNaN, 50, kNaN, 10 } },
-      { core::RegimeType::IdleStability, { core::RegimeType::IdleStability, "idle_stability", "Idle Stability", ImVec4(0.3f, 0.8f, 0.4f, 0.25f), false, true, 500, 1100, kNaN, 45, kNaN, 2 } },
-      { core::RegimeType::TransientTipIn, { core::RegimeType::TransientTipIn, "transient_tipin", "Transient Tip-In", ImVec4(0.9f, 0.9f, 0.2f, 0.25f), false, true, kNaN, kNaN, kNaN, kNaN, kNaN, kNaN, 35 } }
+    const auto cm = session.channelMapping();
+    std::vector<core::RegimeDef> defaults;
+    // 1. Freeway Cruise
+    core::RegimeDef cruise;
+    cruise.id = "freeway_cruise";
+    cruise.displayName = "Freeway Cruise";
+    cruise.color = ImVec4(0.2f, 0.7f, 1.0f, 0.25f);
+    cruise.isBuiltIn = true;
+    cruise.boundsRules = {
+      { cm.rpm, 2000.0, 4000.0 },
+      { cm.load, std::numeric_limits<double>::quiet_NaN(), 60.0 },
+      { cm.tps, std::numeric_limits<double>::quiet_NaN(), 20.0 }
     };
+    cruise.configuredMetrics = {
+      { cm.rpm, core::MetricAgg::Average, "Avg RPM" },
+      { cm.load, core::MetricAgg::Average, "Avg MAP" },
+      { cm.afr, core::MetricAgg::Average, "Avg AFR" },
+      { cm.timing, core::MetricAgg::Average, "Avg Timing" }
+    };
+    defaults.push_back(cruise);
+
+    // 2. Overrun Fuel Cut (DFCO)
+    core::RegimeDef dfco;
+    dfco.id = "overrun_fuel_cut";
+    dfco.displayName = "Overrun Fuel Cut (DFCO)";
+    dfco.color = ImVec4(0.8f, 0.3f, 0.3f, 0.25f);
+    dfco.isBuiltIn = true;
+    dfco.boundsRules = {
+      { cm.rpm, 1800.0, std::numeric_limits<double>::quiet_NaN() },
+      { cm.load, std::numeric_limits<double>::quiet_NaN(), 22.0 },
+      { cm.tps, std::numeric_limits<double>::quiet_NaN(), 2.0 }
+    };
+    dfco.configuredMetrics = {
+      { cm.rpm, core::MetricAgg::Average, "Avg RPM" },
+      { cm.load, core::MetricAgg::Average, "Avg MAP" }
+    };
+    defaults.push_back(dfco);
+
+    return defaults;
   }
 
   std::vector<core::RegimeSummary> RegimeAnalyzer::analyzeSession(const core::LogSession &session, const std::vector<core::RegimeDef> &definitions)
@@ -1143,10 +1195,7 @@ namespace engine {
 
     std::vector<core::RegimeDef> activeDefs = definitions;
     if (activeDefs.empty()) {
-      auto defaultMap = engine::getDefaultRegimeDefs();
-      for (auto &[type, def] : defaultMap) {
-        activeDefs.push_back(def);
-      }
+      activeDefs = getDefaultRegimeDefs(session);
     }
 
     const auto *timeSec = session.timeSec();
@@ -1155,87 +1204,82 @@ namespace engine {
     double totalLogTime = timeSec->back() - timeSec->front();
     if (totalLogTime <= 0.0) totalLogTime = 1.0;
 
-    // Find Channels
-    const auto &mapping = session.channelMapping();
-    const auto *rpmCh = session.findChannel(mapping.rpm);
-    const auto *mapCh = session.findChannel(mapping.load);
-    const auto *tpsCh = session.findChannel(mapping.tps);
-    const auto *tpsDotCh = session.findChannel(mapping.tpsDot);
-    const auto *afrCh = session.findChannel(mapping.afr);
-    const auto *egtCh = session.findChannel(mapping.egt);
-    const auto *pwCh = session.findChannel(mapping.pw);
-    const auto *timingCh = session.findChannel(mapping.timing);
-    const auto *cltCh = session.findChannel(mapping.clt);
-    const auto *matCh = session.findChannel(mapping.mat);
-    const auto *dutyCh = session.findChannel(mapping.duty);
+    const size_t numRegimes = activeDefs.size();
+    const size_t rowCount = session.rowCount();
 
-    // Initialize summaries array dynamically from activeDefs
-    std::vector<core::RegimeSummary> allRegimes(activeDefs.size());
-    std::vector<CompiledRegimeExpr> compiledExprs(activeDefs.size());
+    std::vector<core::RegimeSummary> allRegimes(numRegimes);
+    std::vector<CompiledRegimeExpr> compiledExprs(numRegimes);
 
-    for (size_t r = 0; r < activeDefs.size(); ++r) {
+    // Initialize accumulators
+    for (size_t r = 0; r < numRegimes; ++r) {
       allRegimes[r].def = activeDefs[r];
+
       if (!activeDefs[r].customFormula.empty()) {
         compiledExprs[r].compile(activeDefs[r].customFormula, session);
       }
-    }
 
-    const size_t numRegimes = allRegimes.size();
-    const size_t rowCount = session.rowCount();
+      // Pre-size and set unit meta for configured metrics
+      for (const auto &rule : activeDefs[r].configuredMetrics) {
+        core::CalculatedMetricValue res;
+        res.rule = rule;
+        const auto *ch = session.findChannel(rule.channelName);
+        res.unit = ch ? ch->unit() : "";
+
+        if (rule.aggregation == core::MetricAgg::Min) {
+          res.value = std::numeric_limits<double>::infinity();
+        } else if (rule.aggregation == core::MetricAgg::Peak) {
+          res.value = -std::numeric_limits<double>::infinity();
+        } else {
+          res.value = 0.0;
+        }
+        allRegimes[r].metricResults.push_back(res);
+      }
+    }
 
     std::vector<bool> matches(numRegimes, false);
     std::vector<double> matchStartTimes(numRegimes, 0.0);
     std::vector<bool> inInterval(numRegimes, false);
 
-    struct Acc {
-      double sumRpm = 0, sumMap = 0, sumAfr = 0, sumTiming = 0, sumClt = 0, sumMat = 0, sumDuty = 0;
-      double maxEgt = 0, maxClt = 0, maxMat = 0, maxDuty = 0;
-      size_t count = 0;
-    };
-    std::vector<Acc> accs(numRegimes);
-
+    // Process log row-by-row
     for (size_t i = 0; i < rowCount; ++i) {
       if (!session.isRowInCropRange(i)) continue;
 
       double t = (*timeSec)[i];
-      double rpm = getVal(rpmCh, i);
-      double map = getVal(mapCh, i);
-      double tps = getVal(tpsCh, i);
-      double tpsDot = getVal(tpsDotCh, i);
-      double afr = getVal(afrCh, i);
-      double egt = getVal(egtCh, i);
-      double clt = getVal(cltCh, i);
-      double mat = getVal(matCh, i);
-      double duty = getVal(dutyCh, i);
-      double timing = getVal(timingCh, i);
 
-      // Evaluate active regimes
       for (size_t r = 0; r < numRegimes; ++r) {
-        matches[r] = evaluateRegime(allRegimes[r].def, compiledExprs[r], i, rpm, map, tps, tpsDot);
+        matches[r] = evaluateRegime(allRegimes[r].def, compiledExprs[r], session, i);
 
         if (matches[r]) {
           if (!inInterval[r]) {
             inInterval[r] = true;
             matchStartTimes[r] = t;
           }
-          accs[r].sumRpm += std::isnan(rpm) ? 0 : rpm;
-          accs[r].sumMap += std::isnan(map) ? 0 : map;
-          accs[r].sumAfr += std::isnan(afr) ? 0 : afr;
-          accs[r].sumTiming += std::isnan(timing) ? 0 : timing;
-          accs[r].sumClt += std::isnan(clt) ? 0 : clt;
-          accs[r].sumMat += std::isnan(mat) ? 0 : mat;
-          accs[r].sumDuty += std::isnan(duty) ? 0 : duty;
 
-          if (!std::isnan(egt) && egt > accs[r].maxEgt) accs[r].maxEgt = egt;
-          if (!std::isnan(clt) && clt > accs[r].maxClt) accs[r].maxClt = clt;
-          if (!std::isnan(mat) && mat > accs[r].maxMat) accs[r].maxMat = mat;
-          if (!std::isnan(duty) && duty > accs[r].maxDuty) accs[r].maxDuty = duty;
-          accs[r].count++;
+          allRegimes[r].sampleCount++;
+
+          // Accumulate configured metric channels
+          for (size_t m = 0; m < allRegimes[r].metricResults.size(); ++m) {
+            auto &res = allRegimes[r].metricResults[m];
+            const auto *ch = session.findChannel(res.rule.channelName);
+            if (!ch) continue;
+
+            double val = getVal(ch, i);
+            if (std::isnan(val)) continue;
+
+            if (res.rule.aggregation == core::MetricAgg::Average) {
+              res.value += val;
+            } else if (res.rule.aggregation == core::MetricAgg::Peak) {
+              if (val > res.value) res.value = val;
+            } else if (res.rule.aggregation == core::MetricAgg::Min) {
+              if (val < res.value) res.value = val;
+            }
+          }
+
         } else {
           if (inInterval[r]) {
             inInterval[r] = false;
             double duration = t - matchStartTimes[r];
-            if (duration >= 0.5) { // Filter out micro noise < 0.5 sec
+            if (duration >= 0.5) { // Filter micro-transients < 0.5s
               allRegimes[r].intervals.push_back({ matchStartTimes[r], t });
             }
           }
@@ -1243,11 +1287,20 @@ namespace engine {
       }
     }
 
-    // Finalize Summaries
+    // Handle trailing active intervals at end of log
+    for (size_t r = 0; r < numRegimes; ++r) {
+      if (inInterval[r]) {
+        double duration = timeSec->back() - matchStartTimes[r];
+        if (duration >= 0.5) {
+          allRegimes[r].intervals.push_back({ matchStartTimes[r], timeSec->back() });
+        }
+      }
+    }
+
+    // Finalize summaries
     for (size_t r = 0; r < numRegimes; ++r) {
       auto &reg = allRegimes[r];
-      size_t count = accs[r].count;
-      reg.sampleCount = count;
+      size_t count = reg.sampleCount;
 
       for (const auto &inter : reg.intervals) {
         reg.totalDwellTimeSec += (inter.endSec - inter.startSec);
@@ -1255,29 +1308,16 @@ namespace engine {
       reg.percentageOfLog = (reg.totalDwellTimeSec / totalLogTime) * 100.0;
 
       if (count > 0) {
-        reg.avgRpm = accs[r].sumRpm / count;
-        reg.avgMap = accs[r].sumMap / count;
-        reg.avgAfr = accs[r].sumAfr / count;
-        reg.avgTiming = accs[r].sumTiming / count;
-        reg.avgClt = accs[r].sumClt / count;
-        reg.avgMat = accs[r].sumMat / count;
-        reg.avgDuty = accs[r].sumDuty / count;
-        reg.peakEgt = accs[r].maxEgt;
-        reg.peakClt = accs[r].maxClt;
-        reg.peakMat = accs[r].maxMat;
-        reg.peakDuty = accs[r].maxDuty;
-      }
-
-      // Context Warnings
-      if (!std::isnan(reg.def.maxEgtWarning) && reg.peakEgt > reg.def.maxEgtWarning) {
-        reg.warningMessage = "High EGT: " + std::to_string(static_cast<int>(reg.peakEgt)) + " °F (Limit: " +
-          std::to_string(static_cast<int>(reg.def.maxEgtWarning)) + " °F)";
-      } else if (!std::isnan(reg.def.maxCltWarning) && reg.peakClt > reg.def.maxCltWarning) {
-        reg.warningMessage = "High CLT: " + std::to_string(static_cast<int>(reg.peakClt)) + " °F";
-      } else if (!std::isnan(reg.def.maxDutyWarning) && reg.peakDuty > reg.def.maxDutyWarning) {
-        reg.warningMessage = "High Duty Cycle: " + std::to_string(static_cast<int>(reg.peakDuty)) + " %";
-      } else if (reg.def.type == core::RegimeType::HighGearLowRpmBoost && count > 0) {
-        reg.warningMessage = "High Engine Load at Low RPM";
+        for (auto &res : reg.metricResults) {
+          if (res.rule.aggregation == core::MetricAgg::Average) {
+            res.value /= static_cast<double>(count);
+          }
+          if (std::isinf(res.value)) res.value = 0.0;
+        }
+      } else {
+        for (auto &res : reg.metricResults) {
+          if (std::isinf(res.value)) res.value = 0.0;
+        }
       }
 
       if (reg.totalDwellTimeSec > 0.0) {
@@ -1302,11 +1342,11 @@ namespace engine {
 
 namespace engine {
 
-  std::unordered_map<core::RegimeType, core::RegimeDef> getDefaultRegimeDefs();
+  std::vector<core::RegimeDef> getDefaultRegimeDefs(const core::LogSession &session);
 
   class RegimeAnalyzer {
   public:
-    static std::vector<core::RegimeSummary> analyzeSession(const core::LogSession &session, const std::vector<core::RegimeDef> &definitions);
+    static std::vector<core::RegimeSummary> analyzeSession(const core::LogSession &session, const std::vector<core::RegimeDef> &definitions = {});
   };
 
 } // namespace engine
@@ -1317,59 +1357,9 @@ namespace engine {
 #include "engine/ve_analyzer.h"
 #include <cmath>
 #include <limits>
-
+#include <algorithm>
 
 namespace engine {
-
-  //void populateDefaultsForSession(VeAnalysisConfig &config, const core::LogSession &session) {
-  //  // Helper lambda to find the first channel present in the session from a candidate list
-  //  auto findFirstMatch = [&session](const std::vector<std::string> &candidates) -> std::string {
-  //    for (const auto &name : candidates) {
-  //      if (session.findChannel(name) != nullptr) {
-  //        return name;
-  //      }
-  //    }
-  //    return "";
-  //    };
-
-  //  // Candidate lists ordered by format prevalence
-  //  config.rpmChannel = findFirstMatch({
-  //    "RPM",                       // MegaSquirt / Haltech / Standard
-  //    "Filtered RPM",              // Haltech alternative
-  //    "Engine Speed"
-  //    });
-
-  //  config.loadChannel = findFirstMatch({
-  //    "MAP",                       // MegaSquirt
-  //    "Fuel - Load (MAP)",         // Haltech NSP[cite: 2]
-  //    "Manifold Pressure",         // Haltech raw[cite: 2]
-  //    "Ignition - Load (MAP)",     // Haltech alternative[cite: 2]
-  //    "Engine Demand",             // Haltech TPS-based load[cite: 2]
-  //    "TPS"                        // MegaSquirt Alpha-N
-  //    });
-
-  //  config.afrChannel = findFirstMatch({
-  //    "AFR",                       // MegaSquirt
-  //    "Wideband O2 1",             // Haltech[cite: 2]
-  //    "Wideband O2 Overall",       // Haltech[cite: 2]
-  //    "WBC1 Lambda",               // Haltech[cite: 2]
-  //    "AFR1",
-  //    "Lambda1"
-  //    });
-
-  //  config.tpsDotChannel = findFirstMatch({
-  //    "TPSdot",                    // MegaSquirt[cite: 1]
-  //    "Throttle Position Derivative", // Haltech[cite: 2]
-  //    "Throttle Position Derivative - Cable", // Haltech[cite: 2]
-  //    "MAPdot"
-  //    });
-
-  //  config.cltChannel = findFirstMatch({
-  //    "CLT",                       // MegaSquirt[cite: 1]
-  //    "Coolant Temperature"        // Haltech[cite: 2]
-  //    });
-  //}
-
 
   VeTransientFilter::VeTransientFilter(const core::LogSession &session, const VeAnalysisConfig &config)
     : config_(config)
@@ -1473,7 +1463,15 @@ namespace engine {
 
           if (0 < tgtAfr) {
             double oldVe = baselineVe.value(r, c);
-            double newVe = oldVe * (avgObservedAfr / tgtAfr);
+            double rawRatio = avgObservedAfr / tgtAfr;
+
+            double weightedRatio = 1.0 + config.adjustmentGain * (rawRatio - 1.0);
+
+            double minAllowedRatio = 1.0 - config.maxPercentChange;
+            double maxAllowedRatio = 1.0 + config.maxPercentChange;
+            double finalRatio = std::clamp(weightedRatio, minAllowedRatio, maxAllowedRatio);
+
+            double newVe = oldVe * finalRatio;
             correctedVe.setValue(r, c, newVe);
           }
         }
@@ -1484,6 +1482,7 @@ namespace engine {
   }
 
 } // namespace engine
+
 
 
 ## File: src/engine/ve_analyzer.h
@@ -1499,6 +1498,9 @@ namespace engine {
 
   struct VeAnalysisConfig {
     size_t minSamplesPerBin = 10;
+
+    double adjustmentGain = 0.50;  // Alpha (0.5 = apply 50% of correction)
+    double maxPercentChange = 0.10; // Hard cap (+/- 10% max adjustment per pass)
 
     // Transient & Environmental Filtering Rules
     bool enableTpsDotFilter = true;
@@ -3438,12 +3440,10 @@ namespace ui {
         workingDefs.clear();
 
         if (!userDefinitions_.empty()) {
-          // 1. If custom/edited definitions exist, use them directly
           workingDefs = userDefinitions_;
         } else {
-          // 2. Otherwise, seed from the full default built-in map
-          auto defaultMap = engine::getDefaultRegimeDefs();
-          for (auto &[type, def] : defaultMap) {
+          auto defaultMap = engine::getDefaultRegimeDefs(*session_);
+          for (const auto &def : defaultMap) {
             workingDefs.push_back(def);
           }
         }
@@ -3497,6 +3497,8 @@ namespace ui {
 
         ImGui::ColorEdit4("Highlight Color", (float *)&def.color, ImGuiColorEditFlags_NoAlpha);
 
+        ImGui::Spacing();
+        ImGui::Spacing();
         ImGui::SeparatorText("Alert & Warning Thresholds");
 
         // Helper for optional double inputs (NaN = Disabled)
@@ -3519,17 +3521,74 @@ namespace ui {
         inputOptionalDouble("Peak CLT Warning (°F)", def.maxCltWarning, 5.0);
         inputOptionalDouble("Peak Duty Warning (%)", def.maxDutyWarning, 5.0);
 
-        ImGui::SeparatorText("Detection Bounds (Leave unchecked if unused)");
+        {
+          ImGui::Spacing();
+          ImGui::Spacing();
+          ImGui::SeparatorText("Detection Bounds");
 
-        inputOptionalDouble("Min RPM", def.minRpm, 100.0);
-        inputOptionalDouble("Max RPM", def.maxRpm, 100.0);
-        inputOptionalDouble("Min MAP (kPa)", def.minMap, 5.0);
-        inputOptionalDouble("Max MAP (kPa)", def.maxMap, 5.0);
-        inputOptionalDouble("Min TPS (%)", def.minTps, 5.0);
-        inputOptionalDouble("Max TPS (%)", def.maxTps, 5.0);
-        inputOptionalDouble("Min TPSdot (%/s)", def.minTpsDot, 5.0);
-        inputOptionalDouble("Max TPSdot (%/s)", def.maxTpsDot, 5.0);
+          for (int i = 0; i < static_cast<int>(def.boundsRules.size()); ++i) {
+            ImGui::PushID(i);
+            auto &rule = def.boundsRules[i];
 
+            // Channel Selector
+            ImGui::SetNextItemWidth(150.0f);
+            if (ImGui::BeginCombo("##bounds_ch", rule.channelName.c_str())) {
+              for (const auto &ch : session_->channels()) {
+                if (ImGui::Selectable(ch.name().c_str(), ch.name() == rule.channelName)) {
+                  rule.channelName = ch.name();
+                }
+              }
+              ImGui::EndCombo();
+            }
+
+            ImGui::SameLine();
+
+            // Min Bound Input
+            bool hasMin = !std::isnan(rule.minVal);
+            if (ImGui::Checkbox("Min##has_min", &hasMin)) {
+              rule.minVal = hasMin ? 0.0 : std::numeric_limits<double>::quiet_NaN();
+            }
+            ImGui::BeginDisabled(!hasMin);
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(90.0f);
+            ImGui::InputDouble("##min_val", &rule.minVal, 0.0, 0.0, "%.1f");
+            ImGui::EndDisabled();
+
+            ImGui::SameLine();
+
+            // Max Bound Input
+            bool hasMax = !std::isnan(rule.maxVal);
+            if (ImGui::Checkbox("Max##has_max", &hasMax)) {
+              rule.maxVal = hasMax ? 0.0 : std::numeric_limits<double>::quiet_NaN();
+            }
+            
+            ImGui::BeginDisabled(!hasMax);
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(90.0f);
+            ImGui::InputDouble("##max_val", &rule.maxVal, 0.0, 0.0, "%.1f");
+            ImGui::EndDisabled();
+
+            ImGui::SameLine();
+            if (ui::UI::ButtonDanger("X##del_bound")) {
+              def.boundsRules.erase(def.boundsRules.begin() + i);
+              ImGui::PopID();
+              break;
+            }
+
+            ImGui::PopID();
+          }
+
+          if (ImGui::Button("+ Add Detection Bound Rule")) {
+            core::ChannelBoundRule newRule;
+            if (!session_->channels().empty()) {
+              newRule.channelName = session_->channels().front().name();
+            }
+            def.boundsRules.push_back(newRule);
+          }
+        }
+
+        ImGui::Spacing();
+        ImGui::Spacing();
         ImGui::SeparatorText("Advanced Formula (ExprTk)");
         char formulaBuf[256];
         std::snprintf(formulaBuf, sizeof(formulaBuf), "%s", def.customFormula.c_str());
@@ -3538,7 +3597,60 @@ namespace ui {
         }
         ImGui::TextDisabled("Overrides numeric bounds above if non-empty.");
 
+        {
+          ImGui::Spacing();
+          ImGui::Spacing();
+          ImGui::SeparatorText("Card Metrics (From Session Channels)");
+
+          // Render existing configured metric rules
+          for (int m = 0; m < static_cast<int>(def.configuredMetrics.size()); ++m) {
+            ImGui::PushID(m);
+            auto &rule = def.configuredMetrics[m];
+
+            // 1. Channel Selector Combo
+            ImGui::SetNextItemWidth(160.0f);
+            if (ImGui::BeginCombo("##ch_combo", rule.channelName.empty() ? "Select Channel..." : rule.channelName.c_str())) {
+              for (const auto &ch : session_->channels()) {
+                if (ImGui::Selectable(ch.name().c_str(), ch.name() == rule.channelName)) {
+                  rule.channelName = ch.name();
+                }
+              }
+              ImGui::EndCombo();
+            }
+
+            ImGui::SameLine();
+
+            // 2. Aggregation Mode Combo
+            ImGui::SetNextItemWidth(100.0f);
+            const char *aggNames[] = { "Average", "Peak / Max", "Min" };
+            int currentAgg = static_cast<int>(rule.aggregation);
+            if (ImGui::Combo("##agg_combo", &currentAgg, aggNames, IM_ARRAYSIZE(aggNames))) {
+              rule.aggregation = static_cast<core::MetricAgg>(currentAgg);
+            }
+
+            ImGui::SameLine();
+
+            // 3. Remove Button
+            if (ui::UI::ButtonDanger("X##remove_metric")) {
+              def.configuredMetrics.erase(def.configuredMetrics.begin() + m);
+              ImGui::PopID();
+              break;
+            }
+
+            ImGui::PopID();
+          }
+
+          if (ImGui::Button("+ Add Metric Channel")) {
+            core::RegimeMetricRule newRule;
+            if (!session_->channels().empty()) {
+              newRule.channelName = session_->channels().front().name();
+            }
+            def.configuredMetrics.push_back(newRule);
+          }
+        }
+
         if (!def.isBuiltIn) {
+          ImGui::Spacing();
           ImGui::Spacing();
           ImGui::Separator();
           if (ui::UI::ButtonDanger("Delete Regime")) {
@@ -3614,7 +3726,6 @@ namespace ui {
     }
 
     // --- Regime Cards Loop ---
-// --- Regime Cards Loop ---
     for (auto &reg : summaries) {
       ImGui::PushID(reg.def.id.c_str());
 
@@ -3624,7 +3735,7 @@ namespace ui {
       bool hasAlert = !reg.warningMessage.empty();
       if (hasAlert) {
         // Append critical alert text to the header title
-        headerLabel += "  [ " + std::string(ICON_FA_TRIANGLE_EXCLAMATION) + " " + dtostr(reg.peakEgt, 0) + " °F ]";
+        headerLabel += "  [ " + std::string(ICON_FA_TRIANGLE_EXCLAMATION)/* + " " + dtostr(reg.getMetric(core::RegimeMetric::PeakEgt), 0) + " °F ]"*/;
 
         // Highlight header text color red/orange if critical alert is present
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.45f, 1.0f));
@@ -3673,47 +3784,45 @@ namespace ui {
         ImGui::TextDisabled("Dwell Time: %s s across %zu intervals", dtostr(reg.totalDwellTimeSec, 1).c_str(), reg.intervals.size());
         ImGui::Spacing();
 
-        // Compact 2-Pair Key/Value Grid
-        if (ImGui::BeginTable("CompactMetrics", 4, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV)) {
-          ImGui::TableSetupColumn("K1", ImGuiTableColumnFlags_WidthFixed, 65.0f);
-          ImGui::TableSetupColumn("V1", ImGuiTableColumnFlags_WidthFixed, 60.0f);
-          ImGui::TableSetupColumn("K2", ImGuiTableColumnFlags_WidthFixed, 65.0f);
-          ImGui::TableSetupColumn("V2", ImGuiTableColumnFlags_WidthFixed, 60.0f);
+        if (!reg.metricResults.empty()) {
+          if (ImGui::BeginTable("DynamicChannelMetrics", 4, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV)) {
+            ImGui::TableSetupColumn("K1", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+            ImGui::TableSetupColumn("V1", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+            ImGui::TableSetupColumn("K2", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+            ImGui::TableSetupColumn("V2", ImGuiTableColumnFlags_WidthStretch, 1.0f);
 
-          // Row 1: Avg RPM & Avg MAP
-          ImGui::TableNextRow();
-          ImGui::TableSetColumnIndex(0); ImGui::TextDisabled("Avg RPM");
-          ImGui::TableSetColumnIndex(1); ImGui::Text("%s", dtostr(reg.avgRpm, 0).c_str());
-          ImGui::TableSetColumnIndex(2); ImGui::TextDisabled("Avg MAP");
-          ImGui::TableSetColumnIndex(3); ImGui::Text("%s kPa", dtostr(reg.avgMap, 1).c_str());
+            for (size_t i = 0; i < reg.metricResults.size(); ++i) {
+              const auto &res = reg.metricResults[i];
 
-          // Row 2: Avg AFR & Avg Timing
-          ImGui::TableNextRow();
-          ImGui::TableSetColumnIndex(0); ImGui::TextDisabled("Avg AFR");
-          ImGui::TableSetColumnIndex(1); ImGui::Text("%s", dtostr(reg.avgAfr, 2).c_str());
-          ImGui::TableSetColumnIndex(2); ImGui::TextDisabled("Avg Timing");
-          ImGui::TableSetColumnIndex(3); ImGui::Text("%s°", dtostr(reg.avgTiming, 1).c_str());
+              if (i % 2 == 0) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+              } else {
+                ImGui::TableSetColumnIndex(2);
+              }
 
-          // Row 3: Engine Temperatures
-          ImGui::TableNextRow();
-          ImGui::TableSetColumnIndex(0); ImGui::TextDisabled("Avg CLT");
-          ImGui::TableSetColumnIndex(1); ImGui::Text("%s °F", dtostr(reg.avgClt, 0).c_str());
-          ImGui::TableSetColumnIndex(2); ImGui::TextDisabled("Avg MAT");
-          ImGui::TableSetColumnIndex(3); ImGui::Text("%s °F", dtostr(reg.avgMat, 0).c_str());
+              // Display Label (e.g., "Peak EGT" or "Avg AFR")
+              std::string aggPrefix = (res.rule.aggregation == core::MetricAgg::Peak) ? "Peak " :
+                (res.rule.aggregation == core::MetricAgg::Min) ? "Min " : "Avg ";
+              std::string label = res.rule.customLabel.empty() ? (aggPrefix + res.rule.channelName) : res.rule.customLabel;
+              //float columnWidth = ImGui::GetContentRegionAvail().x;
+              //float textWidth = ImGui::CalcTextSize(label.c_str()).x;
+              //if (columnWidth > textWidth) {
+              //  ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (columnWidth - textWidth));
+              //}
+              ImGui::TextDisabled("%s", label.c_str());
 
-          // Row 4: Fuel Headroom & Thermal Peak
-          ImGui::TableNextRow();
-          ImGui::TableSetColumnIndex(0); ImGui::TextDisabled("Peak Duty");
-          ImGui::TableSetColumnIndex(1); ImGui::Text("%s%%", dtostr(reg.peakDuty, 1).c_str());
-          ImGui::TableSetColumnIndex(2); ImGui::TextDisabled("Peak EGT");
-          ImGui::TableSetColumnIndex(3);
-          if (reg.peakEgt > 1600.0) {
-            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s °F", dtostr(reg.peakEgt, 0).c_str());
-          } else {
-            ImGui::Text("%s °F", dtostr(reg.peakEgt, 0).c_str());
+              // Display Value
+              ImGui::TableSetColumnIndex((i % 2 == 0) ? 1 : 3);
+              if (res.unit.empty()) {
+                ImGui::Text("%.1f", res.value);
+              } else {
+                ImGui::Text("%.1f %s", res.value, res.unit.c_str());
+              }
+            }
+
+            ImGui::EndTable();
           }
-
-          ImGui::EndTable();
         }
 
         ImGui::Spacing();
@@ -3749,30 +3858,23 @@ namespace ui {
   nlohmann::json DriveRegimePanel::saveState() const
   {
     auto j = PlotPanel::saveState();
-
-    // Save the full list of definitions (which includes their active color/shading properties)
     nlohmann::json defsArray = nlohmann::json::array();
     for (const auto &def : userDefinitions_) {
       defsArray.push_back(def.toJson());
     }
     j["definitions"] = defsArray;
-
     return j;
   }
 
   void DriveRegimePanel::loadState(const nlohmann::json &state)
   {
     PlotPanel::loadState(state);
-
-    // 1. Restore all Regime Definitions via RegimeDef::fromJson()
     userDefinitions_.clear();
     if (state.contains("definitions") && state["definitions"].is_array()) {
       for (const auto &dJson : state["definitions"]) {
         userDefinitions_.push_back(core::RegimeDef::fromJson(dJson));
       }
     }
-
-    // 2. Re-evaluate session with restored definitions
     reanalyze();
   }
 
@@ -5400,9 +5502,9 @@ namespace ui {
     if (cols == 0 || rows == 0) {
       ImGui::TextDisabled("No breakpoints defined yet.");
       return;
-    }
-
-    // --- 1. Compute Min/Max for Table Heatmap Normalization ---
+    }       
+    
+    // --- 1. Compute Min/Max Heatmap Values ---
     double minVal = (std::numeric_limits<double>::max)();
     double maxVal = -(std::numeric_limits<double>::max)();
 
@@ -5415,11 +5517,9 @@ namespace ui {
     }
     if (maxVal <= minVal) maxVal = minVal + 1.0;
 
-    // Thermal Heatmap Gradient Generator (Cool Blue -> Green -> Yellow -> Orange -> Red)
     auto getHeatmapColor = [&](double value) -> ImU32 {
       float t = static_cast<float>((value - minVal) / (maxVal - minVal));
-      if (t < 0.0f) t = 0.0f;
-      if (t > 1.0f) t = 1.0f;
+      t = std::clamp(t, 0.0f, 1.0f);
 
       float r = 0.0f, g = 0.0f, b = 0.0f;
       if (t < 0.25f) {
@@ -5435,8 +5535,6 @@ namespace ui {
         float f = (t - 0.75f) / 0.25f;
         r = 1.0f; g = 0.4f * (1.0f - f); b = 0.0f;
       }
-
-      // Use alpha = 0.35f so cell text and selections remain crisp and readable
       return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, 0.35f));
       };
 
@@ -5445,6 +5543,12 @@ namespace ui {
       ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
 
     std::string tableId = "ValueGrid###" + title() + "_" + tableUniqueId_;
+
+    // Track new hover state for current frame
+    const ImU32 headerHighlightColor = IM_COL32(230, 160, 30, 220);
+    int nextHoveredRow = -1;
+    int nextHoveredCol = -1;
+
     if (ImGui::BeginTable(tableId.c_str(), static_cast<int>(cols + 1), flags, ImVec2(0.0f, 400.0f))) {
       ImGui::TableSetupScrollFreeze(1, 1);
       ImGui::TableSetupColumn("Load \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
@@ -5455,118 +5559,119 @@ namespace ui {
       }
       ImGui::TableHeadersRow();
 
+      // Highlight the hovered X-Axis column header
+      if (hoveredGridCol_ >= 0 && hoveredGridCol_ < static_cast<int>(cols)) {
+        ImGui::TableSetColumnIndex(hoveredGridCol_ + 1);
+        ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, headerHighlightColor);
+      }
+
       ImGuiIO &io = ImGui::GetIO();
 
       for (size_t r = rows; r-- > 0; ) {
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0);
-        ImGui::Text("%s", formatValue(yBreakpoints[r], yDecimalPlaces_).c_str());
+
+        if (hoveredGridRow_ == static_cast<int>(r)) {
+          ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, headerHighlightColor);
+          ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", formatValue(yBreakpoints[r], yDecimalPlaces_).c_str());
+        } else {
+          ImGui::Text("%s", formatValue(yBreakpoints[r], yDecimalPlaces_).c_str());
+        }
 
         for (size_t c = 0; c < cols; ++c) {
           ImGui::TableSetColumnIndex(static_cast<int>(c + 1));
           ImGui::PushID(static_cast<int>(r * cols + c));
 
           double v = table_.value(r, c);
+          bool selected = isCellSelected(static_cast<int>(r), static_cast<int>(c));
 
-          const bool isPreviewingExtrapolation = showPreview_ && showExtrapolateModal_;
-
-          if (isPreviewingExtrapolation && selectedCells_.count({ static_cast<int>(r), static_cast<int>(c) })) {
-            // Highlight extrapolated cells in purple/magenta
-            ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, IM_COL32(180, 50, 200, 150));
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%.2f", v); // Yellow text for changes
+          // Background color logic
+          if (selected) {
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImGuiCol_HeaderActive));
           } else {
-
-            bool selected = isCellSelected(static_cast<int>(r), static_cast<int>(c));
-
-            // --- 2. Apply Cell Heatmap Background ---
-            if (selected) {
-              ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(ImGuiCol_HeaderActive));
+            if (customHeatmapColorFunc_) {
+              ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, customHeatmapColorFunc_(v, r, c));
             } else {
-              if (customHeatmapColorFunc_) {
-                ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, customHeatmapColorFunc_(v, r, c));
-              } else {
-                ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, getHeatmapColor(v));
+              ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, getHeatmapColor(v));
+            }
+          }
+
+          // Cell editing or selectable rendering
+          if (editingRow_ == static_cast<int>(r) && editingCol_ == static_cast<int>(c)) {
+            ImGui::SetNextItemWidth(55.0f);
+            ImGui::SetKeyboardFocusHere();
+
+            bool committed = ImGui::InputDouble("##cell_edit", &v, 0.0, 0.0, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue);
+            if (committed) {
+              table_.setValue(r, c, v);
+              notifyDataChanged();
+              editingRow_ = -1;
+              editingCol_ = -1;
+            } else if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsItemDeactivated()) {
+              editingRow_ = -1;
+              editingCol_ = -1;
+            }
+          } else {
+            char cellText[32];
+            std::snprintf(cellText, sizeof(cellText), "%.2f", v);
+
+            bool hasCustomTextColor = false;
+            if (customTextColorFunc_) {
+              if (auto cclr = customTextColorFunc_(v, r, c)) {
+                ImGui::PushStyleColor(ImGuiCol_Text, *cclr);
+                hasCustomTextColor = true;
               }
             }
 
-            if (editingRow_ == static_cast<int>(r) && editingCol_ == static_cast<int>(c)) {
-              ImGui::SetNextItemWidth(55.0f);
-              ImGui::SetKeyboardFocusHere();
+            ImGuiSelectableFlags selFlags = ImGuiSelectableFlags_AllowDoubleClick;
+            ImGui::Selectable(cellText, selected, selFlags);
 
-              bool committed = ImGui::InputDouble("##cell_edit", &v, 0.0, 0.0, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue);
+            if (hasCustomTextColor) {
+              ImGui::PopStyleColor();
+            }
 
-              if (committed) {
-                table_.setValue(r, c, v);
-                notifyDataChanged();
-                editingRow_ = -1;
-                editingCol_ = -1;
-              } else if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsItemDeactivated()) {
-                editingRow_ = -1;
-                editingCol_ = -1;
-              }
-            } else {
-              char cellText[32];
-              std::snprintf(cellText, sizeof(cellText), "%.2f", v);
+            // Capture Hover State for Axis Highlighting
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
+              nextHoveredRow = static_cast<int>(r);
+              nextHoveredCol = static_cast<int>(c);
 
-              bool hasCustomTextColor = false;
-              if (customTextColorFunc_) {
-                if (auto cclr = customTextColorFunc_(v, r, c)) {
-                  ImGui::PushStyleColor(ImGuiCol_Text, *cclr);
-                  hasCustomTextColor = true;
-                }
+              // Selection Logic
+              if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && anchorRow_ >= 0 && !io.KeyCtrl && !io.KeyShift) {
+                selectRectangularRegion(anchorRow_, anchorCol_, static_cast<int>(r), static_cast<int>(c));
               }
 
-              ImGuiSelectableFlags selFlags = ImGuiSelectableFlags_AllowDoubleClick;
-              ImGui::Selectable(cellText, selected, selFlags);
-
-              if (hasCustomTextColor) {
-                ImGui::PopStyleColor();
-              }
-
-              bool isHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
-              bool isSelectionLogic = false;
-              if (isHovered) {
-                // 1. Drag Select
-                if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && anchorRow_ >= 0 && !io.KeyCtrl && !io.KeyShift) {
-                  selectRectangularRegion(anchorRow_, anchorCol_, static_cast<int>(r), static_cast<int>(c));
-                  isSelectionLogic = true;
-                }
-
-                // 2. Initial Click Down
-                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                  if (io.KeyCtrl) {
-                    std::pair<int, int> cellKey = { static_cast<int>(r), static_cast<int>(c) };
-                    if (selectedCells_.count(cellKey)) {
-                      selectedCells_.erase(cellKey);
-                    } else {
-                      selectedCells_.insert(cellKey);
-                    }
-                    anchorRow_ = static_cast<int>(r);
-                    anchorCol_ = static_cast<int>(c);
-                  } else if (io.KeyShift && anchorRow_ >= 0) {
-                    selectRectangularRegion(anchorRow_, anchorCol_, static_cast<int>(r), static_cast<int>(c));
+              if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                if (io.KeyCtrl) {
+                  std::pair<int, int> cellKey = { static_cast<int>(r), static_cast<int>(c) };
+                  if (selectedCells_.count(cellKey)) {
+                    selectedCells_.erase(cellKey);
                   } else {
-                    clearSelection();
-                    anchorRow_ = static_cast<int>(r);
-                    anchorCol_ = static_cast<int>(c);
-                    selectedCells_.insert({ anchorRow_, anchorCol_ });
+                    selectedCells_.insert(cellKey);
                   }
+                  anchorRow_ = static_cast<int>(r);
+                  anchorCol_ = static_cast<int>(c);
+                } else if (io.KeyShift && anchorRow_ >= 0) {
+                  selectRectangularRegion(anchorRow_, anchorCol_, static_cast<int>(r), static_cast<int>(c));
+                } else {
+                  clearSelection();
+                  anchorRow_ = static_cast<int>(r);
+                  anchorCol_ = static_cast<int>(c);
+                  selectedCells_.insert({ anchorRow_, anchorCol_ });
+                }
 
-                  if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                    editingRow_ = static_cast<int>(r);
-                    editingCol_ = static_cast<int>(c);
-                  }
-                  isSelectionLogic = true;
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                  editingRow_ = static_cast<int>(r);
+                  editingCol_ = static_cast<int>(c);
                 }
               }
+            }
 
-              if (ImGui::IsItemHovered() && customHoverTooltipFunc_) {
-                auto tooltip = customHoverTooltipFunc_(v, r, c);
-                if (!tooltip.empty()) {
-                  ImGui::BeginTooltip();
-                  ImGui::TextUnformatted(tooltip.c_str());
-                  ImGui::EndTooltip();
-                }
+            if (ImGui::IsItemHovered() && customHoverTooltipFunc_) {
+              auto tooltip = customHoverTooltipFunc_(v, r, c);
+              if (!tooltip.empty()) {
+                ImGui::BeginTooltip();
+                ImGui::TextUnformatted(tooltip.c_str());
+                ImGui::EndTooltip();
               }
             }
           }
@@ -5575,6 +5680,10 @@ namespace ui {
       }
       ImGui::EndTable();
     }
+
+    // Store coordinate state for the next frame
+    hoveredGridRow_ = nextHoveredRow;
+    hoveredGridCol_ = nextHoveredCol;
   }
 
   void TableEditorPanel::render3DSurfaceMesh()
@@ -6045,6 +6154,9 @@ namespace ui {
     int slopeMode_ = 0;
     float guessTolerance_ = 10.f;
     float manualSlope_ = 1.f;
+
+    int hoveredGridRow_ = -1;
+    int hoveredGridCol_ = -1;
 
     std::vector<double> axisEditorValues_;
     int axisEditorBinCount_ = 0;
@@ -6746,8 +6858,20 @@ namespace ui {
         ImGui::PopStyleColor();
 
         if (ImGui::IsItemHovered()) {
-          ImGui::SetTooltip("%s (%zu events)\nDwell: %.1f s | Peak EGT: %.0f °F\nClick to jump to next event (cycles)",
-            reg.def.displayName.c_str(), reg.intervals.size(), reg.totalDwellTimeSec, reg.peakEgt);
+          if (!reg.warningMessage.empty()) {
+            // Show warning banner first if present
+            ImGui::SetTooltip("%s (%zu events)\nDwell: %.1f s\nWarning: %s\nClick to jump to next event (cycles)",
+              reg.def.displayName.c_str(),
+              reg.intervals.size(),
+              reg.totalDwellTimeSec,
+              reg.warningMessage.c_str());
+          } else {
+            // Standard tooltip
+            ImGui::SetTooltip("%s (%zu events)\nDwell: %.1f s\nClick to jump to next event (cycles)",
+              reg.def.displayName.c_str(),
+              reg.intervals.size(),
+              reg.totalDwellTimeSec);
+          }
         }
         ImGui::SameLine();
       }
@@ -6899,95 +7023,84 @@ namespace ui {
     int maxPerPlot = std::max(1, maxChannelsPerPlot_);
     int subplotCount = (numActive > 0) ? ((numActive + maxPerPlot - 1) / maxPerPlot) : 1;
 
-    // Calculate new X limits BEFORE starting subplots if a jump was requested
+    // Capture state BEFORE the loop so all subplots behave identically this frame
+    bool doJump = pendingXAxisCenter_;
+    bool doLoadLimits = bPendingAfterLoad_;
+
     double newMinX = 0.0;
     double newMaxX = 0.0;
-    if (pendingXAxisCenter_) {
-      // Pick a reasonable view span (e.g., 20 seconds, or 10% of total log duration)
-      double totalDuration = timeSec.back() - timeSec.front();
-      double viewSpan = (totalDuration > 0.0) ? (totalDuration * 0.10) : 20.0;
-      if (viewSpan < 1.0) viewSpan = 1.0; // clamp minimum span
 
-      newMinX = targetXCenterTime_ - (viewSpan * 0.5);
-      newMaxX = targetXCenterTime_ + (viewSpan * 0.5);
+    if (doJump) {
+      double currentSpan = xAxisMax_ - xAxisMin_;
+      if (currentSpan <= 0.1) {
+        double totalDuration = (cachedTimeSec_ && !cachedTimeSec_->empty()) ? (cachedTimeSec_->back() - cachedTimeSec_->front()) : 20.0;
+        currentSpan = (totalDuration > 0.0) ? (totalDuration * 0.10) : 20.0;
+        if (currentSpan < 1.0) currentSpan = 1.0;
+      }
+      double halfSpan = currentSpan * 0.5;
+      newMinX = targetXCenterTime_ - halfSpan;
+      newMaxX = targetXCenterTime_ + halfSpan;
     }
 
-    bool renderOverlay = false;
-    ImVec2 lastPlotPos, lastPlotSize;
-
-    if (ImPlot::BeginSubplots("##TimeSeriesSubplots", subplotCount, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkAllX | ImPlotSubplotFlags_NoLegend)) {
+    if (ImPlot::BeginSubplots("##TimeSeriesSubplots", subplotCount, 1, ImVec2(-1, -1),
+      ImPlotSubplotFlags_LinkAllX | ImPlotSubplotFlags_NoLegend)) {
       for (int plotIdx = 0; plotIdx < subplotCount; ++plotIdx) {
         std::string plotID = "##Plot_" + std::to_string(plotIdx);
 
-        if (pendingXAxisCenter_) {
+        if (doJump) {
           ImPlot::SetNextAxisLimits(ImAxis_X1, newMinX, newMaxX, ImGuiCond_Always);
-        } else if (bPendingAfterLoad_) {
+        } else if (doLoadLimits) {
           ImPlot::SetNextAxisLimits(ImAxis_X1, xAxisMin_, xAxisMax_, ImGuiCond_Always);
           ImPlot::SetNextAxisLimits(ImAxis_Y1, yAxisMin_, yAxisMax_, ImGuiCond_Always);
-          bPendingAfterLoad_ = false;
         }
 
         if (ImPlot::BeginPlot(plotID.c_str(), ImVec2(-1, -1))) {
           ImPlot::SetupAxes("Time (s)", "Normalized", ImPlotAxisFlags_None, ImPlotAxisFlags_NoTickLabels);
 
-          auto plotLimits = ImPlot::GetPlotLimits();
-          xAxisMin_ = plotLimits.X.Min;
-          xAxisMax_ = plotLimits.X.Max;
-          yAxisMin_ = plotLimits.Y.Min;
-          yAxisMax_ = plotLimits.Y.Max;
-
-          if (hasRealData && numActive > 0) {
-            int startIdx = plotIdx * maxPerPlot;
-            int endIdx = std::min(startIdx + maxPerPlot, numActive);
-
-            for (int i = startIdx; i < endIdx; ++i) {
-              const auto *ch = activeChannels[i];
-              const auto &rawVals = ch->values();
-              if (rawVals.empty()) continue;
-
-              double minVal = channelStates_[ch->name()].cachedMin;
-              double maxVal = channelStates_[ch->name()].cachedMax;
-              double range = maxVal - minVal;
-
-              std::vector<double> normVals(rawVals.size());
-              for (size_t s = 0; s < rawVals.size(); ++s) {
-                normVals[s] = (range > 1e-6) ? ((rawVals[s] - minVal) / range) : 0.5;
-              }
-
-              ImPlotSpec spec;
-              spec.LineColor = channelStates_[ch->name()].color;
-              ImPlot::PlotLine(ch->name().c_str(), timeSec.data(), normVals.data(), static_cast<int>(timeSec.size()), spec);
-
-              if (session_ != nullptr && session_->cropRange().active) {
-                double cropStart = session_->cropRange().startSec;
-                double cropEnd = session_->cropRange().endSec;
-
-                ImPlot::DragLineX(101, &cropStart, ImVec4(0.2f, 0.8f, 1.0f, 0.8f), 1.5f, ImPlotDragToolFlags_NoInputs);
-                ImPlot::TagX(cropStart, ImVec4(0.2f, 0.8f, 1.0f, 0.8f), "Start");
-
-                ImPlot::DragLineX(102, &cropEnd, ImVec4(0.2f, 0.8f, 1.0f, 0.8f), 1.5f, ImPlotDragToolFlags_NoInputs);
-                ImPlot::TagX(cropEnd, ImVec4(0.2f, 0.8f, 1.0f, 0.8f), "End");
-              }
-            }
-          } else {
-            ImPlot::PlotLine("Placeholder", timeSec.data(), placeholderValue_.data(),
-              static_cast<int>(timeSec.size()));
+          // Store bounds only from the primary (first) subplot to prevent cross-contamination
+          if (plotIdx == 0) {
+            auto plotLimits = ImPlot::GetPlotLimits();
+            xAxisMin_ = plotLimits.X.Min;
+            xAxisMax_ = plotLimits.X.Max;
+            yAxisMin_ = plotLimits.Y.Min;
+            yAxisMax_ = plotLimits.Y.Max;
           }
 
+          // Determine channel subset for THIS specific subplot
+          int startIdx = plotIdx * maxPerPlot;
+          int endIdx = std::min(startIdx + maxPerPlot, numActive);
+
+          std::vector<const core::Channel *> subplotChannels;
+          if (hasRealData && numActive > 0) {
+            for (int i = startIdx; i < endIdx; ++i) {
+              subplotChannels.push_back(activeChannels[i]);
+            }
+          }
+
+          // Plot channels for this subplot
+          for (const auto *ch : subplotChannels) {
+            const auto &rawVals = ch->values();
+            if (rawVals.empty()) continue;
+
+            double minVal = channelStates_[ch->name()].cachedMin;
+            double maxVal = channelStates_[ch->name()].cachedMax;
+            double range = maxVal - minVal;
+
+            std::vector<double> normVals(rawVals.size());
+            for (size_t s = 0; s < rawVals.size(); ++s) {
+              normVals[s] = (range > 1e-6) ? ((rawVals[s] - minVal) / range) : 0.5;
+            }
+
+            ImPlotSpec spec;
+            spec.LineColor = channelStates_[ch->name()].color;
+            ImPlot::PlotLine(ch->name().c_str(), timeSec.data(), normVals.data(),
+              static_cast<int>(timeSec.size()), spec);
+          }
+
+          // Handle hover cursor, crop markers, and shaded regimes ...
           if (ImPlot::IsPlotHovered()) {
             cursor.timeSec = ImPlot::GetPlotMousePos().x;
             cursor.active = true;
-          }
-
-          if (artifactCursor_.active) {
-            double artifactX = artifactCursor_.timeSec;
-            // Draw a dashed or dimmed vertical line
-            ImPlot::DragLineX(1, &artifactX, artifactCursor_.color, 1.0f, ImPlotDragToolFlags_NoInputs);
-
-            // Optional: Tag annotation at the top of the plot
-            if (!artifactCursor_.label.empty()) {
-              ImPlot::TagX(artifactCursor_.timeSec, artifactCursor_.color, "%s", artifactCursor_.label.c_str());
-            }
           }
 
           if (cursor.active) {
@@ -6995,45 +7108,115 @@ namespace ui {
             ImPlot::DragLineX(0, &markerX, ImVec4(1.0f, 1.0f, 0.0f, 0.8f), 1.0f, ImPlotDragToolFlags_NoInputs);
           }
 
-          if (ImPlot::IsPlotHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-            artifactCursor_.active = false;
-          }
+          // Query current subplot geometry for overlays
+          ImVec2 currentPlotPos = ImPlot::GetPlotPos();
+          ImVec2 currentPlotSize = ImPlot::GetPlotSize();
 
-          if (plotIdx == subplotCount - 1) {
-            lastPlotPos = ImPlot::GetPlotPos();
-            lastPlotSize = ImPlot::GetPlotSize();
-            renderOverlay = true;
-          }
+          const ImGuiWindowFlags overlayFlags = ImGuiWindowFlags_NoDecoration |
+            ImGuiWindowFlags_AlwaysAutoResize |
+            ImGuiWindowFlags_NoSavedSettings |
+            ImGuiWindowFlags_NoFocusOnAppearing |
+            ImGuiWindowFlags_NoNav |
+            ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoDocking;
 
-          if (session_) {
-            // Render shaded vertical bands for active regimes
-            for (const auto &reg : session_->regimeSummaries()) {
-              if (!reg.def.showShading) continue;
+          // -------------------------------------------------------------------
+          // 1. Bottom-Left Overlay: Channel Ranges for THIS Subplot
+          // -------------------------------------------------------------------
+          if (hasRealData && !subplotChannels.empty()) {
+            ImVec2 bottomLeftPos = ImVec2(currentPlotPos.x + 10.0f,
+              currentPlotPos.y + currentPlotSize.y - 10.0f);
 
-              for (const auto &interval : reg.intervals) {
-                double xMin = interval.startSec;
-                double xMax = interval.endSec;
+            ImGui::SetNextWindowPos(bottomLeftPos, ImGuiCond_Always, ImVec2(0.0f, 1.0f));
+            ImGui::SetNextWindowBgAlpha(0.75f);
 
-                // Draw vertical shaded region spanning full Y plot height
-                ImPlot::PlotInfLines("##Shade", &xMin, 1); // Or draw using ImPlot::PlotRect / DrawList
-                ImVec2 pMin = ImPlot::PlotToPixels(ImPlotPoint(xMin, yAxisMax_));
-                ImVec2 pMax = ImPlot::PlotToPixels(ImPlotPoint(xMax, yAxisMin_));
+            std::string rangeWindowID = "##RangeOverlay_" + title() + "_" + std::to_string(plotIdx);
+            bool open = true;
 
-                ImDrawList *drawList = ImPlot::GetPlotDrawList();
-                drawList->AddRectFilled(pMin, pMax, ImGui::ColorConvertFloat4ToU32(reg.def.color));
+            if (ImGui::Begin(rangeWindowID.c_str(), &open, overlayFlags)) {
+              for (const auto *channel : subplotChannels) {
+                const auto &st = channelStates_[channel->name()];
+                ImGui::PushID(channel->name().c_str());
+
+                ImGui::TextColored(st.color, "%s:", channel->name().c_str());
+                ImGui::SameLine();
+
+                // Interactive Min label
+                char minBuf[32];
+                std::snprintf(minBuf, sizeof(minBuf), "[%.1f", st.cachedMin);
+                ImGui::TextUnformatted(minBuf);
+                if (ImGui::IsItemHovered()) {
+                  ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                  ImGui::SetTooltip("Click to jump to Min (%.2f)", st.cachedMin);
+                }
+                if (ImGui::IsItemClicked()) {
+                  jumpCursorToIndex(st.minIdx, cursor);
+                }
+
+                ImGui::SameLine(0, 2.0f);
+                ImGui::TextUnformatted("-");
+                ImGui::SameLine(0, 2.0f);
+
+                // Interactive Max label
+                char maxBuf[32];
+                std::snprintf(maxBuf, sizeof(maxBuf), "%.1f]", st.cachedMax);
+                ImGui::TextUnformatted(maxBuf);
+                if (ImGui::IsItemHovered()) {
+                  ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                  ImGui::SetTooltip("Click to jump to Max (%.2f)", st.cachedMax);
+                }
+                if (ImGui::IsItemClicked()) {
+                  jumpCursorToIndex(st.maxIdx, cursor);
+                }
+
+                ImGui::PopID();
               }
             }
+            ImGui::End();
+          }
+
+          // -------------------------------------------------------------------
+          // 2. Bottom-Right Overlay: Cursor Readouts for THIS Subplot
+          // -------------------------------------------------------------------
+          if (cursor.active && !subplotChannels.empty()) {
+            size_t cursorIdx = getCursorIndex(cursor.timeSec);
+            ImVec2 bottomRightPos = ImVec2(currentPlotPos.x + currentPlotSize.x - 10.0f,
+              currentPlotPos.y + currentPlotSize.y - 10.0f);
+
+            ImGui::SetNextWindowPos(bottomRightPos, ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+            ImGui::SetNextWindowBgAlpha(0.85f);
+
+            std::string overlayWindowID = "##CursorOverlay_" + title() + "_" + std::to_string(plotIdx);
+            bool open = true;
+
+            if (ImGui::Begin(overlayWindowID.c_str(), &open, overlayFlags)) {
+              for (const auto *channel : subplotChannels) {
+                const auto &st = channelStates_[channel->name()];
+                double val = (cursorIdx < channel->values().size()) ? channel->values()[cursorIdx] : 0.0;
+
+                ImGui::TextColored(st.color, "%s:", channel->name().c_str());
+                ImGui::SameLine();
+                if (!channel->unit().empty()) {
+                  ImGui::Text("%.2f %s", val, channel->unit().c_str());
+                } else {
+                  ImGui::Text("%.2f", val);
+                }
+              }
+            }
+            ImGui::End();
           }
 
           ImPlot::EndPlot();
         }
       }
-
       ImPlot::EndSubplots();
     }
+    if (doJump) pendingXAxisCenter_ = false;
+    if (doLoadLimits) bPendingAfterLoad_ = false;
 
-    // Reset pending jump flag after applying limits to all subplots
-    pendingXAxisCenter_ = false;
+#if 0
+    bool renderOverlay = false;
+    ImVec2 lastPlotPos, lastPlotSize;
 
     // Common overlay window flags
     const ImGuiWindowFlags overlayFlags = ImGuiWindowFlags_NoDecoration |
@@ -7144,6 +7327,7 @@ namespace ui {
       }
       ImGui::End();
     }
+#endif
   }
 
   void TimeSeriesPanel::render(PlotCursor &cursor)
@@ -7416,6 +7600,7 @@ namespace ui {
 #include "imgui.h"
 #include "imgui_internal.h"
 
+
 namespace ui {
 
   VeAnalysisPanel::VeAnalysisPanel(std::string title)
@@ -7619,7 +7804,7 @@ namespace ui {
       if (std::abs(diff) < 1e-5) return {};
       double percentChange = (curVe != 0.0) ? (diff / curVe) * 100.0 : 0.0;
       char buffer[64];
-      snprintf(buffer, sizeof(buffer), "Baseline: %.2f\nChange: %+0.2f (%+0.2f%%)", curVe, diff, percentChange);
+      snprintf(buffer, sizeof(buffer), "Baseline: %.2f\nChange: %+0.2f (%+0.2f%%)\nObs AFR: %.2f", curVe, diff, percentChange, observedAfrTable_.value(row, col));
       return std::string(buffer);
       };
 
@@ -7633,6 +7818,39 @@ namespace ui {
       };
 
     auto customToolbar = [this]() {
+      bool changed = false;
+
+      // Inline Controls for Correction Limits
+      ImGui::SetNextItemWidth(110.0f);
+      float gain = static_cast<float>(config_.adjustmentGain);
+      if (ImGui::SliderFloat("Gain (α)##sug_gain", &gain, 0.1f, 1.0f, "%.2f")) {
+        config_.adjustmentGain = static_cast<double>(gain);
+        changed = true;
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Correction Gain (0.50 = applies 50% of calculated delta per pass).");
+      }
+
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(90.0f);
+      float maxChange = static_cast<float>(config_.maxPercentChange * 100.0);
+      if (ImGui::InputFloat("Max Δ (%)##sug_max_change", &maxChange, 1.0f, 5.0f, "%.1f %%")) {
+        maxChange = std::clamp(maxChange, 1.0f, 50.0f);
+        config_.maxPercentChange = static_cast<double>(maxChange / 100.0);
+        changed = true;
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Hard cap on maximum allowed VE percentage shift per pass.");
+      }
+
+      if (changed) {
+        computeSuggestedVe();
+      }
+
+      ImGui::SameLine();
+      ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+      ImGui::SameLine();
+
       if (ui::UI::ButtonSecondary("Select Unvisited Cells", {}, "Highlights cells that lacked enough log samples for direct AFR analysis.")) {
         selectUnvisitedCellsOnSuggestedVe();
       }
@@ -7641,7 +7859,6 @@ namespace ui {
 
       ImGui::BeginDisabled(!hasTargetAfr() || !hasBaselineVe() || session_ == nullptr);
       if (ui::UI::ButtonDanger("Reset to Calculated VE", {}, "Recomputes Suggested VE from log data, discarding any manual edits.")) {
-        
         computeSuggestedVe();
       }
       ImGui::EndDisabled();
@@ -7651,7 +7868,6 @@ namespace ui {
     suggestedVePanel_.setCustomHeatmapColoring(customHeatmap);
     suggestedVePanel_.setCustomHoverTooltip(customTooltip);
     suggestedVePanel_.setCustomTextColoring(customTextColor);
-    // In VeAnalysisPanel constructor or initialization:
     suggestedVePanel_.setCustomToolbarCallback(customToolbar);
     suggestedVePanel_.setTable(result);
     hasSuggestedVe_ = true;
@@ -7732,24 +7948,6 @@ namespace ui {
 
       bool changed = false;
 
-      //auto renderChannelCombo = [this, &changed](const char *label, std::string &selectedChannel) {
-      //  if (ImGui::BeginCombo(label, selectedChannel.empty() ? "None" : selectedChannel.c_str())) {
-      //    if (ImGui::Selectable("None", selectedChannel.empty())) {
-      //      selectedChannel.clear();
-      //      changed = true;
-      //    }
-      //    for (const auto &ch : session_->channels()) {
-      //      bool isSelected = (ch.name() == selectedChannel);
-      //      if (ImGui::Selectable(ch.name().c_str(), isSelected)) {
-      //        selectedChannel = ch.name();
-      //        changed = true;
-      //      }
-      //      if (isSelected) ImGui::SetItemDefaultFocus();
-      //    }
-      //    ImGui::EndCombo();
-      //  }
-      //  };
-
       if (ImGui::BeginTabBar("ObservedAfrSettingsTabBar")) {
 
         if (ImGui::BeginTabItem("Filter Thresholds")) {
@@ -7785,17 +7983,6 @@ namespace ui {
           ImGui::EndTabItem();
         }
 
-
-        //if (ImGui::BeginTabItem("Channel Mapping")) {
-        //  ImGui::Spacing();
-        //  renderChannelCombo("RPM Channel", session_->channelMapping().rpm);
-        //  renderChannelCombo("Load Channel", session_->channelMapping().load);
-        //  renderChannelCombo("AFR Channel", session_->channelMapping().afr);
-        //  renderChannelCombo("TPSdot Channel", session_->channelMapping().tpsDot);
-        //  renderChannelCombo("CLT Channel", session_->channelMapping().clt);
-        //  ImGui::EndTabItem();
-        //}
-
         ImGui::EndTabBar();
       }
       if (changed) {
@@ -7824,6 +8011,10 @@ namespace ui {
       ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
       ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
 
+    const ImU32 headerHighlightColor = IM_COL32(230, 160, 30, 220);
+    int nextHoveredRow = -1;
+    int nextHoveredCol = -1;
+
     if (ImGui::BeginTable("ObservedAfrGridCropped", static_cast<int>(visibleCols + 1), flags, ImVec2(0.0f, 400.0f))) {
       ImGui::TableSetupScrollFreeze(1, 1);
       ImGui::TableSetupColumn("MAP \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
@@ -7834,20 +8025,44 @@ namespace ui {
       }
       ImGui::TableHeadersRow();
 
+      const size_t nofCols = maxObservedCol_ - minObservedCol_ + 1;
+      if (hoveredCol_ >= 0 && hoveredCol_ < static_cast<int>(nofCols)) {
+        ImGui::TableSetColumnIndex(hoveredCol_ + 1);
+        ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, headerHighlightColor);
+      }
+
       // Render in descending order (highest MAP/load at top) to match Target AFR orientation
       if (maxObservedRow_ >= minObservedRow_) {
         for (size_t r = maxObservedRow_; ; --r) {
-          ImGui::TableNextRow();
+          ImGui::TableNextRow();                  
           ImGui::TableSetColumnIndex(0);
-          ImGui::Text("%.1f", yBp[r]);
+          if (hoveredRow_ == static_cast<int>(r)) {
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, headerHighlightColor);
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%.1f", yBp[r]);
+          } else {
+            ImGui::Text("%.1f", yBp[r]);
+          }
 
           for (size_t c = minObservedCol_; c <= maxObservedCol_; ++c) {
             ImGui::TableSetColumnIndex(static_cast<int>(c - minObservedCol_ + 1));
             double val = observedAfrTable_.value(r, c);
-            if (val > 0.0) {
-              ImGui::Text("%.2f", val);
+            //if (val > 0.0) {
+            //  ImGui::Text("%.2f", val);
+            //} else {
+            //  ImGui::TextDisabled(" - ");
+            //}
+            const std::string idSuffix = "##cell_" + std::to_string(r) + "_" + std::to_string(c);
+            char cellText[64];
+            if (0 < val) {
+              snprintf(cellText, sizeof(cellText), "%.2f%s", val, idSuffix.c_str());
             } else {
-              ImGui::TextDisabled(" - ");
+              snprintf(cellText, sizeof(cellText), " - %s", idSuffix.c_str());
+            }
+            ImGui::Selectable(cellText, false, 0);
+
+            if (ImGui::IsItemHovered()) {
+              nextHoveredRow = static_cast<int>(r);
+              nextHoveredCol = static_cast<int>(c);
             }
           }
 
@@ -7855,46 +8070,8 @@ namespace ui {
         }
       }
       ImGui::EndTable();
-    }
-  }
-
-  void VeAnalysisPanel::renderReadOnlyTableGrid(const core::Table2D &table)
-  {
-    const auto &xBp = table.xBreakpoints();
-    const auto &yBp = table.yBreakpoints();
-    const size_t cols = xBp.size();
-    const size_t rows = yBp.size();
-
-    if (cols == 0 || rows == 0) {
-      ImGui::TextDisabled("Table is empty.");
-      return;
-    }
-
-    const ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-      ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
-      ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
-
-    if (ImGui::BeginTable("ReadOnlyGrid", static_cast<int>(cols + 1), flags, ImVec2(0.0f, 380.0f))) {
-      ImGui::TableSetupScrollFreeze(1, 1);
-      ImGui::TableSetupColumn("MAP \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-      for (size_t c = 0; c < cols; ++c) {
-        std::string header = std::to_string(static_cast<int>(xBp[c])) + "##col" + std::to_string(c);
-        ImGui::TableSetupColumn(header.c_str(), ImGuiTableColumnFlags_WidthFixed, 65.0f);
-      }
-      ImGui::TableHeadersRow();
-
-      // Render top-to-bottom matching TunerStudio layout (highest Y breakpoint at row 0)
-      for (size_t r = rows; r-- > 0; ) {
-        ImGui::TableNextRow();
-        ImGui::TableSetColumnIndex(0);
-        ImGui::Text("%.1f", yBp[r]);
-
-        for (size_t c = 0; c < cols; ++c) {
-          ImGui::TableSetColumnIndex(static_cast<int>(c + 1));
-          ImGui::Text("%.2f", table.value(r, c));
-        }
-      }
-      ImGui::EndTable();
+      hoveredRow_ = nextHoveredRow;
+      hoveredCol_ = nextHoveredCol;
     }
   }
 
@@ -8057,6 +8234,10 @@ namespace ui {
         return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, baseAlpha));
         };
 
+      const ImU32 headerHighlightColor = IM_COL32(230, 160, 30, 220);
+      int nextHoveredRow = -1;
+      int nextHoveredCol = -1;
+
       if (ImGui::BeginTable("AfrDeltaGrid", static_cast<int>(cols + 1), flags, ImVec2(0.0f, 380.0f))) {
         ImGui::TableSetupScrollFreeze(1, 1);
         ImGui::TableSetupColumn("MAP \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
@@ -8067,10 +8248,22 @@ namespace ui {
         }
         ImGui::TableHeadersRow();
 
+        if (hoveredCol_ >= 0 && hoveredCol_ < static_cast<int>(cols)) {
+          ImGui::TableSetColumnIndex(hoveredCol_ + 1);
+          ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, headerHighlightColor);
+        }
+
         for (size_t r = rows; r-- > 0; ) {
           ImGui::TableNextRow();
           ImGui::TableSetColumnIndex(0);
-          ImGui::Text("%.1f", yBp[r]);
+
+          ImGui::TableSetColumnIndex(0);
+          if (hoveredRow_ == static_cast<int>(r)) {
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, headerHighlightColor);
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%.1f", yBp[r]);
+          } else {
+            ImGui::Text("%.1f", yBp[r]);
+          }
 
           for (size_t c = 0; c < cols; ++c) {
             ImGui::TableSetColumnIndex(static_cast<int>(c + 1));
@@ -8082,12 +8275,32 @@ namespace ui {
             if (!std::isnan(delta)) {
               ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, getDeltaHeatMapColor(delta, hitCount));
 
+              // 1. Build the unique ID suffix (hidden)
+              const std::string idSuffix = "##cell_" + std::to_string(r) + "_" + std::to_string(c);
+
+              char cellText[64];
+              std::optional<ImVec4> textColor;
+
+              // 2. Format: [Visible Text]##[Unique ID]
               if (delta > 0.3) {
-                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "+%.2f", delta); // Lean
+                std::snprintf(cellText, sizeof(cellText), "+%.2f%s", delta, idSuffix.c_str());
+                textColor = ImVec4(1.0f, 0.4f, 0.4f, 1.0f); // Lean
               } else if (delta < -0.3) {
-                ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "%.2f", delta);  // Rich
+                std::snprintf(cellText, sizeof(cellText), "%.2f%s", delta, idSuffix.c_str());
+                textColor = ImVec4(0.4f, 0.7f, 1.0f, 1.0f); // Rich
               } else {
-                ImGui::Text("%.2f", delta);
+                std::snprintf(cellText, sizeof(cellText), "%.2f%s", delta, idSuffix.c_str());
+              }
+
+              // 3. Render Selectable filling the table cell
+              if (textColor.has_value()) {
+                ImGui::PushStyleColor(ImGuiCol_Text, textColor.value());
+              }
+
+              ImGui::Selectable(cellText, false, 0);
+
+              if (textColor.has_value()) {
+                ImGui::PopStyleColor();
               }
 
               // Hit count tooltip on cell hover
@@ -8100,9 +8313,16 @@ namespace ui {
                 ImGui::SetTooltip("Samples: %zu (Below min threshold %zu)", hitCount, config_.minSamplesPerBin);
               }
             }
+
+            if (ImGui::IsItemHovered()) {
+              nextHoveredRow = static_cast<int>(r);
+              nextHoveredCol = static_cast<int>(c);
+            }
           }
         }
         ImGui::EndTable();
+        hoveredRow_ = nextHoveredRow;
+        hoveredCol_ = nextHoveredCol;
       }
     } else {
       ImGui::TextDisabled("No AFR Delta available. Ensure a log is loaded and Target AFR is set.");
@@ -8162,9 +8382,15 @@ namespace ui {
 
     if (ImGui::BeginTabBar("VeAnalyzerTabBar")) {
 
+      ImGui::PushStyleColor(ImGuiCol_Tab, ImVec4(0.50f, 0.20f, 0.70f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_TabHovered, ImVec4(0.65f, 0.30f, 0.85f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_TabActive, ImVec4(0.58f, 0.25f, 0.78f, 1.0f));
       if (ImGui::BeginTabItem("Observed AFR")) {
+        ImGui::PopStyleColor(3);
         renderObservedAfrTab();
         ImGui::EndTabItem();
+      } else {
+        ImGui::PopStyleColor(3);
       }
 
       if (ImGui::BeginTabItem("Target AFR")) {
@@ -8178,7 +8404,7 @@ namespace ui {
       }
 
       if (ImGui::BeginTabItem("AFR Delta")) {
-        computeAfrDelta();
+        //computeAfrDelta();
         renderAfrDeltaTab();
         ImGui::EndTabItem();
       }
@@ -8202,17 +8428,12 @@ namespace ui {
   {
     auto j = PlotPanel::saveState();
 
-    // Persist input flags and view settings
     j["alignAfrDeltaToVeTable"] = alignAfrDeltaToVeTable_;
 
-    // Persist analysis channel / sample thresholds
     j["config"] = {
-      //{"rpmChannel", session_->channelMapping().rpm},
-      //{"loadChannel", session_->channelMapping().load},
-      //{"afrChannel", session_->channelMapping().afr},
-      //{"tpsDotChannel", session_->channelMapping().tpsDot},
-      //{"cltChannel", session_->channelMapping().clt},
       {"minSamplesPerBin", config_.minSamplesPerBin},
+      {"adjustmentGain", config_.adjustmentGain},
+      {"maxPercentChange", config_.maxPercentChange},
       {"enableTpsDotFilter", config_.enableTpsDotFilter},
       {"maxTpsDot", config_.maxTpsDot},
       {"enableCltFilter", config_.enableCltFilter},
@@ -8221,7 +8442,6 @@ namespace ui {
       {"minLoadThreshold", config_.minLoadThreshold}
     };
 
-    // Only serialize primary input tables (ignore calculated ones)
     j["targetAfr"] = targetAfrPanel_.saveState();
     j["baselineVe"] = baselineVePanel_.saveState();
 
@@ -8236,16 +8456,11 @@ namespace ui {
       alignAfrDeltaToVeTable_ = state["alignAfrDeltaToVeTable"].get<bool>();
     }
 
-    // Restore analysis config
     if (state.contains("config") && state["config"].is_object()) {
       const auto &cfg = state["config"];
-      //if (cfg.contains("rpmChannel")) session_->channelMapping().rpm = cfg["rpmChannel"].get<std::string>();
-      //if (cfg.contains("loadChannel")) session_->channelMapping().load = cfg["loadChannel"].get<std::string>();
-      //if (cfg.contains("afrChannel")) session_->channelMapping().afr = cfg["afrChannel"].get<std::string>();
-      //if (cfg.contains("tpsDotChannel")) session_->channelMapping().tpsDot = cfg["tpsDotChannel"].get<std::string>();
-      //if (cfg.contains("cltChannel")) session_->channelMapping().clt = cfg["cltChannel"].get<std::string>();
       if (cfg.contains("minSamplesPerBin")) config_.minSamplesPerBin = cfg["minSamplesPerBin"].get<size_t>();
-
+      if (cfg.contains("adjustmentGain")) config_.adjustmentGain = cfg["adjustmentGain"].get<double>();
+      if (cfg.contains("maxPercentChange")) config_.maxPercentChange = cfg["maxPercentChange"].get<double>();
       if (cfg.contains("enableTpsDotFilter")) config_.enableTpsDotFilter = cfg["enableTpsDotFilter"].get<bool>();
       if (cfg.contains("maxTpsDot")) config_.maxTpsDot = cfg["maxTpsDot"].get<double>();
       if (cfg.contains("enableCltFilter")) config_.enableCltFilter = cfg["enableCltFilter"].get<bool>();
@@ -8254,7 +8469,6 @@ namespace ui {
       if (cfg.contains("minLoadThreshold")) config_.minLoadThreshold = cfg["minLoadThreshold"].get<double>();
     }
 
-    // Restore input tables
     if (state.contains("targetAfr")) {
       targetAfrPanel_.loadState(state["targetAfr"]);
     }
@@ -8262,7 +8476,6 @@ namespace ui {
       baselineVePanel_.loadState(state["baselineVe"]);
     }
 
-    // Automatically recalculate all derived tables (Observed AFR, AFR Delta, Suggested VE)
     if (session_ != nullptr) {
       computeObservedAfr();
       computeAfrDelta();
@@ -8306,7 +8519,6 @@ namespace ui {
     void renderTargetAfrTab();
     void renderBaselineVeTab();
     void renderSuggestedVeTab();
-    void renderReadOnlyTableGrid(const core::Table2D &table);
     void selectUnvisitedCellsOnSuggestedVe();
 
     void computeAfrDelta();
@@ -8343,6 +8555,9 @@ namespace ui {
     size_t minObservedCol_ = 0;
     size_t maxObservedCol_ = 0;
     bool hasObservedData_ = false;
+
+    int hoveredRow_ = -1;
+    int hoveredCol_ = -1;
   };
 
 } // namespace ui

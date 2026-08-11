@@ -1,5 +1,6 @@
 
 #include "io/megasquirtcsvparser.h"
+#include "utils/utils.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -11,113 +12,6 @@
 namespace io {
 
   namespace {
-
-    void splitTabDelimited(std::string_view line, std::vector<std::string_view> &out) {
-      out.clear();
-      size_t start = 0;
-      while (true) {
-        size_t tabPos = line.find('\t', start);
-        if (tabPos == std::string_view::npos) { out.push_back(line.substr(start)); break; }
-        out.push_back(line.substr(start, tabPos - start));
-        start = tabPos + 1;
-      }
-    }
-
-    bool parseNumericTokenFast(std::string_view token, double &outValue) {
-      if (token.empty()) return false;
-
-      const char *p = token.data();
-      const char *end = p + token.size();
-
-      bool negative = false;
-      if (*p == '-') { negative = true; ++p; } else if (*p == '+') { ++p; }
-
-      if (p == end) return false;
-
-      uint64_t mantissa = 0;
-      int digits = 0;
-      int exponent = 0;
-      bool seenDigit = false;
-      bool seenDot = false;
-
-      for (; p != end; ++p) {
-        char c = *p;
-        if (c == '.') {
-          if (seenDot) return false;   // malformed: two dots
-          seenDot = true;
-          continue;
-        }
-        if (c < '0' || c > '9') return false;  // bail -> caller falls back to from_chars
-        if (digits < 19) {                     // uint64_t safe up to ~19 digits
-          mantissa = mantissa * 10 + static_cast<uint64_t>(c - '0');
-          ++digits;
-          if (seenDot) --exponent;
-        }
-        // else: silently drop excess precision (telemetry data won't need it)
-        seenDigit = true;
-      }
-
-      if (!seenDigit) return false;
-
-      double result = static_cast<double>(mantissa);
-      if (exponent != 0) {
-        // small power-of-10 table beats pow() for the common range
-        static constexpr double kPow10[] = {
-          1e0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9
-        };
-        if (exponent >= -9 && exponent <= 0) {
-          result *= kPow10[-exponent];
-        } else {
-          result *= std::pow(10.0, exponent);  // rare fallback for unusual formats
-        }
-      }
-
-      outValue = negative ? -result : result;
-      return true;
-    }
-
-    bool parseNumericToken(std::string_view token, double &outValue) {
-      if (token.empty()) {
-        return false;
-      }
-      char *end = nullptr;
-      auto [ptr, ec] = std::from_chars(token.data(), token.data() + token.size(), outValue);
-      return ec == std::errc{};
-    }
-
-    bool tryParseBooleanToken(std::string_view token, double &outValue) {
-      auto ieq = [](std::string_view a, std::string_view b) {
-        if (a.size() != b.size()) return false;
-        for (size_t i = 0; i < a.size(); ++i) {
-          if (std::tolower(static_cast<unsigned char>(a[i])) !=
-            std::tolower(static_cast<unsigned char>(b[i]))) {
-            return false;
-          }
-        }
-        return true;
-        };
-
-      switch (token.size()) {
-      case 2: if (ieq(token, "no")) { outValue = 0; return true; }
-            if (ieq(token, "on")) { outValue = 1; return true; }
-            return false;
-      case 3: if (ieq(token, "yes")) { outValue = 1; return true; }
-            if (ieq(token, "off")) { outValue = 0; return true; }
-            if (ieq(token, "low")) { outValue = 0; return true; }
-            return false;
-      case 4: if (ieq(token, "high")) { outValue = 1; return true; }
-            if (ieq(token, "true")) { outValue = 1; return true; }
-            return false;
-      case 6: if (ieq(token, "active")) { outValue = 1; return true; }
-            return false;
-      case 5: if (ieq(token, "false")) { outValue = 0; return true; }
-            return false;
-      case 8: if (ieq(token, "inactive")) { outValue = 0; return true; }
-            return false;
-      default: return false;
-      }
-      return false;
-    }
 
     // Observed MSL quirk: the first data row's "Time" value is sometimes an
     // unreliable placeholder (e.g. 0.000) while every following row continues
@@ -195,7 +89,7 @@ namespace io {
         continue;
       }
       headerLine = line;
-      splitTabDelimited(headerLine, headerTokens);
+      utils::str::splitTabDelimited(headerLine, headerTokens);
       foundHeader = true;
       break;
     }
@@ -217,7 +111,7 @@ namespace io {
     pos = (nl == std::string_view::npos) ? buffer.size() : nl + 1;
     bytesRead += line.size() + 1;
     std::vector<std::string_view> unitTokens;
-    splitTabDelimited(line, unitTokens);
+    utils::str::splitTabDelimited(line, unitTokens);
 
     const size_t columnCount = headerTokens.size();
 
@@ -277,13 +171,13 @@ namespace io {
         bool looksNumeric = (c == '-' || c == '+' || c == '.' || (c >= '0' && c <= '9'));
 
         if (looksNumeric) {
-          if (parseNumericTokenFast(token, parsed) || parseNumericToken(token, parsed)) {
+          if (utils::parse::parseNumericTokenFast(token, parsed) || utils::parse::parseNumericToken(token, parsed)) {
             value = parsed; sawNumericToken[columnIndex] = 1;
           } else if (!token.empty()) {
             channels[columnIndex].setIsNumeric(false);
           }
         } else if (!token.empty()) {
-          if (tryParseBooleanToken(token, parsed)) {
+          if (utils::parse::tryParseBooleanToken(token, parsed)) {
             value = parsed; sawBooleanToken[columnIndex] = 1;
           } else {
             channels[columnIndex].setIsNumeric(false);

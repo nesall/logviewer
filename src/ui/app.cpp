@@ -25,6 +25,7 @@
 #include "ui/veanalysispanel.h"
 #include "ui/tableoverlaypanel.h"
 #include "ui/driveregimepanel.h"
+#include "utils/utils.h"
 
 namespace ui {
 
@@ -38,17 +39,6 @@ namespace ui {
       std::snprintf(buf, sizeof(buf), "%04d%02d%02d", static_cast<int>(ymd.year()),
         static_cast<unsigned>(ymd.month()), static_cast<unsigned>(ymd.day()));
       return buf;
-    }
-
-    std::string fileNameOnly(const std::string &path) {
-      size_t pos = path.find_last_of("/\\");
-      return (pos == std::string::npos) ? path : path.substr(pos + 1);
-    }
-
-    std::string fileNameWithoutExtension(const std::string &path) {
-      std::string name = fileNameOnly(path);
-      size_t dot = name.find_last_of('.');
-      return (dot == std::string::npos) ? name : name.substr(0, dot);
     }
 
     // Single spot to change once a real app name is picked.
@@ -409,7 +399,7 @@ namespace ui {
     }
     std::string title = kAppBaseTitle;
     if (!currentWorkspacePath_.empty()) {
-      title += " - " + fileNameWithoutExtension(currentWorkspacePath_);
+      title += " - " + utils::path::fileNameWithoutExtension(currentWorkspacePath_);
     }
     glfwSetWindowTitle(window_, title.c_str());
   }
@@ -475,7 +465,7 @@ namespace ui {
   {
     showProgressModal_ = true;
     loadProgress_ = 0.0f;
-    progressStatusText_ = "Loading " + fileNameOnly(path) + "...";
+    progressStatusText_ = "Loading " + utils::path::fileNameOnly(path) + "...";
     pendingOnCompleteCallback_ = std::move(onComplete);
 
     activeLoadTask_ = std::async(std::launch::async, [this, path]() {
@@ -606,7 +596,7 @@ namespace ui {
         if (ImGui::BeginMenu("Recent Workspaces", !recentWorkspacePaths_.empty())) {
           for (size_t i = 0; i < recentWorkspacePaths_.size(); ++i) {
             const std::string &path = recentWorkspacePaths_[i];
-            std::string label = fileNameOnly(path) + "###recent" + std::to_string(i);
+            std::string label = utils::path::fileNameOnly(path) + "###recent" + std::to_string(i);
             if (ImGui::MenuItem(label.c_str())) {
               pendingRecentWorkspaceLoad_ = path;
             }
