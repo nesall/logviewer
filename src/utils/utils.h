@@ -6,7 +6,7 @@
 namespace utils {
   namespace str {
     std::vector<std::string> splitCsvLine(const std::string &line);
-    void splitTabDelimited(std::string_view line, std::vector<std::string_view> &out);
+    void splitByDelimiter(std::string_view line, std::vector<std::string_view> &out, char delimiter = '\t');
     std::string toLower(const std::string &s);
     std::string sanitizeToUtf8(const std::string &input);
     std::string generateUniqueId(size_t length = 8);

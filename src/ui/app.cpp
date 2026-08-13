@@ -10,6 +10,7 @@
 
 #include "3rdparty/nlohmann/json.hpp"
 #include "3rdparty/portable-file-dialogs.h"
+#include "3rdparty/WinDarkTitlebarImpl.h"
 #include "core/table2d.h"
 #include "core/formula_evaluator.h"
 #include "ui/ui_helpers.h"
@@ -17,6 +18,10 @@
 #include "imgui.h"
 #include "imgui_internal.h"
 #include <GLFW/glfw3.h>
+#ifdef _WIN32
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+#endif
 
 #include "ui/scatterpanel.h"
 #include "ui/statuspanel.h"
@@ -55,6 +60,12 @@ namespace ui {
   {
     loadSettings();
     updateWindowTitle();
+#ifdef _WIN32
+    HWND hWnd = glfwGetWin32Window(window_);
+    WinDarkTitlebarImpl winDarkImpl;
+    winDarkImpl.init();
+    winDarkImpl.setTitleBarTheme(hWnd, true);
+#endif
   }
 
   App::~App() = default;

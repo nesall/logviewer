@@ -1546,6 +1546,7 @@ namespace engine {
 ## File: src/io/haltechdlparser.cpp
 
 #include "io/haltechdlparser.h"
+#include "utils/utils.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -1559,26 +1560,11 @@ namespace io {
 
   namespace {
 
-    std::vector<std::string> splitCsvLine(const std::string &line) {
-      std::vector<std::string> tokens;
-      size_t start = 0;
-      while (true) {
-        size_t commaPos = line.find(',', start);
-        if (commaPos == std::string::npos) {
-          tokens.push_back(line.substr(start));
-          break;
-        }
-        tokens.push_back(line.substr(start, commaPos - start));
-        start = commaPos + 1;
-      }
-      return tokens;
-    }
-
     // Convert 'HH:MM:SS.mmm' timestamp string into total elapsed seconds
-    bool parseHaltechTimeSec(const std::string &token, double &outSec) {
+    bool parseHaltechTimeSec(std::string_view token, double &outSec) {
       int h = 0, m = 0;
       double s = 0.0;
-      if (std::sscanf(token.c_str(), "%d:%d:%lf", &h, &m, &s) == 3) {
+      if (std::sscanf(token.data(), "%d:%d:%lf", &h, &m, &s) == 3) {
         outSec = h * 3600.0 + m * 60.0 + s;
         return true;
       }
@@ -1593,8 +1579,8 @@ namespace io {
 
   } // namespace
 
-  bool HaltechDlParser::parse(const std::string &path, core::LogSession &outSession,
-    std::string &errorOut, std::atomic<float> *progress) {
+  bool HaltechDlParser::parse(const std::string &path, core::LogSession &outSession, std::string &errorOut, std::atomic<float> *progress)
+  {
     std::error_code ec;
     const uint64_t fileSize = std::filesystem::file_size(path, ec);
     if (ec || fileSize == 0) {
@@ -1662,7 +1648,8 @@ namespace io {
         progress->store(std::min(p, 1.0f));
       }
 
-      std::vector<std::string> tokens = splitCsvLine(line);
+      std::vector<std::string_view> tokens;
+      utils::str::splitByDelimiter(line, tokens, ',');
       if (tokens.empty()) continue;
 
       // Token 0: Timestamp (HH:MM:SS.mmm)
@@ -1681,11 +1668,10 @@ namespace io {
       for (size_t i = 0; i < channelNames.size(); ++i) {
         double val = std::numeric_limits<double>::quiet_NaN();
         size_t tokenIdx = i + 1;
-
         if (tokenIdx < tokens.size() && !tokens[tokenIdx].empty()) {
           char *end = nullptr;
-          double parsed = std::strtod(tokens[tokenIdx].c_str(), &end);
-          if (end != tokens[tokenIdx].c_str() && !isHaltechSentinel(parsed)) {
+          double parsed = std::strtod(tokens[tokenIdx].data(), &end);
+          if (end != tokens[tokenIdx].data() && !isHaltechSentinel(parsed)) {
             val = parsed;
           }
         }
@@ -1764,6 +1750,7 @@ namespace io {
 
 
 #include "io/megasquirtcsvparser.h"
+#include "utils/utils.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -1775,113 +1762,6 @@ namespace io {
 namespace io {
 
   namespace {
-
-    void splitTabDelimited(std::string_view line, std::vector<std::string_view> &out) {
-      out.clear();
-      size_t start = 0;
-      while (true) {
-        size_t tabPos = line.find('\t', start);
-        if (tabPos == std::string_view::npos) { out.push_back(line.substr(start)); break; }
-        out.push_back(line.substr(start, tabPos - start));
-        start = tabPos + 1;
-      }
-    }
-
-    bool parseNumericTokenFast(std::string_view token, double &outValue) {
-      if (token.empty()) return false;
-
-      const char *p = token.data();
-      const char *end = p + token.size();
-
-      bool negative = false;
-      if (*p == '-') { negative = true; ++p; } else if (*p == '+') { ++p; }
-
-      if (p == end) return false;
-
-      uint64_t mantissa = 0;
-      int digits = 0;
-      int exponent = 0;
-      bool seenDigit = false;
-      bool seenDot = false;
-
-      for (; p != end; ++p) {
-        char c = *p;
-        if (c == '.') {
-          if (seenDot) return false;   // malformed: two dots
-          seenDot = true;
-          continue;
-        }
-        if (c < '0' || c > '9') return false;  // bail -> caller falls back to from_chars
-        if (digits < 19) {                     // uint64_t safe up to ~19 digits
-          mantissa = mantissa * 10 + static_cast<uint64_t>(c - '0');
-          ++digits;
-          if (seenDot) --exponent;
-        }
-        // else: silently drop excess precision (telemetry data won't need it)
-        seenDigit = true;
-      }
-
-      if (!seenDigit) return false;
-
-      double result = static_cast<double>(mantissa);
-      if (exponent != 0) {
-        // small power-of-10 table beats pow() for the common range
-        static constexpr double kPow10[] = {
-          1e0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9
-        };
-        if (exponent >= -9 && exponent <= 0) {
-          result *= kPow10[-exponent];
-        } else {
-          result *= std::pow(10.0, exponent);  // rare fallback for unusual formats
-        }
-      }
-
-      outValue = negative ? -result : result;
-      return true;
-    }
-
-    bool parseNumericToken(std::string_view token, double &outValue) {
-      if (token.empty()) {
-        return false;
-      }
-      char *end = nullptr;
-      auto [ptr, ec] = std::from_chars(token.data(), token.data() + token.size(), outValue);
-      return ec == std::errc{};
-    }
-
-    bool tryParseBooleanToken(std::string_view token, double &outValue) {
-      auto ieq = [](std::string_view a, std::string_view b) {
-        if (a.size() != b.size()) return false;
-        for (size_t i = 0; i < a.size(); ++i) {
-          if (std::tolower(static_cast<unsigned char>(a[i])) !=
-            std::tolower(static_cast<unsigned char>(b[i]))) {
-            return false;
-          }
-        }
-        return true;
-        };
-
-      switch (token.size()) {
-      case 2: if (ieq(token, "no")) { outValue = 0; return true; }
-            if (ieq(token, "on")) { outValue = 1; return true; }
-            return false;
-      case 3: if (ieq(token, "yes")) { outValue = 1; return true; }
-            if (ieq(token, "off")) { outValue = 0; return true; }
-            if (ieq(token, "low")) { outValue = 0; return true; }
-            return false;
-      case 4: if (ieq(token, "high")) { outValue = 1; return true; }
-            if (ieq(token, "true")) { outValue = 1; return true; }
-            return false;
-      case 6: if (ieq(token, "active")) { outValue = 1; return true; }
-            return false;
-      case 5: if (ieq(token, "false")) { outValue = 0; return true; }
-            return false;
-      case 8: if (ieq(token, "inactive")) { outValue = 0; return true; }
-            return false;
-      default: return false;
-      }
-      return false;
-    }
 
     // Observed MSL quirk: the first data row's "Time" value is sometimes an
     // unreliable placeholder (e.g. 0.000) while every following row continues
@@ -1959,7 +1839,7 @@ namespace io {
         continue;
       }
       headerLine = line;
-      splitTabDelimited(headerLine, headerTokens);
+      utils::str::splitByDelimiter(headerLine, headerTokens);
       foundHeader = true;
       break;
     }
@@ -1981,7 +1861,7 @@ namespace io {
     pos = (nl == std::string_view::npos) ? buffer.size() : nl + 1;
     bytesRead += line.size() + 1;
     std::vector<std::string_view> unitTokens;
-    splitTabDelimited(line, unitTokens);
+    utils::str::splitByDelimiter(line, unitTokens);
 
     const size_t columnCount = headerTokens.size();
 
@@ -2041,13 +1921,13 @@ namespace io {
         bool looksNumeric = (c == '-' || c == '+' || c == '.' || (c >= '0' && c <= '9'));
 
         if (looksNumeric) {
-          if (parseNumericTokenFast(token, parsed) || parseNumericToken(token, parsed)) {
+          if (utils::parse::parseNumericTokenFast(token, parsed) || utils::parse::parseNumericToken(token, parsed)) {
             value = parsed; sawNumericToken[columnIndex] = 1;
           } else if (!token.empty()) {
             channels[columnIndex].setIsNumeric(false);
           }
         } else if (!token.empty()) {
-          if (tryParseBooleanToken(token, parsed)) {
+          if (utils::parse::tryParseBooleanToken(token, parsed)) {
             value = parsed; sawBooleanToken[columnIndex] = 1;
           } else {
             channels[columnIndex].setIsNumeric(false);
@@ -2254,6 +2134,7 @@ int main() {
 #include "ui/veanalysispanel.h"
 #include "ui/tableoverlaypanel.h"
 #include "ui/driveregimepanel.h"
+#include "utils/utils.h"
 
 namespace ui {
 
@@ -2267,17 +2148,6 @@ namespace ui {
       std::snprintf(buf, sizeof(buf), "%04d%02d%02d", static_cast<int>(ymd.year()),
         static_cast<unsigned>(ymd.month()), static_cast<unsigned>(ymd.day()));
       return buf;
-    }
-
-    std::string fileNameOnly(const std::string &path) {
-      size_t pos = path.find_last_of("/\\");
-      return (pos == std::string::npos) ? path : path.substr(pos + 1);
-    }
-
-    std::string fileNameWithoutExtension(const std::string &path) {
-      std::string name = fileNameOnly(path);
-      size_t dot = name.find_last_of('.');
-      return (dot == std::string::npos) ? name : name.substr(0, dot);
     }
 
     // Single spot to change once a real app name is picked.
@@ -2638,7 +2508,7 @@ namespace ui {
     }
     std::string title = kAppBaseTitle;
     if (!currentWorkspacePath_.empty()) {
-      title += " - " + fileNameWithoutExtension(currentWorkspacePath_);
+      title += " - " + utils::path::fileNameWithoutExtension(currentWorkspacePath_);
     }
     glfwSetWindowTitle(window_, title.c_str());
   }
@@ -2704,7 +2574,7 @@ namespace ui {
   {
     showProgressModal_ = true;
     loadProgress_ = 0.0f;
-    progressStatusText_ = "Loading " + fileNameOnly(path) + "...";
+    progressStatusText_ = "Loading " + utils::path::fileNameOnly(path) + "...";
     pendingOnCompleteCallback_ = std::move(onComplete);
 
     activeLoadTask_ = std::async(std::launch::async, [this, path]() {
@@ -2835,7 +2705,7 @@ namespace ui {
         if (ImGui::BeginMenu("Recent Workspaces", !recentWorkspacePaths_.empty())) {
           for (size_t i = 0; i < recentWorkspacePaths_.size(); ++i) {
             const std::string &path = recentWorkspacePaths_[i];
-            std::string label = fileNameOnly(path) + "###recent" + std::to_string(i);
+            std::string label = utils::path::fileNameOnly(path) + "###recent" + std::to_string(i);
             if (ImGui::MenuItem(label.c_str())) {
               pendingRecentWorkspaceLoad_ = path;
             }
@@ -4011,6 +3881,7 @@ namespace ui {
 
 #include "ui/scatterpanel.h"
 #include "ui/ui_helpers.h"
+#include "utils/utils.h"
 
 #include <algorithm>
 #include <cmath>
@@ -4022,28 +3893,6 @@ namespace ui {
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "implot.h"
-
-namespace {
-  std::string sanitizeToUtf8(const std::string &input) {
-    std::string output;
-    output.reserve(input.size() * 2);
-
-    for (size_t i = 0; i < input.size(); ++i) {
-      unsigned char c = static_cast<unsigned char>(input[i]);
-
-      // Check if it's a raw single-byte degree symbol (0xB0) in ANSI/Latin-1/Win-1252
-      // and make sure it's not already part of a valid UTF-8 multi-byte sequence (0xC2 0xB0)
-      if (c == 0xB0) {
-        bool isAlreadyUtf8 = (i > 0 && static_cast<unsigned char>(input[i - 1]) == 0xC2);
-        if (!isAlreadyUtf8) {
-          output.push_back(static_cast<char>(0xC2)); // Inject UTF-8 leading byte
-        }
-      }
-      output.push_back(input[i]);
-    }
-    return output;
-  }
-} // anonymous namespace
 
 namespace ui {
 
@@ -4422,8 +4271,8 @@ namespace ui {
             ImGui::Text("Dwell Time: %.2f s", stats_.timeInZoneSec);
           }
 
-          auto xUnitSanitized = sanitizeToUtf8(cachedXUnit_);
-          auto yUnitSanitized = sanitizeToUtf8(cachedYUnit_);
+          auto xUnitSanitized = utils::str::sanitizeToUtf8(cachedXUnit_);
+          auto yUnitSanitized = utils::str::sanitizeToUtf8(cachedYUnit_);
           if (!selectedColorChannel_.empty()) {
             ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Peak %s: %.1f", selectedColorChannel_.c_str(), stats_.maxZ);
             ImGui::SameLine();
@@ -4431,7 +4280,7 @@ namespace ui {
 
             ImGui::Text("Mean %s: %.1f", selectedColorChannel_.c_str(), stats_.avgZ);
 
-            auto zUnitSanitized = sanitizeToUtf8(cachedZUnit_);
+            auto zUnitSanitized = utils::str::sanitizeToUtf8(cachedZUnit_);
             ImGui::Text("Centroid: %.0f %s | %.1f %s | %.2f %s",
               stats_.avgX, xUnitSanitized.c_str(),
               stats_.avgY, yUnitSanitized.c_str(),
@@ -4623,6 +4472,7 @@ namespace ui {
 
 #include "ui/statuspanel.h"
 #include "ui/ui_helpers.h"
+#include "utils/utils.h"
 
 #include <algorithm>
 #include <cctype>
@@ -4636,14 +4486,6 @@ namespace ui {
 namespace ui {
 
   namespace {
-
-    std::string toLower(const std::string &s) {
-      std::string result = s;
-      for (char &c : result) {
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-      }
-      return result;
-    }
 
     // Truncates text with a trailing "..." so it fits within maxWidth pixels
     // at the current font, rather than letting ImGui silently clip it.
@@ -4770,9 +4612,9 @@ namespace ui {
         &filterText_);
 
       ImGui::BeginChild("StatusPanelChannelList", ImVec2(320, 360), ImGuiChildFlags_Borders);
-      const std::string filterLower = toLower(filterText_);
+      const std::string filterLower = utils::str::toLower(filterText_);
       for (const auto &channel : session_->channels()) {
-        if (!filterLower.empty() && toLower(channel.name()).find(filterLower) == std::string::npos) {
+        if (!filterLower.empty() && utils::str::toLower(channel.name()).find(filterLower) == std::string::npos) {
           continue;
         }
         bool visible = isVisible(channel);
@@ -4932,6 +4774,7 @@ namespace ui {
 
 #include "ui/tableeditorpanel.h"
 #include "ui/ui_helpers.h"
+#include <utils/utils.h>
 
 #include <algorithm>
 #include <cmath>
@@ -4946,29 +4789,12 @@ namespace ui {
 #include "imgui.h"
 #include "imgui_internal.h"
 
-namespace {
-  std::string generateUniqueId(size_t length = 8) {
-    static const char charset[] =
-      "0123456789"
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-      "abcdefghijklmnopqrstuvwxyz";
-    static std::mt19937 rng(std::random_device{}());
-    static std::uniform_int_distribution<> dist(0, sizeof(charset) - 2);
-    std::string id;
-    id.reserve(length);
-    for (size_t i = 0; i < length; ++i) {
-      id += charset[dist(rng)];
-    }
-    return id;
-  }
-}
-
 namespace ui {
 
   TableEditorPanel::TableEditorPanel(std::string title, std::string panelTypeIdValue,
     std::string displayName, core::Table2D initialTable, int xDecimalPlaces, int yDecimalPlaces)
     : PlotPanel(std::move(title))
-    , tableUniqueId_(generateUniqueId())
+    , tableUniqueId_(utils::str::generateUniqueId())
     , panelTypeIdValue_(std::move(panelTypeIdValue))
     , displayName_(std::move(displayName))
     , table_(std::move(initialTable))
@@ -5331,7 +5157,7 @@ namespace ui {
           table_.setValue(r, c, newValues[r][c]);
         }
       }
-      tableUniqueId_ = generateUniqueId();
+      tableUniqueId_ = utils::str::generateUniqueId();
     } else {
       int startR = static_cast<int>(table_.rowCount()) - 1;
       int startC = 0;
@@ -5397,7 +5223,7 @@ namespace ui {
         table_.setValue(r, c, zVals[r * cols + c]);
       }
     }
-    tableUniqueId_ = generateUniqueId();
+    tableUniqueId_ = utils::str::generateUniqueId();
     notifyDataChanged();
     return true;
   }
@@ -5478,7 +5304,7 @@ namespace ui {
     if (ui::UI::Button("OK")) {
       ImGui::CloseCurrentPopup();
       accepted = true;
-      tableUniqueId_ = generateUniqueId();
+      tableUniqueId_ = utils::str::generateUniqueId();
       notifyDataChanged();
     }
     ImGui::SameLine();
@@ -8561,5 +8387,228 @@ namespace ui {
   };
 
 } // namespace ui
+
+
+## File: src/utils/utils.cpp
+
+#include "utils.h"
+#include <cmath>
+#include <cstdlib>
+#include <utility>
+#include <filesystem>
+#include <random>
+
+std::vector<std::string> utils::str::splitCsvLine(const std::string &line)
+{
+  std::vector<std::string> tokens;
+  size_t start = 0;
+  while (true) {
+    size_t commaPos = line.find(',', start);
+    if (commaPos == std::string::npos) {
+      tokens.push_back(line.substr(start));
+      break;
+    }
+    tokens.push_back(line.substr(start, commaPos - start));
+    start = commaPos + 1;
+  }
+  return tokens;
+}
+
+void utils::str::splitByDelimiter(std::string_view line, std::vector<std::string_view> &out, char delimiter)
+{
+  out.clear();
+  size_t start = 0;
+  while (true) {
+    size_t tabPos = line.find(delimiter, start);
+    if (tabPos == std::string_view::npos) { out.push_back(line.substr(start)); break; }
+    out.push_back(line.substr(start, tabPos - start));
+    start = tabPos + 1;
+  }
+}
+
+std::string utils::str::toLower(const std::string & s)
+{
+  std::string result = s;
+  for (char &c : result) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  return result;
+}
+
+std::string utils::str::sanitizeToUtf8(const std::string &input)
+{
+  std::string output;
+  output.reserve(input.size() * 2);
+  for (size_t i = 0; i < input.size(); ++i) {
+    unsigned char c = static_cast<unsigned char>(input[i]);
+    // Check if it's a raw single-byte degree symbol (0xB0) in ANSI/Latin-1/Win-1252
+    // and make sure it's not already part of a valid UTF-8 multi-byte sequence (0xC2 0xB0)
+    if (c == 0xB0) {
+      bool isAlreadyUtf8 = (i > 0 && static_cast<unsigned char>(input[i - 1]) == 0xC2);
+      if (!isAlreadyUtf8) {
+        output.push_back(static_cast<char>(0xC2)); // Inject UTF-8 leading byte
+      }
+    }
+    output.push_back(input[i]);
+  }
+  return output;
+}
+
+std::string utils::str::generateUniqueId(size_t length)
+{
+  static const char charset[] =
+    "0123456789"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "abcdefghijklmnopqrstuvwxyz";
+  static std::mt19937 rng(std::random_device{}());
+  static std::uniform_int_distribution<> dist(0, sizeof(charset) - 2);
+  std::string id;
+  id.reserve(length);
+  for (size_t i = 0; i < length; ++i) {
+    id += charset[dist(rng)];
+  }
+  return id;
+}
+
+bool utils::parse::parseNumericToken(std::string_view token, double &outValue)
+{
+  if (token.empty()) {
+    return false;
+  }
+  char *end = nullptr;
+  auto [ptr, ec] = std::from_chars(token.data(), token.data() + token.size(), outValue);
+  return ec == std::errc{};
+}
+
+bool utils::parse::parseNumericTokenFast(std::string_view token, double &outValue)
+{
+  if (token.empty()) return false;
+
+  const char *p = token.data();
+  const char *end = p + token.size();
+
+  bool negative = false;
+  if (*p == '-') { negative = true; ++p; } else if (*p == '+') { ++p; }
+
+  if (p == end) return false;
+
+  uint64_t mantissa = 0;
+  int digits = 0;
+  int exponent = 0;
+  bool seenDigit = false;
+  bool seenDot = false;
+
+  for (; p != end; ++p) {
+    char c = *p;
+    if (c == '.') {
+      if (seenDot) return false;   // malformed: two dots
+      seenDot = true;
+      continue;
+    }
+    if (c < '0' || c > '9') return false;  // bail -> caller falls back to from_chars
+    if (digits < 19) {                     // uint64_t safe up to ~19 digits
+      mantissa = mantissa * 10 + static_cast<uint64_t>(c - '0');
+      ++digits;
+      if (seenDot) --exponent;
+    }
+    // else: silently drop excess precision (telemetry data won't need it)
+    seenDigit = true;
+  }
+
+  if (!seenDigit) return false;
+
+  double result = static_cast<double>(mantissa);
+  if (exponent != 0) {
+    // small power-of-10 table beats pow() for the common range
+    static constexpr double kPow10[] = {
+      1e0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9
+    };
+    if (exponent >= -9 && exponent <= 0) {
+      result *= kPow10[-exponent];
+    } else {
+      result *= std::pow(10.0, exponent);  // rare fallback for unusual formats
+    }
+  }
+
+  outValue = negative ? -result : result;
+  return true;
+}
+
+bool utils::parse::tryParseBooleanToken(std::string_view token, double &outValue)
+{
+  auto ieq = [](std::string_view a, std::string_view b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+      if (std::tolower(static_cast<unsigned char>(a[i])) !=
+        std::tolower(static_cast<unsigned char>(b[i]))) {
+        return false;
+      }
+    }
+    return true;
+    };
+  switch (token.size()) {
+  case 2: if (ieq(token, "no")) { outValue = 0; return true; }
+        if (ieq(token, "on")) { outValue = 1; return true; }
+        return false;
+  case 3: if (ieq(token, "yes")) { outValue = 1; return true; }
+        if (ieq(token, "off")) { outValue = 0; return true; }
+        if (ieq(token, "low")) { outValue = 0; return true; }
+        return false;
+  case 4: if (ieq(token, "high")) { outValue = 1; return true; }
+        if (ieq(token, "true")) { outValue = 1; return true; }
+        return false;
+  case 6: if (ieq(token, "active")) { outValue = 1; return true; }
+        return false;
+  case 5: if (ieq(token, "false")) { outValue = 0; return true; }
+        return false;
+  case 8: if (ieq(token, "inactive")) { outValue = 0; return true; }
+        return false;
+  default: return false;
+  }
+  return false;
+}
+
+std::string utils::path::fileNameOnly(const std::string &path)
+{
+  size_t pos = path.find_last_of("/\\");
+  return (pos == std::string::npos) ? path : path.substr(pos + 1);
+}
+
+std::string utils::path::fileNameWithoutExtension(const std::string &path)
+{
+  std::string name = fileNameOnly(path);
+  size_t dot = name.find_last_of('.');
+  return (dot == std::string::npos) ? name : name.substr(0, dot);
+}
+
+
+
+## File: src/utils/utils.h
+
+#include <vector>
+#include <string>
+#include <string_view>
+
+
+namespace utils {
+  namespace str {
+    std::vector<std::string> splitCsvLine(const std::string &line);
+    void splitByDelimiter(std::string_view line, std::vector<std::string_view> &out, char delimiter = '\t');
+    std::string toLower(const std::string &s);
+    std::string sanitizeToUtf8(const std::string &input);
+    std::string generateUniqueId(size_t length = 8);
+  }
+
+  namespace parse {
+    bool parseNumericToken(std::string_view token, double &outValue);
+    bool parseNumericTokenFast(std::string_view token, double &outValue);
+    bool tryParseBooleanToken(std::string_view token, double &outValue);
+  }
+
+  namespace path {
+    std::string fileNameOnly(const std::string &path);
+    std::string fileNameWithoutExtension(const std::string &path);
+  }
+}
 
 

@@ -1,6 +1,8 @@
 #include "ui/tableeditorpanel.h"
 #include "ui/ui_helpers.h"
-#include <utils/utils.h>
+#include "utils/utils.h"
+#include "3rdparty/IconsFontAwesome7.h"
+
 
 #include <algorithm>
 #include <cmath>
@@ -82,13 +84,50 @@ namespace ui {
     }
   }
 
+  void TableEditorPanel::pushUndoState()
+  {
+    undoStack_.push_back({ table_, selectedCells_ });
+    if (undoStack_.size() > kMaxUndoHistory) {
+      undoStack_.erase(undoStack_.begin());
+    }
+    redoStack_.clear(); // Clear redo chain on new user action
+  }
+
+  void TableEditorPanel::undo() {
+    if (undoStack_.empty()) return;
+
+    redoStack_.push_back({ table_, selectedCells_ });
+
+    auto snapshot = undoStack_.back();
+    undoStack_.pop_back();
+
+    table_ = snapshot.table;
+    selectedCells_ = snapshot.selection;
+    notifyDataChanged();
+  }
+
+  void TableEditorPanel::redo() {
+    if (redoStack_.empty()) return;
+
+    undoStack_.push_back({ table_, selectedCells_ });
+
+    auto snapshot = redoStack_.back();
+    redoStack_.pop_back();
+
+    table_ = snapshot.table;
+    selectedCells_ = snapshot.selection;
+    notifyDataChanged();
+  }
+
   void TableEditorPanel::setSelection(const std::set<std::pair<int, int>> &cells)
   {
+    pushUndoState();
     selectedCells_ = cells;
   }
 
   void TableEditorPanel::applyBatchMultiply(double factor)
   {
+    pushUndoState();
     for (const auto &[r, c] : selectedCells_) {
       double v = table_.value(r, c);
       table_.setValue(r, c, v * factor);
@@ -98,6 +137,7 @@ namespace ui {
 
   void TableEditorPanel::applyBatchOffset(double delta)
   {
+    pushUndoState();
     for (const auto &[r, c] : selectedCells_) {
       double v = table_.value(r, c);
       table_.setValue(r, c, v + delta);
@@ -107,6 +147,7 @@ namespace ui {
 
   void TableEditorPanel::applyBatchSetValue(double value)
   {
+    pushUndoState();
     for (const auto &[r, c] : selectedCells_) {
       table_.setValue(r, c, value);
     }
@@ -118,6 +159,8 @@ namespace ui {
     int minR, maxR, minC, maxC;
     getSelectionBounds(minR, maxR, minC, maxC);
     if (minR < 0 || (minR == maxR && minC == maxC)) return;
+
+    pushUndoState();
 
     double vTopLeft = table_.value(maxR, minC);
     double vTopRight = table_.value(maxR, maxC);
@@ -139,6 +182,41 @@ namespace ui {
         table_.setValue(r, c, interpolated);
       }
     }
+    notifyDataChanged();
+  }
+
+  void TableEditorPanel::interpolateSelectionVorH(bool vertical)
+  {
+    int minR, maxR, minC, maxC;
+    getSelectionBounds(minR, maxR, minC, maxC);
+    if (minR < 0 || (minR == maxR && minC == maxC)) return;
+
+    pushUndoState();
+
+    if (vertical) {
+      int numRows = maxR - minR;
+      for (int c = minC; c <= maxC; ++c) {
+        double topVal = table_.value(maxR, c);
+        double bottomVal = table_.value(minR, c);
+        for (int r = minR; r <= maxR; ++r) {
+          double t = (numRows > 0) ? static_cast<double>(r - minR) / numRows : 0.0;
+          double v = bottomVal + (topVal - bottomVal) * t;
+          table_.setValue(r, c, v);
+        }
+      }
+    } else {
+      int numCols = maxC - minC;
+      for (int r = minR; r <= maxR; ++r) {
+        double leftVal = table_.value(r, minC);
+        double rightVal = table_.value(r, maxC);
+        for (int c = minC; c <= maxC; ++c) {
+          double t = (numCols > 0) ? static_cast<double>(c - minC) / numCols : 0.0;
+          double v = leftVal + (rightVal - leftVal) * t;
+          table_.setValue(r, c, v);
+        }
+      }
+    }
+
     notifyDataChanged();
   }
 
@@ -173,6 +251,16 @@ namespace ui {
       }
 
       ImGui::SameLine();
+      if (ui::UI::Button(ICON_FA_GRIP_LINES_VERTICAL, {}, {}, "Vertical interpolation")) {
+        interpolateSelectionVorH(true);
+      }
+
+      ImGui::SameLine();
+      if (ui::UI::Button(ICON_FA_GRIP_LINES, {}, {}, "Horizontal interpolation")) {
+        interpolateSelectionVorH(false);
+      }
+
+      ImGui::SameLine();
       if (ui::UI::Button("Extrapolate VE", {}, {}, "Extrapolate values for selected cells")) {
         showExtrapolateModal_ = true;
         wasExtrapolateModalOpen_ = false;
@@ -188,13 +276,13 @@ namespace ui {
       }
     }
 
-    if (customToolbarCallback_) {
+    if (customToolbar2Callback_) {
       if (batchToolbarVisible_) {
         ImGui::SameLine();
         ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
       }
       ImGui::SameLine();
-      customToolbarCallback_();
+      customToolbar2Callback_();
     }
   }
 
@@ -351,6 +439,8 @@ namespace ui {
 
     if (grid.empty()) return;
 
+    pushUndoState();
+
     bool hasHeaders = grid[0][0].empty();
 
     if (hasHeaders && grid.size() > 1) {
@@ -435,6 +525,8 @@ namespace ui {
     if (xBp.empty() || yBp.empty() || zVals.empty()) {
       return false;
     }
+
+    pushUndoState();
 
     table_.setXBreakpoints(xBp);
     table_.setYBreakpoints(yBp);
@@ -957,6 +1049,16 @@ namespace ui {
 
   void TableEditorPanel::render(PlotCursor & /*cursor*/)
   {
+    ImGuiIO &io = ImGui::GetIO();
+    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows)) {
+      if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z)) {
+        if (io.KeyShift) redo();
+        else undo();
+      } else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y)) {
+        redo();
+      }
+    }
+
     if (ui::UI::Button("Edit vertical axis")) {
       axisEditorValues_ = table_.yBreakpoints();
       axisEditorBinCount_ = static_cast<int>(axisEditorValues_.size());
@@ -984,6 +1086,21 @@ namespace ui {
     if (ui::UI::Button(show3DView_ ? "Show 2D Table Grid" : "Show 3D Surface View")) {
       show3DView_ = !show3DView_;
     }
+
+    ImGui::SameLine();
+    ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!canUndo());
+    if (ui::UI::Button(ICON_FA_ROTATE_LEFT, {}, {}, "Undo last change")) {
+      undo();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!canRedo());
+    if (ui::UI::Button(ICON_FA_ROTATE_RIGHT, {}, {}, "Redo last undone change")) {
+      redo();
+    }
+    ImGui::EndDisabled();
 
     if (ImGui::BeginPopup(ui::popups::TableImportExportMenu)) {
       if (ImGui::MenuItem("Copy Table / Selection")) {
@@ -1024,6 +1141,12 @@ namespace ui {
         editingAxis_ = AxisEditing::None;
       }
       ImGui::EndPopup();
+    }
+
+    if (customToolbar1Callback_) {
+      ImGui::SameLine();
+      ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+      customToolbar1Callback_();
     }
 
     ImGui::Separator();

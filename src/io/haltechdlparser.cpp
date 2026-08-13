@@ -14,10 +14,10 @@ namespace io {
   namespace {
 
     // Convert 'HH:MM:SS.mmm' timestamp string into total elapsed seconds
-    bool parseHaltechTimeSec(const std::string &token, double &outSec) {
+    bool parseHaltechTimeSec(std::string_view token, double &outSec) {
       int h = 0, m = 0;
       double s = 0.0;
-      if (std::sscanf(token.c_str(), "%d:%d:%lf", &h, &m, &s) == 3) {
+      if (std::sscanf(token.data(), "%d:%d:%lf", &h, &m, &s) == 3) {
         outSec = h * 3600.0 + m * 60.0 + s;
         return true;
       }
@@ -32,8 +32,8 @@ namespace io {
 
   } // namespace
 
-  bool HaltechDlParser::parse(const std::string &path, core::LogSession &outSession,
-    std::string &errorOut, std::atomic<float> *progress) {
+  bool HaltechDlParser::parse(const std::string &path, core::LogSession &outSession, std::string &errorOut, std::atomic<float> *progress)
+  {
     std::error_code ec;
     const uint64_t fileSize = std::filesystem::file_size(path, ec);
     if (ec || fileSize == 0) {
@@ -101,7 +101,8 @@ namespace io {
         progress->store(std::min(p, 1.0f));
       }
 
-      std::vector<std::string> tokens = utils::str::splitCsvLine(line);
+      std::vector<std::string_view> tokens;
+      utils::str::splitByDelimiter(line, tokens, ',');
       if (tokens.empty()) continue;
 
       // Token 0: Timestamp (HH:MM:SS.mmm)
@@ -120,11 +121,10 @@ namespace io {
       for (size_t i = 0; i < channelNames.size(); ++i) {
         double val = std::numeric_limits<double>::quiet_NaN();
         size_t tokenIdx = i + 1;
-
         if (tokenIdx < tokens.size() && !tokens[tokenIdx].empty()) {
           char *end = nullptr;
-          double parsed = std::strtod(tokens[tokenIdx].c_str(), &end);
-          if (end != tokens[tokenIdx].c_str() && !isHaltechSentinel(parsed)) {
+          double parsed = std::strtod(tokens[tokenIdx].data(), &end);
+          if (end != tokens[tokenIdx].data() && !isHaltechSentinel(parsed)) {
             val = parsed;
           }
         }

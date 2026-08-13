@@ -89,7 +89,7 @@ namespace io {
         continue;
       }
       headerLine = line;
-      utils::str::splitTabDelimited(headerLine, headerTokens);
+      utils::str::splitByDelimiter(headerLine, headerTokens);
       foundHeader = true;
       break;
     }
@@ -111,7 +111,7 @@ namespace io {
     pos = (nl == std::string_view::npos) ? buffer.size() : nl + 1;
     bytesRead += line.size() + 1;
     std::vector<std::string_view> unitTokens;
-    utils::str::splitTabDelimited(line, unitTokens);
+    utils::str::splitByDelimiter(line, unitTokens);
 
     const size_t columnCount = headerTokens.size();
 

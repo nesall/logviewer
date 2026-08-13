@@ -23,7 +23,7 @@ namespace ui {
     innerTable_.setOnDataChangedCallback([this]() {
       computeOverlayMatrix();
       });
-    innerTable_.setCustomToolbarCallback([this]() {
+    innerTable_.setCustomToolbar2Callback([this]() {
       ImGui::SameLine();
       if (ImGui::Checkbox("Filter Overlay", &enableOverlayFilter_)) {
         computeOverlayMatrix();

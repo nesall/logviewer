@@ -43,18 +43,23 @@ namespace ui {
     void applyBatchOffset(double delta);
     void applyBatchSetValue(double value);
     void interpolateSelectedRegion();
+    void interpolateSelectionVorH(bool vertical);
     void applyExtrapolationPreview();
     void setBatchToolbarVisible(bool visible) { batchToolbarVisible_ = visible; }
     bool isBatchToolbarVisible() const { return batchToolbarVisible_; }
 
     void setSelection(const std::set<std::pair<int, int>> &cells);
     const std::set<std::pair<int, int>> &selectedCells() const { return selectedCells_; }
+    bool isCellSelected(int r, int c) const;
 
     void setCustomTextColoring(std::function<std::optional<ImU32>(double, size_t, size_t)> colorFunc) { customTextColorFunc_ = std::move(colorFunc); }
     void setCustomHeatmapColoring(std::function<ImU32(double, size_t, size_t)> colorFunc) { customHeatmapColorFunc_ = std::move(colorFunc); }
     void setCustomHoverTooltip(std::function<std::string(double, size_t, size_t)> tooltipFunc) { customHoverTooltipFunc_ = std::move(tooltipFunc); }
-    void setCustomToolbarCallback(std::function<void()> callback) { customToolbarCallback_ = std::move(callback); }
+    void setCustomToolbar1Callback(std::function<void()> callback) { customToolbar1Callback_ = std::move(callback); }
+    void setCustomToolbar2Callback(std::function<void()> callback) { customToolbar2Callback_ = std::move(callback); }
     void setOnDataChangedCallback(std::function<void()> callback) { onDataChanged_ = std::move(callback); }
+
+    void pushUndoState();
 
   private:
     static std::string formatValue(double value, int decimalPlaces);
@@ -64,10 +69,14 @@ namespace ui {
     bool renderAxisEditorPopup(const char *title);
     void renderExtrapolateModal();
 
-    bool isCellSelected(int r, int c) const;
     void clearSelection();
     void selectRectangularRegion(int r1, int c1, int r2, int c2, bool keepExisting = false);
     void getSelectionBounds(int &minR, int &maxR, int &minC, int &maxC) const;
+
+    void undo();
+    void redo();
+    bool canUndo() const { return !undoStack_.empty(); }
+    bool canRedo() const { return !redoStack_.empty(); }
 
     void notifyDataChanged() { if (onDataChanged_) onDataChanged_(); }
 
@@ -122,11 +131,20 @@ namespace ui {
     };
     AxisEditing editingAxis_ = AxisEditing::None;
 
+    struct TableUndoSnapshot {
+      core::Table2D table;
+      std::set<std::pair<int, int>> selection;
+    };
+    std::vector<TableUndoSnapshot> undoStack_;
+    std::vector<TableUndoSnapshot> redoStack_;
+    static constexpr size_t kMaxUndoHistory = 50;
+
     float copyToastTimer_ = 0.0f;
     std::function<std::optional<ImU32>(double, size_t, size_t)> customTextColorFunc_;
     std::function<ImU32(double, size_t, size_t)> customHeatmapColorFunc_;
     std::function<std::string(double, size_t, size_t)> customHoverTooltipFunc_;
-    std::function<void()> customToolbarCallback_;
+    std::function<void()> customToolbar1Callback_;
+    std::function<void()> customToolbar2Callback_;
     std::function<void()> onDataChanged_;
   };
 

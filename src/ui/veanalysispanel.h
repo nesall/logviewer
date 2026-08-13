@@ -58,6 +58,7 @@ namespace ui {
     core::Table2D baselineVeEditBuffer_;
 
     bool hasSuggestedVe_ = false;
+    int smoothIterations_ = 1;
 
     // Cropped axis bounds for Observed AFR
     size_t minObservedRow_ = 0;

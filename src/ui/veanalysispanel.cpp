@@ -33,14 +33,14 @@ namespace ui {
       };
     targetAfrPanel_.setOnDataChangedCallback(recalcCallback);
     baselineVePanel_.setOnDataChangedCallback(recalcCallback);
-    targetAfrPanel_.setCustomToolbarCallback([this, recalcCallback] {
+    targetAfrPanel_.setCustomToolbar2Callback([this, recalcCallback] {
       ImGui::BeginDisabled(!hasBaselineVe() || session_ == nullptr);
       if (ui::UI::ButtonPrimary(ICON_FA_CHECK " Apply Changes", {}, "Recomputes AFR Delta and Suggested VE.")) {
         recalcCallback();
       }
       ImGui::EndDisabled();
       });
-    baselineVePanel_.setCustomToolbarCallback([this, recalcCallback] {
+    baselineVePanel_.setCustomToolbar2Callback([this, recalcCallback] {
       ImGui::BeginDisabled(!hasTargetAfr() || session_ == nullptr);
       if (ui::UI::ButtonPrimary(ICON_FA_CHECK " Apply Changes", {}, "Recomputes AFR Delta and Suggested VE.")) {
         recalcCallback();
@@ -220,13 +220,50 @@ namespace ui {
     auto customTextColor = [this](double value, size_t row, size_t col) -> std::optional<ImU32> {
       double curVe = baselineVePanel_.table().value(row, col);
       double diff = value - curVe;
+      bool selected = suggestedVePanel_.isCellSelected(row, col);
       if (std::abs(diff) < 1e-5) {
-        return ImGui::ColorConvertFloat4ToU32(ImVec4{ 0.6f, 0.6f, 0.6f, 1.0f }); // Gray for unchanged
+        return ImGui::ColorConvertFloat4ToU32(
+          selected ? ImVec4{ 0.9f, 0.9f, 0.9f, 1.0f } : ImVec4{ 0.6f, 0.6f, 0.6f, 1.0f }
+        );
       }
-      return ImGui::ColorConvertFloat4ToU32(ImVec4{ 0.2f, 0.8f, 1.0f, 1.0f });
+      return ImGui::ColorConvertFloat4ToU32(
+        selected ? ImVec4{ 0.5f, 0.95f, 1.0f, 1.0f } : ImVec4{ 0.2f, 0.8f, 1.0f, 1.0f }
+      );
       };
 
-    auto customToolbar = [this]() {
+    auto customToolbar1 = [this]() {
+      bool changed = false;
+      ImGui::SameLine();
+
+      ImGui::BeginDisabled(!hasTargetAfr() || !hasBaselineVe() || session_ == nullptr);
+      if (ui::UI::ButtonDanger("Reset to Calculated VE", {}, "Recomputes Suggested VE from log data, discarding any manual edits.")) {
+        computeSuggestedVe();
+      }
+      ImGui::EndDisabled();
+
+      ImGui::SameLine();
+      ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+      ImGui::SameLine();
+
+      ImGui::SetNextItemWidth(70.0f);
+      ImGui::InputInt("Passes##smooth_passes", &smoothIterations_);
+      smoothIterations_ = std::clamp(smoothIterations_, 1, 10);
+
+      ImGui::SameLine();
+      ImGui::BeginDisabled(!hasTargetAfr() || !hasBaselineVe() || session_ == nullptr);
+      if (ui::UI::ButtonPrimary(ICON_FA_WAND_MAGIC_SPARKLES " Smart Smooth", {}, "Smooths low-confidence cells while anchoring high-accuracy bins.")) {
+        if (session_)
+          for (int i = 0; i < smoothIterations_; ++i) {
+            auto currentVe = suggestedVePanel_.table();
+            auto smoothed = engine::VeAnalyzer::computeSmartSmoothedVe(*session_, currentVe, afrDeltaTable_, config_, suggestedVePanel_.selectedCells());
+            suggestedVePanel_.pushUndoState();
+            suggestedVePanel_.setTable(smoothed);
+          }
+      }
+      ImGui::EndDisabled();
+      };
+
+    auto customToolbar2 = [this]() {
       bool changed = false;
 
       // Inline Controls for Correction Limits
@@ -263,21 +300,14 @@ namespace ui {
       if (ui::UI::ButtonSecondary("Select Unvisited Cells", {}, "Highlights cells that lacked enough log samples for direct AFR analysis.")) {
         selectUnvisitedCellsOnSuggestedVe();
       }
-
-      ImGui::SameLine();
-
-      ImGui::BeginDisabled(!hasTargetAfr() || !hasBaselineVe() || session_ == nullptr);
-      if (ui::UI::ButtonDanger("Reset to Calculated VE", {}, "Recomputes Suggested VE from log data, discarding any manual edits.")) {
-        computeSuggestedVe();
-      }
-      ImGui::EndDisabled();
       };
 
     core::Table2D result = engine::VeAnalyzer::computeCorrectedVe(*session_, baselineVePanel_.table(), targetAfrPanel_.table(), config_);
     suggestedVePanel_.setCustomHeatmapColoring(customHeatmap);
     suggestedVePanel_.setCustomHoverTooltip(customTooltip);
     suggestedVePanel_.setCustomTextColoring(customTextColor);
-    suggestedVePanel_.setCustomToolbarCallback(customToolbar);
+    suggestedVePanel_.setCustomToolbar1Callback(customToolbar1);
+    suggestedVePanel_.setCustomToolbar2Callback(customToolbar2);
     suggestedVePanel_.setTable(result);
     hasSuggestedVe_ = true;
   }

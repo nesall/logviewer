@@ -21,12 +21,12 @@ std::vector<std::string> utils::str::splitCsvLine(const std::string &line)
   return tokens;
 }
 
-void utils::str::splitTabDelimited(std::string_view line, std::vector<std::string_view> &out)
+void utils::str::splitByDelimiter(std::string_view line, std::vector<std::string_view> &out, char delimiter)
 {
   out.clear();
   size_t start = 0;
   while (true) {
-    size_t tabPos = line.find('\t', start);
+    size_t tabPos = line.find(delimiter, start);
     if (tabPos == std::string_view::npos) { out.push_back(line.substr(start)); break; }
     out.push_back(line.substr(start, tabPos - start));
     start = tabPos + 1;

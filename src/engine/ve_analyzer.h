@@ -2,6 +2,7 @@
 
 #include <string>
 #include <vector>
+#include <set>
 #include "core/logsession.h"
 #include "core/table2d.h"
 
@@ -49,6 +50,13 @@ namespace engine {
       const core::Table2D &baselineVe,
       const core::Table2D &targetAfr,
       const VeAnalysisConfig &config);
+
+    static core::Table2D computeSmartSmoothedVe(
+      const core::LogSession &session, 
+      const core::Table2D &suggestedVe,
+      const core::Table2D &deltaAfr,
+      const VeAnalysisConfig &config,
+      const std::set<std::pair<int, int>> &selectedCells);
   };
 
 } // namespace engine
