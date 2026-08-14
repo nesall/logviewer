@@ -7,6 +7,8 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 #include "implot.h"
+#define STB_IMAGE_IMPLEMENTATION
+#include "3rdparty/stb_image.h"
 
 #include "ui/app.h"
 
@@ -28,10 +30,17 @@ int main() {
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
 
-  GLFWwindow *window = glfwCreateWindow(1280, 800, "logviewer", nullptr, nullptr);
+  GLFWwindow *window = glfwCreateWindow(1280, 800, ui::App::appBaseTitle(), nullptr, nullptr);
   if (window == nullptr) {
     glfwTerminate();
     return 1;
+  }
+
+  GLFWimage images[1]{};
+  images[0].pixels = stbi_load("assets/icon.png", &images[0].width, &images[0].height, 0, 4); // RGBA 4 channels
+  if (images[0].pixels) {
+    glfwSetWindowIcon(window, 1, images);
+    stbi_image_free(images[0].pixels);
   }
 
   glfwMakeContextCurrent(window);

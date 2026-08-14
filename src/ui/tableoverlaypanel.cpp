@@ -328,8 +328,8 @@ namespace ui {
     if (state.contains("enableOverlayFilter")) enableOverlayFilter_ = state["enableOverlayFilter"].get<bool>();
     if (state.contains("overlayFilterMin")) overlayFilterMin_ = state["overlayFilterMin"].get<float>();
     if (state.contains("overlayFilterMax")) overlayFilterMax_ = state["overlayFilterMax"].get<float>();
-    rebindChannels();
-    computeOverlayMatrix();
+    //rebindChannels();
+    //computeOverlayMatrix();
   }
 
 } // namespace ui

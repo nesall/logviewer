@@ -13,6 +13,9 @@
 
 #include <imgui.h>
 
+namespace core {
+  class LogSession;
+}
 
 namespace ui {
 
@@ -61,6 +64,11 @@ namespace ui {
 
     void pushUndoState();
 
+    void setSession(const core::LogSession *session) override;
+    void setCustomAxisChannels(std::optional<std::string> xChannel = std::nullopt, std::optional<std::string> yChannel = std::nullopt);
+    void recomputeRegimeCoverage();
+    void selectCellsInRegime(const std::string &regimeId);
+
   private:
     static std::string formatValue(double value, int decimalPlaces);
     void renderValueGrid();
@@ -79,6 +87,7 @@ namespace ui {
     bool canRedo() const { return !redoStack_.empty(); }
 
     void notifyDataChanged() { if (onDataChanged_) onDataChanged_(); }
+    bool isQuadSelected(size_t r, size_t c) const;
 
   private:
     std::string tableUniqueId_;
@@ -138,7 +147,6 @@ namespace ui {
     std::vector<TableUndoSnapshot> undoStack_;
     std::vector<TableUndoSnapshot> redoStack_;
     static constexpr size_t kMaxUndoHistory = 50;
-
     float copyToastTimer_ = 0.0f;
     std::function<std::optional<ImU32>(double, size_t, size_t)> customTextColorFunc_;
     std::function<ImU32(double, size_t, size_t)> customHeatmapColorFunc_;
@@ -146,6 +154,17 @@ namespace ui {
     std::function<void()> customToolbar1Callback_;
     std::function<void()> customToolbar2Callback_;
     std::function<void()> onDataChanged_;
+
+    const core::LogSession *session_ = nullptr;
+    std::optional<std::string> customXAxisChannel_;
+    std::optional<std::string> customYAxisChannel_;
+    struct CellRegimeInfo {
+      ImVec4 blendedColor = ImVec4(0, 0, 0, 0);
+      double totalDwellSec = 0.0;
+      std::vector<std::pair<std::string, double>> regimeDwellList; // Name -> Seconds
+    };
+    // Matrix matching grid [rows][cols]
+    std::vector<std::vector<CellRegimeInfo>> regimeCoverageMatrix_;
   };
 
 } // namespace ui

@@ -82,6 +82,7 @@ target_link_libraries(implot PUBLIC imgui)
 #  5. Executable & Sources
 # =============================================================================
 add_executable(logviewer
+  app.rc
   src/main.cpp
   src/utils/utils.h
   src/utils/utils.cpp

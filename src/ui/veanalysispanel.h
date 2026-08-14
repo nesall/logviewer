@@ -37,6 +37,8 @@ namespace ui {
     bool hasBaselineVe() const;
     bool hasTargetAfr() const;
 
+    void onRegimesUpdated() override;
+
     const core::LogSession *session_ = nullptr;
     bool open_ = true;
 

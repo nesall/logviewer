@@ -46,9 +46,6 @@ namespace ui {
       return buf;
     }
 
-    // Single spot to change once a real app name is picked.
-    constexpr const char *kAppBaseTitle = "logviewer";
-
     // Stored next to the executable for now -- simplest thing that works for
     // a dev-testing tool. Move to a proper per-user config directory
     // (%AppData% / ~/.config) if this ever ships beyond your own machine.
@@ -148,13 +145,8 @@ namespace ui {
   // Workspace save/load
   // ---------------------------------------------------------------------
 
-  // For testing only.
-  std::string g_SavedLayoutIni = "";
-#define USE_SAVE_LAYOUT_INI 1
-
   void App::saveWorkspaceFile(const std::string &path)
   {
-#if USE_SAVE_LAYOUT_INI
     nlohmann::json root;
     root["logFilePath"] = session_.sourcePath();
 
@@ -200,17 +192,10 @@ namespace ui {
     currentWorkspacePath_ = path;
     updateWindowTitle();
     addRecentWorkspace(path);
-#else
-    size_t iniSize = 0;
-    const char *iniData = ImGui::SaveIniSettingsToMemory(&iniSize);
-    g_SavedLayoutIni = std::string(iniData, iniSize);
-
-#endif
   }
 
   void App::loadWorkspaceFile(const std::string &path)
   {
-#if USE_SAVE_LAYOUT_INI
     std::ifstream file(path);
     if (!file.is_open()) {
       loadErrorMessage_ = "Could not open workspace file: " + path;
@@ -280,21 +265,33 @@ namespace ui {
             nlohmann::json state = panelJson.contains("state") ? panelJson["state"] : nlohmann::json::object();
             std::string savedTitle = state.value("title", "");
 
-            PlotPanel *panel = nullptr;
-            if (type == "TimeSeries") panel = addTimeSeriesPanel({}, savedTitle);
-            else if (type == "Scatter") panel = addScatterPanel({}, {}, savedTitle);
-            else if (type == "Status") panel = addStatusPanel(savedTitle);
-            else if (type == "VeAnalysisPanel") panel = addVeAnalysisPanel(savedTitle);
-            else if (type == "TableOverlayPanel") panel = addTableOverlayPanel(savedTitle);
-            else if (type == "DriveRegimePanel") panel = getOrAddDriveRegimePanel();
+            std::unique_ptr<PlotPanel> panel;
+            if (type == "TimeSeries") panel = std::make_unique<TimeSeriesPanel>(savedTitle);
+            else if (type == "Scatter") panel = std::make_unique<ScatterPanel>(savedTitle, "", "");
+            else if (type == "Status") panel = std::make_unique<StatusPanel>(savedTitle);
+            else if (type == "VeAnalysisPanel") panel = std::make_unique<VeAnalysisPanel>(savedTitle);
+            else if (type == "TableOverlayPanel") panel = std::make_unique<TableOverlayPanel>(savedTitle);
+            else if (type == "DriveRegimePanel") panel = std::make_unique<DriveRegimePanel>();
 
 #ifdef _DEBUG2
             std::cout << "Restoring panel: " << type << " state: " << state.dump() << std::endl;
 #endif
 
-            if (panel != nullptr) {
+            if (panel) {
               panel->loadState(state);
+              if (panel->panelTypeId() == "DriveRegimePanel") {
+                static_cast<DriveRegimePanel *>(panel.get())->setOnRegimesChangedCallback([this] { notifyRegimesUpdated(); });
+                panel->setSession(&session_); // populates session_.regimeSummaries()
+              }
+              panels_.push_back(std::move(panel));
             }
+          }
+        }
+
+        // Bind remaining panels now that regime definitions and summaries are populated
+        for (auto &panel : panels_) {
+          if (panel->panelTypeId() != "DriveRegimePanel") {
+            panel->setSession(&session_);
           }
         }
 
@@ -310,20 +307,6 @@ namespace ui {
     } else {
       restoreWorkspaceState();
     }
-#else
-
-    ImGui::ClearIniSettings();
-
-    ImGui::LoadIniSettingsFromMemory(g_SavedLayoutIni.c_str(), g_SavedLayoutIni.size());
-
-    ImGuiID hostId = ImHashStr("DockSpaceHost");
-    ImGuiID dockspaceId = ImHashStr("MainDockSpace", 0, hostId);
-    if (ImGuiDockNode *node = ImGui::DockBuilderGetNode(dockspaceId)) {
-      ImGui::DockBuilderSetNodePos(dockspaceId, ImGui::GetMainViewport()->WorkPos);
-      ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->WorkSize);
-    }
-
-#endif
   }
 
   void App::addRecentWorkspace(const std::string &path)
@@ -403,12 +386,17 @@ namespace ui {
     // Best-effort -- not worth an error popup if this fails to write.
   }
 
+  const char *App::appBaseTitle()
+  {
+    return "Phenix LogView";
+  }
+
   void App::updateWindowTitle()
   {
     if (window_ == nullptr) {
       return;
     }
-    std::string title = kAppBaseTitle;
+    std::string title{ App::appBaseTitle() };
     if (!currentWorkspacePath_.empty()) {
       title += " - " + utils::path::fileNameWithoutExtension(currentWorkspacePath_);
     }
@@ -423,6 +411,13 @@ namespace ui {
   {
     for (auto &panel : panels_) {
       panel->setSession(&session_);
+    }
+  }
+
+  void App::notifyRegimesUpdated()
+  {
+    for (auto &panel : panels_) {
+      panel->onRegimesUpdated();
     }
   }
 
@@ -460,7 +455,6 @@ namespace ui {
         } else {
           session_ = std::move(res.session);
           refreshPanelsFromSession();
-
           if (pendingOnCompleteCallback_) {
             pendingOnCompleteCallback_();
             pendingOnCompleteCallback_ = nullptr;
@@ -564,6 +558,7 @@ namespace ui {
     }
     auto regimePanel = std::make_unique<DriveRegimePanel>();
     regimePanel->setSession(&session_);
+    regimePanel->setOnRegimesChangedCallback([this] { notifyRegimesUpdated(); });
     panels_.push_back(std::move(regimePanel));
     return static_cast<DriveRegimePanel *>(panels_.back().get());
   }

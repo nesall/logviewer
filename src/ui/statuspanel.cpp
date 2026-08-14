@@ -57,7 +57,8 @@ namespace ui {
     visibilityOverrides_[channelName] = visible;
   }
 
-  nlohmann::json StatusPanel::saveState() const {
+  nlohmann::json StatusPanel::saveState() const
+  {
     auto overrides = PlotPanel::saveState();
     for (const auto &[name, visible] : visibilityOverrides_) {
       overrides[name] = visible;
@@ -65,7 +66,8 @@ namespace ui {
     return nlohmann::json{ {"visibilityOverrides", overrides} };
   }
 
-  void StatusPanel::loadState(const nlohmann::json &state) {
+  void StatusPanel::loadState(const nlohmann::json &state)
+  {
     PlotPanel::loadState(state);
     if (!state.contains("visibilityOverrides")) {
       return;

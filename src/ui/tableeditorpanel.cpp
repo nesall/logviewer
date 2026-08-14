@@ -1,5 +1,6 @@
 #include "ui/tableeditorpanel.h"
 #include "ui/ui_helpers.h"
+#include "core/logsession.h"
 #include "utils/utils.h"
 #include "3rdparty/IconsFontAwesome7.h"
 
@@ -93,7 +94,155 @@ namespace ui {
     redoStack_.clear(); // Clear redo chain on new user action
   }
 
-  void TableEditorPanel::undo() {
+  void TableEditorPanel::setSession(const core::LogSession *session)
+  {
+    session_ = session;
+    recomputeRegimeCoverage();
+  }
+
+  void TableEditorPanel::setCustomAxisChannels(std::optional<std::string> xChannel, std::optional<std::string> yChannel)
+  {
+    customXAxisChannel_ = std::move(xChannel);
+    customYAxisChannel_ = std::move(yChannel);
+    recomputeRegimeCoverage();
+  }
+
+  void TableEditorPanel::recomputeRegimeCoverage()
+  {
+    const size_t rows = table_.rowCount();
+    const size_t cols = table_.columnCount();
+
+    regimeCoverageMatrix_.assign(rows, std::vector<CellRegimeInfo>(cols));
+
+    if (!session_ || rows == 0 || cols == 0 || session_->regimeSummaries().empty()) {
+      return;
+    }
+
+    const auto &mapping = session_->channelMapping();
+
+    std::string xName = customXAxisChannel_.value_or(mapping.rpm);
+    std::string yName = customYAxisChannel_.value_or(mapping.load);
+
+    const auto *timeSec = session_->timeSec();
+    const auto *xCh = session_->findChannel(xName);
+    const auto *yCh = session_->findChannel(yName);
+
+    if (!timeSec || !xCh || !yCh || timeSec->empty()) {
+      return;
+    }
+
+    const auto &xBp = table_.xBreakpoints();
+    const auto &yBp = table_.yBreakpoints();
+    const size_t numRows = session_->rowCount();
+
+    // Matrix of sample counts per [regimeIdx][row][col]
+    const auto &regimes = session_->regimeSummaries();
+    std::vector<std::vector<std::vector<size_t>>> regimeCellCounts(
+      regimes.size(), std::vector<std::vector<size_t>>(rows, std::vector<size_t>(cols, 0))
+    );
+
+    // Time delta per sample for dwell estimation
+    double totalTime = (timeSec->back() - timeSec->front());
+    double dt = (numRows > 1) ? (totalTime / static_cast<double>(numRows)) : 0.01;
+
+    // Process rows
+    for (size_t i = 0; i < numRows; ++i) {
+      if (!session_->isRowInCropRange(i)) continue;
+
+      double t = (*timeSec)[i];
+      double xVal = xCh->values()[i];
+      double yVal = yCh->values()[i];
+
+      if (std::isnan(xVal) || std::isnan(yVal)) continue;
+
+      // Check which active shaded regimes encompass timestamp t
+      std::vector<size_t> matchingRegimeIndices;
+      for (size_t rIdx = 0; rIdx < regimes.size(); ++rIdx) {
+        if (!regimes[rIdx].def.showShading) continue;
+
+        for (const auto &interval : regimes[rIdx].intervals) {
+          if (t >= interval.startSec && t <= interval.endSec) {
+            matchingRegimeIndices.push_back(rIdx);
+            break;
+          }
+        }
+      }
+
+      if (matchingRegimeIndices.empty()) continue;
+
+      // Find nearest cell
+      size_t bestR = 0, bestC = 0;
+      double minDist = (std::numeric_limits<double>::max)();
+
+      for (size_t r = 0; r < rows; ++r) {
+        for (size_t c = 0; c < cols; ++c) {
+          double dX = (xVal - xBp[c]) / 1000.0;
+          double dY = (yVal - yBp[r]) / 10.0;
+          double dist = (dX * dX) + (dY * dY);
+          if (dist < minDist) {
+            minDist = dist;
+            bestR = r;
+            bestC = c;
+          }
+        }
+      }
+
+      for (size_t rIdx : matchingRegimeIndices) {
+        regimeCellCounts[rIdx][bestR][bestC]++;
+      }
+    }
+
+    // Aggregate blended colors and dwell times into regimeCoverageMatrix_
+    for (size_t r = 0; r < rows; ++r) {
+      for (size_t c = 0; c < cols; ++c) {
+        auto &info = regimeCoverageMatrix_[r][c];
+        float totalWeight = 0.0f;
+        float rAcc = 0.0f, gAcc = 0.0f, bAcc = 0.0f;
+
+        for (size_t rIdx = 0; rIdx < regimes.size(); ++rIdx) {
+          size_t count = regimeCellCounts[rIdx][r][c];
+          if (count == 0) continue;
+
+          double dwellSec = count * dt;
+          info.totalDwellSec += dwellSec;
+          info.regimeDwellList.push_back({ regimes[rIdx].def.displayName, dwellSec });
+
+          const auto &regColor = regimes[rIdx].def.color;
+          float w = static_cast<float>(count);
+          rAcc += regColor.x * w;
+          gAcc += regColor.y * w;
+          bAcc += regColor.z * w;
+          totalWeight += w;
+        }
+
+        if (totalWeight > 0.0f) {
+          info.blendedColor = ImVec4(rAcc / totalWeight, gAcc / totalWeight, bAcc / totalWeight, 0.35f);
+        }
+      }
+    }
+  }
+
+  void TableEditorPanel::selectCellsInRegime(const std::string & regimeId)
+  {
+    if (!session_) return;
+    std::set<std::pair<int, int>> matchingCells;
+    for (size_t r = 0; r < regimeCoverageMatrix_.size(); ++r) {
+      for (size_t c = 0; c < regimeCoverageMatrix_[r].size(); ++c) {
+        const auto &info = regimeCoverageMatrix_[r][c];
+        for (const auto &[name, dwell] : info.regimeDwellList) {
+          if (!regimeId.empty() && name.find(regimeId) != std::string::npos && dwell > 0.0) {
+            matchingCells.insert({ static_cast<int>(r), static_cast<int>(c) });
+          }
+        }
+      }
+    }
+    if (!matchingCells.empty()) {
+      setSelection(matchingCells);
+    }
+  }
+
+  void TableEditorPanel::undo()
+  {
     if (undoStack_.empty()) return;
 
     redoStack_.push_back({ table_, selectedCells_ });
@@ -106,7 +255,8 @@ namespace ui {
     notifyDataChanged();
   }
 
-  void TableEditorPanel::redo() {
+  void TableEditorPanel::redo()
+  {
     if (redoStack_.empty()) return;
 
     undoStack_.push_back({ table_, selectedCells_ });
@@ -117,6 +267,14 @@ namespace ui {
     table_ = snapshot.table;
     selectedCells_ = snapshot.selection;
     notifyDataChanged();
+  }
+
+  bool TableEditorPanel::isQuadSelected(size_t r, size_t c) const
+  {
+    return isCellSelected(static_cast<int>(r), static_cast<int>(c)) ||
+      isCellSelected(static_cast<int>(r + 1), static_cast<int>(c)) ||
+      isCellSelected(static_cast<int>(r), static_cast<int>(c + 1)) ||
+      isCellSelected(static_cast<int>(r + 1), static_cast<int>(c + 1));
   }
 
   void TableEditorPanel::setSelection(const std::set<std::pair<int, int>> &cells)
@@ -246,7 +404,7 @@ namespace ui {
       }
 
       ImGui::SameLine();
-      if (ui::UI::Button("Interpolate", {}, {}, "Bilinear interpolation between bounding corners")) {
+      if (ui::UI::Button(ICON_FA_GRIP, {}, {}, "Bilinear interpolation between bounding corners")) {
         interpolateSelectedRegion();
       }
 
@@ -770,6 +928,32 @@ namespace ui {
             ImGuiSelectableFlags selFlags = ImGuiSelectableFlags_AllowDoubleClick;
             ImGui::Selectable(cellText, selected, selFlags);
 
+            // Render Semi-Transparent Regime Brush Overlay on top of Cell Heatmap
+            if (r < regimeCoverageMatrix_.size() && c < regimeCoverageMatrix_[r].size()) {
+              const auto &cov = regimeCoverageMatrix_[r][c];
+              if (cov.blendedColor.w > 0.0f) {
+                ImVec2 cellMin = ImGui::GetItemRectMin();
+                ImVec2 cellMax = ImGui::GetItemRectMax();
+                ImDrawList *windowDrawList = ImGui::GetWindowDrawList();
+                windowDrawList->AddRectFilled(cellMin, cellMax, ImGui::ColorConvertFloat4ToU32(cov.blendedColor));
+              }
+            }
+
+            // Add Regime Dwell Details to Hover Tooltip
+            if (ImGui::IsItemHovered()) {
+              if (r < regimeCoverageMatrix_.size() && c < regimeCoverageMatrix_[r].size()) {
+                const auto &cov = regimeCoverageMatrix_[r][c];
+                if (!cov.regimeDwellList.empty()) {
+                  ImGui::BeginTooltip();
+                  ImGui::TextDisabled("Regime Activity:");
+                  for (const auto &[name, dwell] : cov.regimeDwellList) {
+                    ImGui::BulletText("%s: %.2f s", name.c_str(), dwell);
+                  }
+                  ImGui::EndTooltip();
+                }
+              }
+            }
+
             if (hasCustomTextColor) {
               ImGui::PopStyleColor();
             }
@@ -918,7 +1102,7 @@ namespace ui {
       return ImVec2(centerPos.x + x1 * scale, centerPos.y - z2 * scale);
       };
 
-    auto getColor = [](float t) -> ImU32 {
+    auto getColor = [](float t, bool selected) -> ImU32 {
       if (t < 0.0f) t = 0.0f;
       if (t > 1.0f) t = 1.0f;
       float r = 0.0f, g = 0.0f, b = 0.0f;
@@ -931,6 +1115,16 @@ namespace ui {
       } else {
         float f = (t - 0.75f) / 0.25f; r = 1.0f; g = 1.0f - f;
       }
+
+      if (selected) {
+        // Bright cyan/amber tint highlight for selected cells
+        return IM_COL32(
+          static_cast<int>((std::min)(255.0f, r * 255.0f + 80.0f)),
+          static_cast<int>((std::min)(255.0f, g * 255.0f + 160.0f)),
+          static_cast<int>((std::min)(255.0f, b * 255.0f + 200.0f)),
+          240);
+      }
+
       return IM_COL32(static_cast<int>(r * 255), static_cast<int>(g * 255), static_cast<int>(b * 255), 180);
       };
 
@@ -941,12 +1135,10 @@ namespace ui {
     ImVec2 boxMaxY = project3D(-1.0f, 1.0f, -0.75f, dummyD);
     ImVec2 boxMaxZ = project3D(-1.0f, -1.0f, 0.75f, dummyD);
 
-    // Draw base axis wireframe
     drawList->AddLine(boxMin, boxMaxX, IM_COL32(200, 80, 80, 200), 2.0f);  // X axis (Red)
     drawList->AddLine(boxMin, boxMaxY, IM_COL32(80, 200, 80, 200), 2.0f);  // Y axis (Green)
     drawList->AddLine(boxMin, boxMaxZ, IM_COL32(80, 150, 255, 200), 2.0f); // Z axis (Blue)
 
-    // Render Axis Labels
     const auto &xBp = table_.xBreakpoints();
     const auto &yBp = table_.yBreakpoints();
 
@@ -995,6 +1187,7 @@ namespace ui {
     struct MeshQuad {
       size_t r, c;
       float avgDepth;
+      bool selected;
     };
 
     std::vector<MeshQuad> quads;
@@ -1002,7 +1195,8 @@ namespace ui {
     for (size_t r = 0; r < rows - 1; ++r) {
       for (size_t c = 0; c < cols - 1; ++c) {
         float avgD = (depths[r][c] + depths[r + 1][c] + depths[r][c + 1] + depths[r + 1][c + 1]) * 0.25f;
-        quads.push_back({ r, c, avgD });
+        bool quadSelected = isQuadSelected(r, c);
+        quads.push_back({ r, c, avgD, quadSelected });
       }
     }
 
@@ -1019,15 +1213,47 @@ namespace ui {
       ImVec2 p3 = screenPts[r + 1][c];
 
       float avgNormZ = (normZ[r][c] + normZ[r][c + 1] + normZ[r + 1][c + 1] + normZ[r + 1][c]) * 0.25f;
-      drawList->AddQuadFilled(p0, p1, p2, p3, getColor(avgNormZ));
-      drawList->AddQuad(p0, p1, p2, p3, IM_COL32(255, 255, 255, 50), 1.0f);
+      ImU32 baseColor = getColor(avgNormZ, q.selected);
+
+      // Check if this quad has active regime shading
+      if (r < regimeCoverageMatrix_.size() && c < regimeCoverageMatrix_[r].size()) {
+        const auto &cov = regimeCoverageMatrix_[r][c];
+        if (cov.blendedColor.w > 0.0f) {
+          ImVec4 baseVec = ImGui::ColorConvertU32ToFloat4(baseColor);
+          // Alpha blend base color with regime tint
+          float alpha = 0.5f;
+          ImVec4 blended(
+            baseVec.x * (1.0f - alpha) + cov.blendedColor.x * alpha,
+            baseVec.y * (1.0f - alpha) + cov.blendedColor.y * alpha,
+            baseVec.z * (1.0f - alpha) + cov.blendedColor.z * alpha,
+            baseVec.w
+          );
+          baseColor = ImGui::ColorConvertFloat4ToU32(blended);
+        }
+      }
+
+      drawList->AddQuadFilled(p0, p1, p2, p3, baseColor);
+      // Draw standard wireframe or bold yellow wireframe if quad is selected
+      if (q.selected) {
+        drawList->AddQuad(p0, p1, p2, p3, IM_COL32(255, 235, 100, 255), 2.0f);
+      } else {
+        drawList->AddQuad(p0, p1, p2, p3, IM_COL32(255, 255, 255, 50), 1.0f);
+      }
     }
 
-    // --- 3. Render Hover Highlight & Tooltip ---
+    // --- 3. Draw Selected Node Indicators ---
+    for (const auto &[r, c] : selectedCells_) {
+      if (r >= 0 && r < static_cast<int>(rows) && c >= 0 && c < static_cast<int>(cols)) {
+        ImVec2 sPt = screenPts[r][c];
+        drawList->AddCircleFilled(sPt, 4.0f, IM_COL32(255, 215, 0, 255));
+        drawList->AddCircle(sPt, 6.0f, IM_COL32(255, 255, 255, 220), 0, 1.5f);
+      }
+    }
+
+    // --- 4. Render Hover Highlight & Tooltip ---
     if (hoveredRow >= 0 && hoveredCol >= 0) {
       ImVec2 hPt = screenPts[hoveredRow][hoveredCol];
 
-      // Draw outer glowing ring on hovered node
       drawList->AddCircleFilled(hPt, 6.0f, IM_COL32(255, 255, 0, 220));
       drawList->AddCircle(hPt, 8.0f, IM_COL32(255, 255, 255, 255), 0, 2.0f);
 
@@ -1041,12 +1267,15 @@ namespace ui {
       ImGui::Text("X (RPM):  %s", formatValue(xBpVal, xDecimalPlaces_).c_str());
       ImGui::Text("Y (Load): %s", formatValue(yBpVal, yDecimalPlaces_).c_str());
       ImGui::TextColored(ImVec4(0.4f, 0.9f, 1.0f, 1.0f), "Value:    %.2f", cellVal);
+      if (isCellSelected(hoveredRow, hoveredCol)) {
+        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "[Selected]");
+      }
       ImGui::EndTooltip();
     }
 
     drawList->PopClipRect();
   }
-
+  
   void TableEditorPanel::render(PlotCursor & /*cursor*/)
   {
     ImGuiIO &io = ImGui::GetIO();

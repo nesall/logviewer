@@ -47,6 +47,9 @@ namespace ui {
     virtual nlohmann::json saveState() const;
     virtual void loadState(const nlohmann::json &state);
 
+    // Called by App after Regimes change.
+    virtual void onRegimesUpdated() {}
+
     const std::string &title() const { return title_; }
 
   private:

@@ -52,10 +52,12 @@ namespace ui {
   void VeAnalysisPanel::setSession(const core::LogSession *session)
   {
     session_ = session;
-    //if (session_ != nullptr) {
-    //  engine::populateDefaultsForSession(config_, *session_);
-    //}
+    targetAfrPanel_.setSession(session);
+    baselineVePanel_.setSession(session);
+    suggestedVePanel_.setSession(session);
     computeObservedAfr();
+    computeAfrDelta();
+    computeSuggestedVe();
   }
 
   void VeAnalysisPanel::computeObservedAfr()
@@ -780,6 +782,13 @@ namespace ui {
     return false;
   }
 
+  void VeAnalysisPanel::onRegimesUpdated()
+  {
+    targetAfrPanel_.recomputeRegimeCoverage();
+    baselineVePanel_.recomputeRegimeCoverage();
+    suggestedVePanel_.recomputeRegimeCoverage();
+  }
+
   bool VeAnalysisPanel::hasBaselineVe() const
   {
     const auto &tbl = baselineVePanel_.table();
@@ -915,11 +924,11 @@ namespace ui {
       baselineVePanel_.loadState(state["baselineVe"]);
     }
 
-    if (session_ != nullptr) {
-      computeObservedAfr();
-      computeAfrDelta();
-      computeSuggestedVe();
-    }
+    //if (session_ != nullptr) {
+    //  computeObservedAfr();
+    //  computeAfrDelta();
+    //  computeSuggestedVe();
+    //}
   }
 
 } // namespace ui

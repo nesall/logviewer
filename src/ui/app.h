@@ -35,6 +35,8 @@ namespace ui {
     void render();
     void saveSettings() const;
 
+    static const char *appBaseTitle();
+
   private:
     void renderDockspace();
     void renderMenuBar();
@@ -61,6 +63,7 @@ namespace ui {
     void updateWindowTitle();
 
     void refreshPanelsFromSession();
+    void notifyRegimesUpdated();
     PlotPanel *addTimeSeriesPanel(const std::vector<std::string> &initialChannelNames = {}, std::string explicitTitle = "");
     PlotPanel *addScatterPanel(const std::string &initialXChannel = "", const std::string &initialYChannel = "", std::string explicitTitle = "");
     PlotPanel *addStatusPanel(std::string explicitTitle = "");

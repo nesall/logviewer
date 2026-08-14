@@ -298,8 +298,9 @@ namespace ui {
 
       // --- BOTTOM BAR ---
       if (ui::UI::ButtonPrimary("Apply & Re-Analyze", ImVec2(160, 0))) {
-        userDefinitions_ = workingDefs; // Persist full set of definitions on panel
-        reanalyze();                    // Re-runs analyzer with userDefinitions_
+        userDefinitions_ = workingDefs;
+        reanalyze();
+        notifyRegimesChanged();
         initialized = false;
         showConfigModal_ = false;
         ImGui::CloseCurrentPopup();
@@ -355,7 +356,8 @@ namespace ui {
     }
 
     // --- Regime Cards Loop ---
-    for (auto &reg : summaries) {
+    for (size_t j = 0; j < summaries.size(); j ++) {
+      const auto &reg = summaries[j];
       ImGui::PushID(reg.def.id.c_str());
 
       // 1. Build Header Title with Alert Badge (visible even when collapsed)
@@ -390,15 +392,16 @@ namespace ui {
           }
           };
 
-        // Controls Row
-        if (ImGui::Checkbox("Shade Timeline", &reg.def.showShading)) {
+        if (ImGui::Checkbox("Shade Timeline", &summaries.at(j).def.showShading)) {
           syncToUserDefinitions(reg.def);
+          notifyRegimesChanged();
         }
 
         ImGui::SameLine();
         ImGui::SetNextItemWidth(100.0f);
         if (ImGui::ColorEdit4("Highlight Color", (float *)&reg.def.color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoAlpha)) {
           syncToUserDefinitions(reg.def);
+          notifyRegimesChanged();
         }
 
         ImGui::Spacing();
@@ -504,7 +507,7 @@ namespace ui {
         userDefinitions_.push_back(core::RegimeDef::fromJson(dJson));
       }
     }
-    reanalyze();
+    //reanalyze();
   }
 
 } // namespace ui

@@ -1,5 +1,6 @@
 #include "ui/timeseriespanel.h"
 #include "ui/ui_helpers.h"
+#include "utils/utils.h"
 #include "3rdparty/IconsFontAwesome7.h"
 
 #include <algorithm>
@@ -171,7 +172,7 @@ namespace ui {
         channelStates_[it.key()] = cs;
       }
     }
-    rebindChannels();
+    //rebindChannels();
   }
 
   size_t TimeSeriesPanel::getCursorIndex(double queryTime) const
@@ -446,8 +447,7 @@ namespace ui {
       newMaxX = targetXCenterTime_ + halfSpan;
     }
 
-    if (ImPlot::BeginSubplots("##TimeSeriesSubplots", subplotCount, 1, ImVec2(-1, -1),
-      ImPlotSubplotFlags_LinkAllX | ImPlotSubplotFlags_NoLegend)) {
+    if (ImPlot::BeginSubplots("##TimeSeriesSubplots", subplotCount, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkAllX | ImPlotSubplotFlags_NoLegend)) {
       for (int plotIdx = 0; plotIdx < subplotCount; ++plotIdx) {
         std::string plotID = "##Plot_" + std::to_string(plotIdx);
 
@@ -507,9 +507,44 @@ namespace ui {
             cursor.active = true;
           }
 
+          if (artifactCursor_.active) {
+            double artifactX = artifactCursor_.timeSec;
+            // Draw a dashed or dimmed vertical line
+            ImPlot::DragLineX(1, &artifactX, artifactCursor_.color, 1.0f, ImPlotDragToolFlags_NoInputs);
+
+            // Optional: Tag annotation at the top of the plot
+            if (!artifactCursor_.label.empty()) {
+              ImPlot::TagX(artifactCursor_.timeSec, artifactCursor_.color, "%s", artifactCursor_.label.c_str());
+            }
+          }
+
           if (cursor.active) {
             double markerX = cursor.timeSec;
             ImPlot::DragLineX(0, &markerX, ImVec4(1.0f, 1.0f, 0.0f, 0.8f), 1.0f, ImPlotDragToolFlags_NoInputs);
+          }
+
+          if (ImPlot::IsPlotHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+            artifactCursor_.active = false;
+          }
+
+          if (session_) {
+            // Render shaded vertical bands for active regimes
+            for (const auto &reg : session_->regimeSummaries()) {
+              if (!reg.def.showShading) continue;
+
+              for (const auto &interval : reg.intervals) {
+                double xMin = interval.startSec;
+                double xMax = interval.endSec;
+
+                // Draw vertical shaded region spanning full Y plot height
+                ImPlot::PlotInfLines("##Shade", &xMin, 1); // Or draw using ImPlot::PlotRect / DrawList
+                ImVec2 pMin = ImPlot::PlotToPixels(ImPlotPoint(xMin, yAxisMax_));
+                ImVec2 pMax = ImPlot::PlotToPixels(ImPlotPoint(xMax, yAxisMin_));
+
+                ImDrawList *drawList = ImPlot::GetPlotDrawList();
+                drawList->AddRectFilled(pMin, pMax, ImGui::ColorConvertFloat4ToU32(reg.def.color));
+              }
+            }
           }
 
           // Query current subplot geometry for overlays
@@ -533,7 +568,6 @@ namespace ui {
 
             ImGui::SetNextWindowPos(bottomLeftPos, ImGuiCond_Always, ImVec2(0.0f, 1.0f));
             ImGui::SetNextWindowBgAlpha(0.75f);
-
             std::string rangeWindowID = "##RangeOverlay_" + title() + "_" + std::to_string(plotIdx);
             bool open = true;
 
@@ -584,27 +618,37 @@ namespace ui {
           // -------------------------------------------------------------------
           if (cursor.active && !subplotChannels.empty()) {
             size_t cursorIdx = getCursorIndex(cursor.timeSec);
-            ImVec2 bottomRightPos = ImVec2(currentPlotPos.x + currentPlotSize.x - 10.0f,
-              currentPlotPos.y + currentPlotSize.y - 10.0f);
+            ImVec2 bottomRightPos = ImVec2(currentPlotPos.x + currentPlotSize.x - 10.0f, currentPlotPos.y + currentPlotSize.y - 10.0f);
 
             ImGui::SetNextWindowPos(bottomRightPos, ImGuiCond_Always, ImVec2(1.0f, 1.0f));
             ImGui::SetNextWindowBgAlpha(0.85f);
+            ImGui::SetNextWindowSizeConstraints({ 200.f, 30.f }, { FLT_MAX, FLT_MAX });
 
             std::string overlayWindowID = "##CursorOverlay_" + title() + "_" + std::to_string(plotIdx);
             bool open = true;
 
             if (ImGui::Begin(overlayWindowID.c_str(), &open, overlayFlags)) {
+              ImGui::TextDisabled("Cursor @ %.3f s", cursor.timeSec);
+              
+              if (artifactCursor_.active) {
+                double deltaTime = cursor.timeSec - artifactCursor_.timeSec;
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "(dt: %+.3f s)", deltaTime);
+              }
+
               for (const auto *channel : subplotChannels) {
                 const auto &st = channelStates_[channel->name()];
                 double val = (cursorIdx < channel->values().size()) ? channel->values()[cursorIdx] : 0.0;
-
                 ImGui::TextColored(st.color, "%s:", channel->name().c_str());
                 ImGui::SameLine();
                 if (!channel->unit().empty()) {
-                  ImGui::Text("%.2f %s", val, channel->unit().c_str());
+                  ImGui::Text("%.2f %s", val, utils::str::sanitizeToUtf8(channel->unit()).c_str());
                 } else {
                   ImGui::Text("%.2f", val);
                 }
+              }
+              if (subplotChannels.empty()) {
+                ImGui::TextDisabled("No active channels in this subplot");
               }
             }
             ImGui::End();
