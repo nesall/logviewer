@@ -1,5 +1,6 @@
 #include "ui/timeseriespanel.h"
 #include "ui/ui_helpers.h"
+#include "engine/decimator.h"
 #include "utils/utils.h"
 
 #include <algorithm>
@@ -18,13 +19,8 @@
 namespace ui {
 
   namespace {
-    std::string toLower(const std::string &s) {
-      std::string result = s;
-      for (char &c : result) {
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-      }
-      return result;
-    }
+    constexpr int kMinDecimationTargetPoints = 64;
+    constexpr int kPointsPerPixel = 2; // ~Nyquist for a 1px-wide line
   } // namespace
 
   TimeSeriesPanel::TimeSeriesPanel(std::string title, std::vector<std::string> initialChannelNames)
@@ -108,7 +104,7 @@ namespace ui {
       channelsJson[name] = {
         {"enabled", state.enabled},
         {"color", {state.color.x, state.color.y, state.color.z, state.color.w}},
-        { "selectionOrder", state.selectionOrder }
+        {"selectionOrder", state.selectionOrder}
       };
     }
     j["channels"] = channelsJson;
@@ -173,7 +169,6 @@ namespace ui {
         channelStates_[it.key()] = cs;
       }
     }
-    //rebindChannels();
   }
 
   size_t TimeSeriesPanel::getCursorIndex(double queryTime) const
@@ -211,6 +206,53 @@ namespace ui {
       targetXCenterTime_ = targetTime;
       pendingXAxisCenter_ = true;
     }
+  }
+
+  void TimeSeriesPanel::ensureDecimatedCache(ChannelState &state, const core::Channel &channel, double xMin, double xMax, float widthPx)
+  {
+    constexpr double kEpsilon = 1e-9;
+
+    const uint64_t currentRevision = session_ ? session_->revision() : 0;
+
+    const bool cacheValid =
+      state.hasDecimatedCache &&
+      state.decimatedForSession == session_ &&
+      state.decimatedForRevision == currentRevision &&
+      std::fabs(state.decimatedForXMin - xMin) < kEpsilon &&
+      std::fabs(state.decimatedForXMax - xMax) < kEpsilon &&
+      std::fabs(state.decimatedForWidthPx - widthPx) < 1.0f; // sub-pixel churn isn't worth recomputing for
+
+    if (cacheValid) return;
+
+    state.decimatedForSession = session_;
+    state.decimatedForRevision = currentRevision;
+    state.decimatedForXMin = xMin;
+    state.decimatedForXMax = xMax;
+    state.decimatedForWidthPx = widthPx;
+    state.hasDecimatedCache = true;
+
+    const auto &rawVals = channel.values();
+    if (cachedTimeSec_ == nullptr || rawVals.empty()) {
+      state.decimatedX.clear();
+      state.decimatedYNorm.clear();
+      return;
+    }
+
+    const int targetPoints = std::max(kMinDecimationTargetPoints, static_cast<int>(widthPx) * kPointsPerPixel);
+
+    engine::DecimatedSeries series = engine::Decimator::decimate(*cachedTimeSec_, rawVals, xMin, xMax, targetPoints);
+
+    // Normalize AFTER decimation -- touches only the small decimated
+    // buffer per frame instead of the full multi-hour channel.
+    const double range = state.cachedMax - state.cachedMin;
+    std::vector<double> normY(series.y.size());
+    for (size_t i = 0; i < series.y.size(); ++i) {
+      double v = series.y[i];
+      normY[i] = std::isnan(v) ? v : (range > 1e-6 ? ((v - state.cachedMin) / range) : 0.5);
+    }
+
+    state.decimatedX = std::move(series.x);
+    state.decimatedYNorm = std::move(normY);
   }
 
   void TimeSeriesPanel::renderHeaderControls(PlotCursor &cursor)
@@ -362,12 +404,12 @@ namespace ui {
 
     ImGui::BeginChild("ChannelListScroll", ImVec2(0, 0), false);
 
-    const std::string filterLower = toLower(filterText_);
+    const std::string filterLower = utils::str::toLower(filterText_);
 
     if (session_ != nullptr && !session_->channels().empty()) {
       for (const auto &channel : session_->channels()) {
         const std::string &name = channel.name();
-        if (!filterLower.empty() && toLower(name).find(filterLower) == std::string::npos) {
+        if (!filterLower.empty() && utils::str::toLower(name).find(filterLower) == std::string::npos) {
           continue;
         }
 
@@ -505,23 +547,31 @@ namespace ui {
           }
 
           // Plot channels for this subplot
+          //for (const auto *ch : subplotChannels) {
+          //  const auto &rawVals = ch->values();
+          //  if (rawVals.empty()) continue;
+          //  double minVal = channelStates_[ch->name()].cachedMin;
+          //  double maxVal = channelStates_[ch->name()].cachedMax;
+          //  double range = maxVal - minVal;
+          //  std::vector<double> normVals(rawVals.size());
+          //  for (size_t s = 0; s < rawVals.size(); ++s) {
+          //    normVals[s] = (range > 1e-6) ? ((rawVals[s] - minVal) / range) : 0.5;
+          //  }
+          //  ImPlotSpec spec;
+          //  spec.LineColor = channelStates_[ch->name()].color;
+          //  ImPlot::PlotLine(ch->name().c_str(), timeSec.data(), normVals.data(), static_cast<int>(timeSec.size()), spec);
+          //}
+
+          // Plot channels for this subplot
+          const float plotWidthPx = ImPlot::GetPlotSize().x;
           for (const auto *ch : subplotChannels) {
-            const auto &rawVals = ch->values();
-            if (rawVals.empty()) continue;
-
-            double minVal = channelStates_[ch->name()].cachedMin;
-            double maxVal = channelStates_[ch->name()].cachedMax;
-            double range = maxVal - minVal;
-
-            std::vector<double> normVals(rawVals.size());
-            for (size_t s = 0; s < rawVals.size(); ++s) {
-              normVals[s] = (range > 1e-6) ? ((rawVals[s] - minVal) / range) : 0.5;
-            }
-
+            if (ch->values().empty()) continue;
+            auto &state = channelStates_[ch->name()];
+            ensureDecimatedCache(state, *ch, xAxisMin_, xAxisMax_, plotWidthPx);
+            if (state.decimatedX.empty()) continue;
             ImPlotSpec spec;
-            spec.LineColor = channelStates_[ch->name()].color;
-            ImPlot::PlotLine(ch->name().c_str(), timeSec.data(), normVals.data(),
-              static_cast<int>(timeSec.size()), spec);
+            spec.LineColor = state.color;
+            ImPlot::PlotLine(ch->name().c_str(), state.decimatedX.data(), state.decimatedYNorm.data(), static_cast<int>(state.decimatedX.size()), spec);
           }
 
           // Handle hover cursor, crop markers, and shaded regimes ...
@@ -680,22 +730,23 @@ namespace ui {
           if (session_) {
             const auto &stitchPoints = session_->stitchPoints();
             ImDrawList *drawList = ImPlot::GetPlotDrawList();
+            auto localLimits = ImPlot::GetPlotLimits(); // fresh, scoped to THIS subplot's current Y zoom/pan
 
             for (size_t i = 0; i < stitchPoints.size(); ++i) {
               double stitchMid = stitchPoints[i];
               double xMin = stitchMid - 0.5; // 1.0s gap width
               double xMax = stitchMid + 0.5;
 
-              // 1. Shaded gap band across full subplot height
-              ImVec2 pMin = ImPlot::PlotToPixels(ImPlotPoint(xMin, yAxisMax_));
-              ImVec2 pMax = ImPlot::PlotToPixels(ImPlotPoint(xMax, yAxisMin_));
+              // Shaded gap band across full subplot height
+              ImVec2 pMin = ImPlot::PlotToPixels(ImPlotPoint(xMin, localLimits.Y.Max));
+              ImVec2 pMax = ImPlot::PlotToPixels(ImPlotPoint(xMax, localLimits.Y.Min));
               drawList->AddRectFilled(pMin, pMax, IM_COL32(160, 90, 220, 55));
 
-              // 2. Bounding seam edges
+              // Bounding seam edges
               ImPlot::DragLineX(static_cast<int>(100 + i * 2), &xMin, ImVec4(0.65f, 0.35f, 0.85f, 0.40f), 1.0f, ImPlotDragToolFlags_NoInputs);
               ImPlot::DragLineX(static_cast<int>(100 + i * 2 + 1), &xMax, ImVec4(0.65f, 0.35f, 0.85f, 0.40f), 1.0f, ImPlotDragToolFlags_NoInputs);
 
-              // 3. Axis header tag at midpoint
+              // Axis header tag at midpoint
               ImPlot::TagX(stitchMid, ImVec4(0.65f, 0.35f, 0.85f, 0.85f), "Stitch #%d", static_cast<int>(i + 1));
             }
           }
@@ -706,7 +757,7 @@ namespace ui {
       ImPlot::EndSubplots();
     }
     if (doJump) pendingXAxisCenter_ = false;
-    if (doLoadLimits) bPendingAfterLoad_ = false;
+    if (doLoadLimits && hasRealData) bPendingAfterLoad_ = false;
   }
 
   void TimeSeriesPanel::render(PlotCursor &cursor)

@@ -102,6 +102,8 @@ namespace core {
     void setStitchPoints(std::vector<double> points) { stitchPoints_ = std::move(points); }
     void clearStitchPoints() { stitchPoints_.clear(); }
 
+    uint64_t revision() const { return revision_; }
+
   private:
     std::vector<Channel> channels_;
     ChannelMapping channelMapping_;
@@ -116,6 +118,7 @@ namespace core {
     std::vector<RegimeSummary> regimeSummaries_;
 
     std::vector<double> stitchPoints_;
+    uint64_t revision_ = 0;
   };
 
 } // namespace core

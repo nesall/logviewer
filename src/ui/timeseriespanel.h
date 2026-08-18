@@ -34,6 +34,16 @@ namespace ui {
       size_t maxIdx = 0; // Cached index for fast jump
       bool hasRange = false;
       uint64_t selectionOrder = 0;
+
+      // Decimation cache
+      const core::LogSession *decimatedForSession = nullptr;
+      uint64_t decimatedForRevision = 0;
+      double decimatedForXMin = 0.0;
+      double decimatedForXMax = 0.0;
+      float decimatedForWidthPx = 0.0f;
+      bool hasDecimatedCache = false;
+      std::vector<double> decimatedX;
+      std::vector<double> decimatedYNorm;
     };
 
     struct ArtifactCursor {
@@ -52,6 +62,7 @@ namespace ui {
     void renderPlotArea(PlotCursor &cursor);
     size_t getCursorIndex(double queryTime) const;
     void jumpCursorToIndex(size_t index, PlotCursor &cursor, const std::string &label = "");
+    void ensureDecimatedCache(ChannelState &state, const core::Channel &channel, double xMin, double xMax, float widthPx);
 
     bool pendingXAxisCenter_ = false;
     double targetXCenterTime_ = 0.0;

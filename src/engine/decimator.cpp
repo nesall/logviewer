@@ -90,6 +90,7 @@ namespace engine {
     outY.push_back(yData[end - 1]);
   }
 
+  // src/engine/decimator.cpp -- replace Decimator::decimate() with this
   DecimatedSeries Decimator::decimate(
     const std::vector<double> &xData,
     const std::vector<double> &yData,
@@ -100,8 +101,6 @@ namespace engine {
     const size_t n = xData.size();
     if (n == 0 || yData.size() != n || targetPoints <= 0) return result;
 
-    // 1. Locate the visible range, padded by one sample on each side so
-    //    lines into just-off-screen points don't appear clipped while panning.
     auto lowIt = std::lower_bound(xData.begin(), xData.end(), xMin);
     auto highIt = std::upper_bound(xData.begin(), xData.end(), xMax);
 
@@ -116,40 +115,47 @@ namespace engine {
 
     const size_t visibleCount = end - begin;
 
-    // Already under budget -- return the raw slice, no decimation needed.
     if (visibleCount <= static_cast<size_t>(targetPoints)) {
       result.x.assign(xData.begin() + begin, xData.begin() + end);
       result.y.assign(yData.begin() + begin, yData.begin() + end);
-      return result;
+    } else {
+      result.x.reserve(static_cast<size_t>(targetPoints) + 8);
+      result.y.reserve(static_cast<size_t>(targetPoints) + 8);
+
+      size_t runStart = begin;
+      while (runStart < end) {
+        if (std::isnan(yData[runStart])) {
+          if (!result.y.empty() && !std::isnan(result.y.back())) {
+            result.x.push_back(xData[runStart]);
+            result.y.push_back(std::numeric_limits<double>::quiet_NaN());
+          }
+          ++runStart;
+          continue;
+        }
+
+        size_t runEnd = runStart;
+        while (runEnd < end && !std::isnan(yData[runEnd])) ++runEnd;
+
+        const size_t runLen = runEnd - runStart;
+        const int runBudget = std::max(3, static_cast<int>(
+          (static_cast<double>(runLen) / static_cast<double>(visibleCount)) * targetPoints));
+
+        lttbRun(xData, yData, runStart, runEnd, runBudget, result.x, result.y);
+
+        runStart = runEnd;
+      }
     }
 
-    result.x.reserve(static_cast<size_t>(targetPoints) + 8);
-    result.y.reserve(static_cast<size_t>(targetPoints) + 8);
-
-    // 2. Split into contiguous NaN-free runs so a genuine data gap never
-    //    gets bridged by a decimated line, and give each run a share of
-    //    the point budget proportional to its length.
-    size_t runStart = begin;
-    while (runStart < end) {
-      if (std::isnan(yData[runStart])) {
-        if (!result.y.empty() && !std::isnan(result.y.back())) {
-          result.x.push_back(xData[runStart]);
-          result.y.push_back(std::numeric_limits<double>::quiet_NaN());
-        }
-        ++runStart;
-        continue;
-      }
-
-      size_t runEnd = runStart;
-      while (runEnd < end && !std::isnan(yData[runEnd])) ++runEnd;
-
-      const size_t runLen = runEnd - runStart;
-      const int runBudget = std::max(3, static_cast<int>(
-        (static_cast<double>(runLen) / static_cast<double>(visibleCount)) * targetPoints));
-
-      lttbRun(xData, yData, runStart, runEnd, runBudget, result.x, result.y);
-
-      runStart = runEnd;
+    // Clamp the outer edges back to [xMin, xMax]. The ±1-sample padding
+    // above is only there to keep LTTB's bucket selection informed near
+    // the edges and to let the line visually reach the plot boundary --
+    // left unclamped it lets the rendered x-extent creep past the axis
+    // limits, which under ImPlot's Auto-Fit causes a feedback loop: Fit
+    // re-measures the rendered extent every frame and grows the axis to
+    // match, decimation re-pads from the new bounds, repeat forever.
+    if (!result.x.empty()) {
+      if (!std::isnan(result.y.front())) result.x.front() = std::max(result.x.front(), xMin);
+      if (!std::isnan(result.y.back()))  result.x.back() = std::min(result.x.back(), xMax);
     }
 
     return result;

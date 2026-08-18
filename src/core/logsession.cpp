@@ -186,6 +186,7 @@ namespace core {
   void LogSession::addChannel(Channel channel)
   {
     channels_.push_back(std::move(channel));
+    revision_++;
   }
 
   const Channel *LogSession::findChannel(const std::string &name) const
@@ -251,6 +252,7 @@ namespace core {
 
     if (rowCount_ == 0) {
       *this = incoming;
+      ++revision_;
       return true;
     }
 
@@ -339,6 +341,7 @@ namespace core {
     rowCount_ = newTotalRows;
     sourcePath_ += " + " + incoming.sourcePath();
     resetCropRange();
+    ++revision_;
     return true;
   }
 

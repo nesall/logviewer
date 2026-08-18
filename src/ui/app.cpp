@@ -213,6 +213,11 @@ namespace ui {
     }
     root["panels"] = panelsJson;
 
+    root["cursor"] = {
+      {"timeSec", cursor_.timeSec},
+      {"active", cursor_.active}
+    };
+
     // Capture ImGui docking / window positions. Restoring this depends on
     // each panel's window ID (its "###title" suffix) matching between
     // save and load -- title is restored via PlotPanel::loadState().
@@ -329,6 +334,12 @@ namespace ui {
         panel->setOnDataChangedCallback([this, p = panel.get()]() { markDirty(); });
         panel->setSession(&session_);
       }
+    }
+
+    if (root.contains("cursor") && root["cursor"].is_object()) {
+      const auto &cursorJson = root["cursor"];
+      cursor_.timeSec = cursorJson.value("timeSec", 0.0);
+      cursor_.active = cursorJson.value("active", false);
     }
 
     isDirty_ = false;
