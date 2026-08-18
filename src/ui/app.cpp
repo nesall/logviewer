@@ -11,6 +11,7 @@
 #include "3rdparty/nlohmann/json.hpp"
 #include "3rdparty/portable-file-dialogs.h"
 #include "3rdparty/WinDarkTitlebarImpl.h"
+#include "3rdparty/IconsFontAwesome7.h"
 #include "core/table2d.h"
 #include "core/formula_evaluator.h"
 #include "ui/ui_helpers.h"
@@ -78,9 +79,21 @@ namespace ui {
     pendingOpenLogDialog_ = std::make_unique<pfd::open_file>(
       "Open Log File", ".",
       std::vector<std::string>{
-      "All Supported Logs (*.msl, *.dl)", "*.msl *.dl",
+      "All Supported Logs (*.plog, *.msl, *.dl)", "*.plog *.msl *.dl",
+        "Binary Log Files (*.plog)", "*.plog",
         "MegaSquirt Log Files (*.msl)", "*.msl",
         "Haltech Log Files (*.dl)", "*.dl",
+        "All Files", "*"
+    });
+  }
+
+  void App::beginExportLogDialog()
+  {
+    if (pendingExportLogDialog_) return;
+    pendingExportLogDialog_ = std::make_unique<pfd::save_file>(
+      "Export Log File", "stitched_log.plog",
+      std::vector<std::string>{
+      "Binary Log File (*.plog)", "*.plog",
         "All Files", "*"
     });
   }
@@ -111,7 +124,7 @@ namespace ui {
       auto selection = pendingOpenLogDialog_->result();
       pendingOpenLogDialog_.reset();
       if (!selection.empty()) {
-        loadLogFile(selection.front());
+        requestActionWithDirtyCheck(PendingAction::LoadLog, selection.front());
       }
     }
 
@@ -120,6 +133,10 @@ namespace ui {
       pendingSaveWorkspaceDialog_.reset();
       if (!path.empty()) {
         saveWorkspaceFile(path);
+        isDirty_ = false;
+        if (pendingAction_ != PendingAction::None) {
+          executePendingAction();
+        }
       }
     }
 
@@ -127,7 +144,30 @@ namespace ui {
       auto selection = pendingLoadWorkspaceDialog_->result();
       pendingLoadWorkspaceDialog_.reset();
       if (!selection.empty()) {
-        loadWorkspaceFile(selection.front());
+        // User selected a file from dialog -> route through dirty check
+        requestActionWithDirtyCheck(PendingAction::LoadWorkspace, selection.front());
+      }
+    }
+
+    if (pendingAppendLogDialog_ && pendingAppendLogDialog_->ready(0)) {
+      auto selection = pendingAppendLogDialog_->result();
+      pendingAppendLogDialog_.reset();
+      if (!selection.empty()) {
+        startAsyncConcatLoad(selection.front());
+      }
+    }
+
+    if (pendingExportLogDialog_ && pendingExportLogDialog_->ready(0)) {
+      std::string exportPath = pendingExportLogDialog_->result();
+      pendingExportLogDialog_.reset();
+      if (!exportPath.empty()) {
+        std::string err;
+        if (!io::PlogParser::write(exportPath, session_, err)) {
+          loadErrorMessage_ = err;
+          showLoadErrorPopup_ = true;
+        } else {
+          addRecentLog(exportPath);
+        }
       }
     }
   }
@@ -148,7 +188,7 @@ namespace ui {
   void App::saveWorkspaceFile(const std::string &path)
   {
     nlohmann::json root;
-    root["logFilePath"] = session_.sourcePath();
+    // NOTE: logFilePath is strictly omitted to decouple workspace from log session
 
     root["channelMapping"] = session_.channelMapping().toJson();
 
@@ -218,95 +258,80 @@ namespace ui {
     addRecentWorkspace(path);
     currentWorkspacePath_ = path;
     updateWindowTitle();
-    
-    auto restoreWorkspaceState = [this, root]()
-      {
-        if (root.contains("customChannels") && root["customChannels"].is_array()) {
-          for (const auto &customJson : root["customChannels"]) {
-            if (!customJson.contains("name") || !customJson.contains("formula")) continue;
 
-            core::CustomChannelDef def;
-            def.name = customJson["name"].get<std::string>();
-            def.unit = customJson.value("unit", "");
-            def.formula = customJson["formula"].get<std::string>();
+    if (root.contains("customChannels") && root["customChannels"].is_array()) {
+      for (const auto &customJson : root["customChannels"]) {
+        if (!customJson.contains("name") || !customJson.contains("formula")) continue;
 
-            std::string err;
-            core::Channel customCh = core::FormulaEvaluator::evaluate(def, session_, err);
-            if (err.empty()) {
-              session_.addChannel(std::move(customCh));
-            }
-          }
-          // Rebind panel session references after adding virtual channels
-          refreshPanelsFromSession();
+        core::CustomChannelDef def;
+        def.name = customJson["name"].get<std::string>();
+        def.unit = customJson.value("unit", "");
+        def.formula = customJson["formula"].get<std::string>();
+
+        std::string err;
+        core::Channel customCh = core::FormulaEvaluator::evaluate(def, session_, err);
+        if (err.empty()) {
+          session_.addChannel(std::move(customCh));
         }
+      }
+    }
 
-        if (root.contains("channelMapping") && root["channelMapping"].is_object()) {
-          auto mapping = core::ChannelMapping::fromJson(root["channelMapping"]);
-          session_.setChannelMapping(mapping);
-        }
+    if (root.contains("channelMapping") && root["channelMapping"].is_object()) {
+      auto mapping = core::ChannelMapping::fromJson(root["channelMapping"]);
+      session_.setChannelMapping(mapping);
+    }
 
-        if (root.contains("imguiLayout") && root["imguiLayout"].is_string()) {
-          std::string iniData = root["imguiLayout"].get<std::string>();
-          ImGui::LoadIniSettingsFromMemory(iniData.c_str(), iniData.size());
-          ImGuiID hostId = ImHashStr("DockSpaceHost");
-          ImGuiID dockspaceId = ImHashStr("MainDockSpace", 0, hostId);
-          if (ImGuiDockNode *node = ImGui::DockBuilderGetNode(dockspaceId)) {
-            ImGui::DockBuilderSetNodePos(dockspaceId, ImGui::GetMainViewport()->WorkPos);
-            ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->WorkSize);
-          }
-        }
+    if (root.contains("imguiLayout") && root["imguiLayout"].is_string()) {
+      std::string iniData = root["imguiLayout"].get<std::string>();
+      ImGui::LoadIniSettingsFromMemory(iniData.c_str(), iniData.size());
+      ImGuiID hostId = ImHashStr("DockSpaceHost");
+      ImGuiID dockspaceId = ImHashStr("MainDockSpace", 0, hostId);
+      if (ImGuiDockNode *node = ImGui::DockBuilderGetNode(dockspaceId)) {
+        ImGui::DockBuilderSetNodePos(dockspaceId, ImGui::GetMainViewport()->WorkPos);
+        ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->WorkSize);
+      }
+    }
 
-        assert(panels_.empty());
-        if (root.contains("panels") && root["panels"].is_array()) {
-          for (const auto &panelJson : root["panels"]) {
-            if (!panelJson.contains("type") || !panelJson["type"].is_string()) continue;
+    if (root.contains("panels") && root["panels"].is_array()) {
+      for (const auto &panelJson : root["panels"]) {
+        if (!panelJson.contains("type") || !panelJson["type"].is_string()) continue;
 
-            std::string type = panelJson["type"].get<std::string>();
-            nlohmann::json state = panelJson.contains("state") ? panelJson["state"] : nlohmann::json::object();
-            std::string savedTitle = state.value("title", "");
+        std::string type = panelJson["type"].get<std::string>();
+        nlohmann::json state = panelJson.contains("state") ? panelJson["state"] : nlohmann::json::object();
+        std::string savedTitle = state.value("title", "");
 
-            std::unique_ptr<PlotPanel> panel;
-            if (type == "TimeSeries") panel = std::make_unique<TimeSeriesPanel>(savedTitle);
-            else if (type == "Scatter") panel = std::make_unique<ScatterPanel>(savedTitle, "", "");
-            else if (type == "Status") panel = std::make_unique<StatusPanel>(savedTitle);
-            else if (type == "VeAnalysisPanel") panel = std::make_unique<VeAnalysisPanel>(savedTitle);
-            else if (type == "TableOverlayPanel") panel = std::make_unique<TableOverlayPanel>(savedTitle);
-            else if (type == "DriveRegimePanel") panel = std::make_unique<DriveRegimePanel>();
+        std::unique_ptr<PlotPanel> panel;
+        if (type == "TimeSeries") panel = std::make_unique<TimeSeriesPanel>(savedTitle);
+        else if (type == "Scatter") panel = std::make_unique<ScatterPanel>(savedTitle, "", "");
+        else if (type == "Status") panel = std::make_unique<StatusPanel>(savedTitle);
+        else if (type == "VeAnalysisPanel") panel = std::make_unique<VeAnalysisPanel>(savedTitle);
+        else if (type == "TableOverlayPanel") panel = std::make_unique<TableOverlayPanel>(savedTitle);
+        else if (type == "DriveRegimePanel") panel = std::make_unique<DriveRegimePanel>();
 
 #ifdef _DEBUG2
-            std::cout << "Restoring panel: " << type << " state: " << state.dump() << std::endl;
+        std::cout << "Restoring panel: " << type << " state: " << state.dump() << std::endl;
 #endif
 
-            if (panel) {
-              panel->loadState(state);
-              if (panel->panelTypeId() == "DriveRegimePanel") {
-                static_cast<DriveRegimePanel *>(panel.get())->setOnRegimesChangedCallback([this] { notifyRegimesUpdated(); });
-                panel->setSession(&session_); // populates session_.regimeSummaries()
-              }
-              panels_.push_back(std::move(panel));
-            }
+        if (panel) {
+          panel->loadState(state);
+          if (panel->panelTypeId() == "DriveRegimePanel") {
+            auto regimePanel = static_cast<DriveRegimePanel *>(panel.get());
+            regimePanel->setOnDataChangedCallback([this] { notifyRegimesUpdated(); });
+            regimePanel->setSession(&session_);
           }
+          panels_.push_back(std::move(panel));
         }
-
-        // Bind remaining panels now that regime definitions and summaries are populated
-        for (auto &panel : panels_) {
-          if (panel->panelTypeId() != "DriveRegimePanel") {
-            panel->setSession(&session_);
-          }
-        }
-
-      };
-
-    if (root.contains("logFilePath") && root["logFilePath"].is_string()) {
-      std::string logPath = root["logFilePath"].get<std::string>();
-      if (!logPath.empty()) {
-        startAsyncLogLoad(logPath, restoreWorkspaceState);
-      } else {
-        restoreWorkspaceState();
       }
-    } else {
-      restoreWorkspaceState();
     }
+
+    for (auto &panel : panels_) {
+      if (panel->panelTypeId() != "DriveRegimePanel") {
+        panel->setOnDataChangedCallback([this, p = panel.get()]() { markDirty(); });
+        panel->setSession(&session_);
+      }
+    }
+
+    isDirty_ = false;
   }
 
   void App::addRecentWorkspace(const std::string &path)
@@ -318,6 +343,30 @@ namespace ui {
     recentWorkspacePaths_.insert(recentWorkspacePaths_.begin(), path);
     if (recentWorkspacePaths_.size() > kMaxRecentWorkspaces) {
       recentWorkspacePaths_.resize(kMaxRecentWorkspaces);
+    }
+    saveSettings();
+  }
+
+  void App::addRecentLog(const std::string &rawPath)
+  {
+    if (rawPath.empty()) return;
+
+    std::error_code ec;
+    std::string path = std::filesystem::weakly_canonical(rawPath, ec).string();
+    if (ec || path.empty()) path = rawPath;
+
+    recentLogPaths_.erase(
+      std::remove_if(recentLogPaths_.begin(), recentLogPaths_.end(),
+        [&path](const std::string &existing) {
+          if (existing.empty()) return true; // clean up any empty entries
+          std::error_code ec2;
+          return std::filesystem::weakly_canonical(existing, ec2).string() == path;
+        }),
+      recentLogPaths_.end());
+
+    recentLogPaths_.insert(recentLogPaths_.begin(), path);
+    if (recentLogPaths_.size() > kMaxRecentLogs) {
+      recentLogPaths_.resize(kMaxRecentLogs);
     }
     saveSettings();
   }
@@ -353,12 +402,24 @@ namespace ui {
 
     if (root.contains("recentWorkspaces") && root["recentWorkspaces"].is_array()) {
       for (const auto &entry : root["recentWorkspaces"]) {
-        if (entry.is_string()) {
-          recentWorkspacePaths_.push_back(entry.get<std::string>());
-        }
+        if (entry.is_string()) recentWorkspacePaths_.push_back(entry.get<std::string>());
       }
       if (recentWorkspacePaths_.size() > kMaxRecentWorkspaces) {
         recentWorkspacePaths_.resize(kMaxRecentWorkspaces);
+      }
+    }
+    if (root.contains("recentLogs") && root["recentLogs"].is_array()) {
+      recentLogPaths_.clear();
+      for (const auto &entry : root["recentLogs"]) {
+        if (entry.is_string()) {
+          std::string s = entry.get<std::string>();
+          if (!s.empty()) {
+            recentLogPaths_.push_back(s);
+          }
+        }
+      }
+      if (recentLogPaths_.size() > kMaxRecentLogs) {
+        recentLogPaths_.resize(kMaxRecentLogs);
       }
     }
   }
@@ -378,6 +439,7 @@ namespace ui {
     {"maximized", (maximized != 0)}
     };
     root["recentWorkspaces"] = recentWorkspacePaths_;
+    root["recentLogs"] = recentLogPaths_;
 
     std::ofstream file(kSettingsFilePath);
     if (file.is_open()) {
@@ -391,14 +453,20 @@ namespace ui {
     return "Phenix LogView";
   }
 
+  void App::requestExit()
+  {
+    requestActionWithDirtyCheck(PendingAction::Exit);
+  }
+
   void App::updateWindowTitle()
   {
-    if (window_ == nullptr) {
-      return;
-    }
+    if (!window_) return;
     std::string title{ App::appBaseTitle() };
     if (!currentWorkspacePath_.empty()) {
       title += " - " + utils::path::fileNameWithoutExtension(currentWorkspacePath_);
+    }
+    if (isDirty_) {
+      title += "*";
     }
     glfwSetWindowTitle(window_, title.c_str());
   }
@@ -419,6 +487,7 @@ namespace ui {
     for (auto &panel : panels_) {
       panel->onRegimesUpdated();
     }
+    markDirty();
   }
 
   void App::renderLoadProgressModal()
@@ -452,12 +521,25 @@ namespace ui {
         if (!res.success) {
           loadErrorMessage_ = res.error;
           showLoadErrorPopup_ = true;
+          pendingOnCompleteCallback_ = nullptr;
         } else {
-          session_ = std::move(res.session);
-          refreshPanelsFromSession();
-          if (pendingOnCompleteCallback_) {
-            pendingOnCompleteCallback_();
-            pendingOnCompleteCallback_ = nullptr;
+          // Check if this was a concat task or normal open task
+          if (pendingAppendLogDialog_ || !incomingConcatPath_.empty() && showConcatModal_ == false && pendingOnCompleteCallback_) {
+            incomingConcatSession_ = std::move(res.session);
+            if (pendingOnCompleteCallback_) {
+              auto cb = std::move(pendingOnCompleteCallback_);
+              pendingOnCompleteCallback_ = nullptr;
+              cb();
+            }
+          } else {
+            session_ = std::move(res.session);
+            addRecentLog(session_.sourcePath());
+            refreshPanelsFromSession();
+            if (pendingOnCompleteCallback_) {
+              auto cb = std::move(pendingOnCompleteCallback_);
+              pendingOnCompleteCallback_ = nullptr;
+              cb();
+            }
           }
         }
       }
@@ -466,7 +548,7 @@ namespace ui {
     }
   }
 
-  void App::startAsyncLogLoad(const std::string & path, std::function<void()> onComplete)
+  void App::startAsyncLogLoad(const std::string &path, std::function<void()> onComplete)
   {
     showProgressModal_ = true;
     loadProgress_ = 0.0f;
@@ -475,9 +557,9 @@ namespace ui {
 
     activeLoadTask_ = std::async(std::launch::async, [this, path]() {
       LoadResult res;
-
-      // Choose parser based on extension
-      if (path.size() >= 3 && path.substr(path.size() - 3) == ".dl") {
+      if (path.size() >= 5 && path.substr(path.size() - 5) == ".plog") {
+        res.success = plogParser_.parse(path, res.session, res.error, &loadProgress_);
+      } else if (path.size() >= 3 && path.substr(path.size() - 3) == ".dl") {
         res.success = haltechParser_.parse(path, res.session, res.error, &loadProgress_);
       } else {
         res.success = mslParser_.parse(path, res.session, res.error, &loadProgress_);
@@ -489,14 +571,14 @@ namespace ui {
       });
   }
 
-  PlotPanel *App::addTimeSeriesPanel(const std::vector<std::string> &initialChannelNames,
-    std::string explicitTitle)
+  PlotPanel *App::addTimeSeriesPanel(const std::vector<std::string> &initialChannelNames, std::string explicitTitle)
   {
     std::string panelId = explicitTitle.empty()
       ? "Time Series " + std::to_string(getNextPanelIdForPrefix("Time Series"))
       : explicitTitle;
 
     auto panel = std::make_unique<TimeSeriesPanel>(panelId, initialChannelNames);
+    panel->setOnDataChangedCallback([this] { markDirty(); });
     panel->setSession(&session_);
     panels_.push_back(std::move(panel));
     return panels_.back().get();
@@ -511,6 +593,7 @@ namespace ui {
       : explicitTitle;
 
     auto panel = std::make_unique<ScatterPanel>(panelId, initialXChannel, initialYChannel);
+    panel->setOnDataChangedCallback([this] { markDirty(); });
     panel->setSession(&session_);
     panels_.push_back(std::move(panel));
     return panels_.back().get();
@@ -522,6 +605,7 @@ namespace ui {
       ? "Status " + std::to_string(getNextPanelIdForPrefix("Status"))
       : explicitTitle;
     auto panel = std::make_unique<StatusPanel>(panelId);
+    panel->setOnDataChangedCallback([this] { markDirty(); });
     panel->setSession(&session_);
     panels_.push_back(std::move(panel));
     return panels_.back().get();
@@ -533,6 +617,7 @@ namespace ui {
       ? "VE Analyzer " + std::to_string(getNextPanelIdForPrefix("VE Analyzer"))
       : explicitTitle;
     auto panel = std::make_unique<VeAnalysisPanel>(panelId);
+    panel->setOnDataChangedCallback([this] { markDirty(); });
     panel->setSession(&session_);
     panels_.push_back(std::move(panel));
     return panels_.back().get();
@@ -544,6 +629,7 @@ namespace ui {
       ? "Table Overlay " + std::to_string(getNextPanelIdForPrefix("Table Overlay"))
       : explicitTitle;
     auto panel = std::make_unique<TableOverlayPanel>(panelId);
+    panel->setOnDataChangedCallback([this] { markDirty(); });
     panel->setSession(&session_);
     panels_.push_back(std::move(panel));
     return panels_.back().get();
@@ -558,7 +644,7 @@ namespace ui {
     }
     auto regimePanel = std::make_unique<DriveRegimePanel>();
     regimePanel->setSession(&session_);
-    regimePanel->setOnRegimesChangedCallback([this] { notifyRegimesUpdated(); });
+    regimePanel->setOnDataChangedCallback([this] { notifyRegimesUpdated(); });
     panels_.push_back(std::move(regimePanel));
     return static_cast<DriveRegimePanel *>(panels_.back().get());
   }
@@ -581,30 +667,438 @@ namespace ui {
     return maxId + 1;
   }
 
+  void App::saveWorkspace()
+  {
+    if (currentWorkspacePath_.empty()) {
+      beginSaveWorkspaceDialog();
+    } else {
+      saveWorkspaceFile(currentWorkspacePath_);
+      isDirty_ = false;
+      updateWindowTitle();
+    }
+  }
+
+  //void App::renderExitConfirmModal()
+  //{
+  //  if (showExitConfirmModal_) {
+  //    ImGui::OpenPopup("Save Workspace?###ExitConfirmModal");
+  //    showExitConfirmModal_ = false;
+  //  }
+  //  if (ImGui::BeginPopupModal("Save Workspace?###ExitConfirmModal", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  //    ImGui::Text("You have unsaved changes in your workspace.\nDo you want to save before exiting?");
+  //    ImGui::Spacing();
+  //    if (ui::UI::ButtonPrimary("Save & Exit", ImVec2(110, 0))) {
+  //      ImGui::CloseCurrentPopup();
+  //      if (currentWorkspacePath_.empty()) {
+  //        pendingSaveBeforeExit_ = true;
+  //        beginSaveWorkspaceDialog();
+  //      } else {
+  //        saveWorkspaceFile(currentWorkspacePath_);
+  //        readyToExit_ = true;
+  //      }
+  //    }
+  //    ImGui::SameLine();
+  //    if (ui::UI::ButtonDanger("Don't Save", ImVec2(100, 0))) {
+  //      ImGui::CloseCurrentPopup();
+  //      readyToExit_ = true;
+  //    }
+  //    ImGui::SameLine();
+  //    if (ui::UI::Button("Cancel", {}, ImVec2(90, 0))) {
+  //      ImGui::CloseCurrentPopup();
+  //    }
+  //    ImGui::EndPopup();
+  //  }
+  //}
+
+  void App::renderSavePromptModal()
+  {
+    if (showSavePromptModal_) {
+      ImGui::OpenPopup("Save Changes?###SavePromptModal");
+      showSavePromptModal_ = false;
+    }
+
+    if (ImGui::BeginPopupModal("Save Changes?###SavePromptModal", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+      const char *promptText = "You have unsaved changes in your workspace.\nDo you want to save before continuing?";
+
+      if (pendingAction_ == PendingAction::Exit) {
+        promptText = "You have unsaved changes in your workspace.\nDo you want to save before exiting?";
+      } else if (pendingAction_ == PendingAction::NewWorkspace) {
+        promptText = "Creating a new workspace will discard current changes.\nDo you want to save first?";
+      } else if (pendingAction_ == PendingAction::LoadWorkspace) {
+        promptText = "Loading a workspace will replace your current workspace.\nDo you want to save your changes first?";
+      } else if (pendingAction_ == PendingAction::CloseLog) {
+        promptText = "Closing the log will discard unsaved workspace modifications.\nDo you want to save first?";
+      }
+
+      ImGui::TextUnformatted(promptText);
+      ImGui::Spacing();
+
+      // 1. Save and Proceed
+      if (ui::UI::ButtonPrimary("Save", ImVec2(100, 0))) {
+        ImGui::CloseCurrentPopup();
+        if (currentWorkspacePath_.empty()) {
+          pendingSaveBeforeExit_ = true;
+          beginSaveWorkspaceDialog();
+        } else {
+          saveWorkspaceFile(currentWorkspacePath_);
+          isDirty_ = false;
+          executePendingAction();
+        }
+      }
+
+      ImGui::SameLine();
+
+      // 2. Discard and Proceed
+      if (ui::UI::ButtonDanger("Don't Save", ImVec2(100, 0))) {
+        ImGui::CloseCurrentPopup();
+        isDirty_ = false;
+        executePendingAction();
+      }
+
+      ImGui::SameLine();
+
+      // 3. Cancel Action
+      if (ui::UI::Button("Cancel", {}, ImVec2(90, 0))) {
+        ImGui::CloseCurrentPopup();
+        pendingAction_ = PendingAction::None;
+      }
+
+      ImGui::EndPopup();
+    }
+  }
+
+  void App::beginAppendLogDialog()
+  {
+    if (pendingAppendLogDialog_) return;
+    pendingAppendLogDialog_ = std::make_unique<pfd::open_file>(
+      "Select Log to Stitch / Append", ".",
+      std::vector<std::string>{
+      "All Supported Logs (*.msl, *.dl)", "*.msl *.dl",
+        "MegaSquirt Log Files (*.msl)", "*.msl",
+        "Haltech Log Files (*.dl)", "*.dl",
+        "All Files", "*"
+    });
+  }
+
+  void App::initConcatModalResolutions()
+  {
+    concatResolutions_.clear();
+    concatPosition_ = core::StitchPosition::AppendToEnd;
+
+    // Build lookup of incoming channel names in lowercase
+    std::unordered_map<std::string, std::string> incLower;
+    for (const auto &ch : incomingConcatSession_.channels()) {
+      incLower[utils::str::toLower(ch.name())] = ch.name();
+    }
+
+    for (const auto &curCh : session_.channels()) {
+      core::ChannelMergeResolution res;
+      res.activeChannelName = curCh.name();
+
+      std::string lower = utils::str::toLower(curCh.name());
+      if (incomingConcatSession_.findChannel(curCh.name())) {
+        res.incomingChannelName = curCh.name();
+      } else if (incLower.count(lower)) {
+        res.incomingChannelName = incLower[lower];
+      } else {
+        // Check common alias match
+        if (lower == "map" && incLower.count("fuel - load (map)")) res.incomingChannelName = incLower["fuel - load (map)"];
+        else if (lower == "afr" && incLower.count("afr1")) res.incomingChannelName = incLower["afr1"];
+        else if (lower == "afr" && incLower.count("wideband o2 1")) res.incomingChannelName = incLower["wideband o2 1"];
+        else res.incomingChannelName = ""; // Unresolved -> requires user input or NaN choice
+      }
+      concatResolutions_.push_back(res);
+    }
+  }
+
+  void App::renderConcatLogModal()
+  {
+    if (showConcatModal_) {
+      ImGui::OpenPopup(ui::popups::ConcatLog);
+    }
+
+    ImGui::SetNextWindowSize(ImVec2(720, 520), ImGuiCond_FirstUseEver);
+
+    if (ImGui::BeginPopupModal(ui::popups::ConcatLog, &showConcatModal_, ImGuiWindowFlags_None)) {
+      ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Stitching: %s", utils::path::fileNameOnly(incomingConcatPath_).c_str());
+      ImGui::Spacing();
+
+      // 1. Order Selection Toggle
+      ImGui::Text("Position:");
+      ImGui::SameLine();
+      int posInt = (concatPosition_ == core::StitchPosition::AppendToEnd) ? 0 : 1;
+      if (ImGui::RadioButton("Append to End", &posInt, 0)) concatPosition_ = core::StitchPosition::AppendToEnd;
+      ImGui::SameLine();
+      if (ImGui::RadioButton("Prepend to Beginning", &posInt, 1)) concatPosition_ = core::StitchPosition::PrependToBeginning;
+
+      ImGui::Separator();
+
+      // 2. Info Comparison Bar
+      double curDuration = 0.0;
+      if (const auto *t = session_.timeSec(); t && t->size() > 1) {
+        curDuration = t->back() - t->front();
+      }
+      double incDuration = 0.0;
+      if (const auto *t = incomingConcatSession_.timeSec(); t && t->size() > 1) {
+        incDuration = t->back() - t->front();
+      }
+      ImGui::TextDisabled("Active Log: %zu rows (%.1f s) | Incoming Log: %zu rows (%.1f s)", 
+        session_.rowCount(), curDuration, incomingConcatSession_.rowCount(), incDuration);
+
+      ImGui::Spacing();
+
+      // 3. Channel Resolution Grid
+      bool allResolved = true;
+      size_t unresolvedCount = 0;
+
+      const ImGuiTableFlags tableFlags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+        ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit;
+
+      if (ImGui::BeginTable("ConcatReconciliationTable", 4, tableFlags, ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 2))) {
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed, 60.0f);
+        ImGui::TableSetupColumn("Active Session Channel", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+        ImGui::TableSetupColumn("Incoming Match / Assignment", ImGuiTableColumnFlags_WidthStretch, 1.5f);
+        ImGui::TableSetupColumn("Quick Action", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+        ImGui::TableHeadersRow();
+
+        for (size_t i = 0; i < concatResolutions_.size(); ++i) {
+          auto &res = concatResolutions_[i];
+          ImGui::TableNextRow();
+          ImGui::PushID(static_cast<int>(i));
+
+          bool isMatched = !res.incomingChannelName.empty();
+          bool isNaN = (res.incomingChannelName == "<NaN>");
+
+          if (!isMatched) {
+            allResolved = false;
+            unresolvedCount++;
+          }
+
+          // Status column
+          ImGui::TableSetColumnIndex(0);
+          if (isNaN) {
+            ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.4f, 1.0f), "[NaN]");
+          } else if (isMatched) {
+            ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "[OK]");
+          } else {
+            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "[MISSING]");
+          }
+
+          // Active channel
+          ImGui::TableSetColumnIndex(1);
+          ImGui::TextUnformatted(res.activeChannelName.c_str());
+
+          // Incoming combo
+          ImGui::TableSetColumnIndex(2);
+          ImGui::SetNextItemWidth(-1.0f);
+          const char *preview = res.incomingChannelName.empty() ? "(Select Mapping...)" : res.incomingChannelName.c_str();
+          if (ImGui::BeginCombo("##inc_combo", preview)) {
+            if (ImGui::Selectable("<Fill with NaN>", res.incomingChannelName == "<NaN>")) {
+              res.incomingChannelName = "<NaN>";
+            }
+            ImGui::Separator();
+            for (const auto &ch : incomingConcatSession_.channels()) {
+              bool sel = (res.incomingChannelName == ch.name());
+              if (ImGui::Selectable(ch.name().c_str(), sel)) {
+                res.incomingChannelName = ch.name();
+              }
+              if (sel) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+          }
+
+          // Quick action
+          ImGui::TableSetColumnIndex(3);
+          if (ImGui::SmallButton("Fill NaN")) {
+            res.incomingChannelName = "<NaN>";
+          }
+
+          ImGui::PopID();
+        }
+        ImGui::EndTable();
+      }
+
+      ImGui::Separator();
+
+      if (!allResolved) {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%zu channel(s) unresolved. Assign a channel or set to <NaN> to proceed.", unresolvedCount);
+      } else {
+        ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "All channels mapped.");
+      }
+
+      ImGui::Spacing();
+
+      // 4. Action Buttons
+      ImGui::BeginDisabled(!allResolved);
+      if (ui::UI::ButtonPrimary("Finalize & Stitch Logs", ImVec2(180, 0))) {
+        std::string err;
+        if (session_.stitchSession(incomingConcatSession_, concatPosition_, concatResolutions_, err)) {
+          refreshPanelsFromSession();
+          markDirty();
+          showConcatModal_ = false;
+          ImGui::CloseCurrentPopup();
+        } else {
+          loadErrorMessage_ = err;
+          showLoadErrorPopup_ = true;
+        }
+      }
+      ImGui::EndDisabled();
+
+      ImGui::SameLine();
+      if (ui::UI::ButtonSecondary("Fill All Unresolved with NaN", ImVec2(200, 0))) {
+        for (auto &r : concatResolutions_) {
+          if (r.incomingChannelName.empty()) {
+            r.incomingChannelName = "<NaN>";
+          }
+        }
+      }
+
+      ImGui::SameLine();
+      if (ui::UI::Button("Cancel", {}, ImVec2(90, 0))) {
+        showConcatModal_ = false;
+        incomingConcatSession_ = core::LogSession();
+        ImGui::CloseCurrentPopup();
+      }
+
+      ImGui::EndPopup();
+    }
+  }
+
+  void App::startAsyncConcatLoad(const std::string &path)
+  {
+    showProgressModal_ = true;
+    loadProgress_ = 0.0f;
+    progressStatusText_ = "Loading " + utils::path::fileNameOnly(path) + " for concat...";
+    incomingConcatPath_ = path;
+
+    activeLoadTask_ = std::async(std::launch::async, [this, path]() {
+      LoadResult res;
+      if (path.size() >= 3 && path.substr(path.size() - 3) == ".dl") {
+        res.success = haltechParser_.parse(path, res.session, res.error, &loadProgress_);
+      } else {
+        res.success = mslParser_.parse(path, res.session, res.error, &loadProgress_);
+      }
+      core::ChannelMapping mapping;
+      mapping.autoDetect(res.session);
+      res.session.setChannelMapping(mapping);
+      return res;
+      });
+
+    // Callback to trigger when parsing finishes
+    pendingOnCompleteCallback_ = [this]() {
+      initConcatModalResolutions();
+      showConcatModal_ = true;
+      };
+  }
+
+  void App::requestActionWithDirtyCheck(PendingAction action, std::string pathPayload)
+  {
+    if (isDirty_) {
+      pendingAction_ = action;
+      pendingActionPathPayload_ = std::move(pathPayload);
+      showSavePromptModal_ = true;
+    } else {
+      pendingAction_ = action;
+      pendingActionPathPayload_ = std::move(pathPayload);
+      executePendingAction();
+    }
+  }
+
+  void App::executePendingAction()
+  {
+    switch (pendingAction_) {
+    case PendingAction::Exit:
+      readyToExit_ = true;
+      break;
+
+    case PendingAction::NewWorkspace:
+      panels_.clear();
+      session_ = core::LogSession();
+      currentWorkspacePath_.clear();
+      isDirty_ = false;
+      welcomeFadeTimer_ = 0.0f;
+      updateWindowTitle();
+      break;
+
+    case PendingAction::LoadWorkspace:
+      if (!pendingActionPathPayload_.empty()) {
+        loadWorkspaceFile(pendingActionPathPayload_);
+        isDirty_ = false;
+      } else {
+        beginLoadWorkspaceDialog();
+      }
+      break;
+
+    case PendingAction::CloseLog:
+      session_ = core::LogSession();
+      refreshPanelsFromSession();
+      isDirty_ = false;
+      updateWindowTitle();
+      break;
+
+    case PendingAction::LoadLog:
+      if (!pendingActionPathPayload_.empty()) {
+        loadLogFile(pendingActionPathPayload_);
+      } else {
+        beginOpenLogDialog();
+      }
+      break;
+
+    case PendingAction::None:
+    default:
+      break;
+    }
+
+    pendingAction_ = PendingAction::None;
+    pendingActionPathPayload_.clear();
+  }
+
+  void App::markDirty()
+  {
+    isDirty_ = true;
+    updateWindowTitle();
+  }
+
   // ---------------------------------------------------------------------
   // Rendering
   // ---------------------------------------------------------------------
 
   void App::renderMenuBar()
   {
+    ImGuiIO &io = ImGui::GetIO();
+    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
+      if (io.KeyShift) beginSaveWorkspaceDialog();
+      else saveWorkspace();
+    }
+    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O, false)) {
+      beginOpenLogDialog();
+    }
     if (ImGui::BeginMenuBar()) {
       if (ImGui::BeginMenu("File")) {
-        if (ImGui::MenuItem("Open Log...")) {
+        if (ImGui::MenuItem("Open Log...", "Ctrl+O")) {
           beginOpenLogDialog();
         }
-        ImGui::Separator();
-        if (ImGui::MenuItem("Save Workspace...")) {
-          beginSaveWorkspaceDialog();
+        ImGui::BeginDisabled(session_.rowCount() == 0);
+        if (ImGui::MenuItem("Append / Prepend Log...")) {
+          beginAppendLogDialog();
         }
-        if (ImGui::MenuItem("Load Workspace...")) {
-          beginLoadWorkspaceDialog();
+        if (ImGui::MenuItem("Export Active / Stitched Log (.plog)...")) {
+          beginExportLogDialog();
         }
-        if (ImGui::BeginMenu("Recent Workspaces", !recentWorkspacePaths_.empty())) {
-          for (size_t i = 0; i < recentWorkspacePaths_.size(); ++i) {
-            const std::string &path = recentWorkspacePaths_[i];
-            std::string label = utils::path::fileNameOnly(path) + "###recent" + std::to_string(i);
+        if (ImGui::MenuItem("Close Log")) {
+          requestActionWithDirtyCheck(PendingAction::CloseLog);
+        }
+        ImGui::EndDisabled();
+
+        if (ImGui::BeginMenu("Recent Logs", !recentLogPaths_.empty())) {
+          for (size_t i = 0; i < recentLogPaths_.size(); ++i) {
+            const std::string &path = recentLogPaths_[i];
+            if (path.empty()) continue;
+
+            std::string label = utils::path::fileNameOnly(path) + "###recentlog" + std::to_string(i);
             if (ImGui::MenuItem(label.c_str())) {
-              pendingRecentWorkspaceLoad_ = path;
+              requestActionWithDirtyCheck(PendingAction::LoadLog, path);
             }
             if (ImGui::IsItemHovered()) {
               ImGui::SetTooltip("%s", path.c_str());
@@ -612,14 +1106,42 @@ namespace ui {
           }
           ImGui::EndMenu();
         }
+
         ImGui::Separator();
-        ImGui::MenuItem("Exit", nullptr, false, false);
+
+        if (ImGui::MenuItem("New Workspace", "Ctrl+N")) {
+          requestActionWithDirtyCheck(PendingAction::NewWorkspace);
+        }
+        if (ImGui::MenuItem("Load Workspace...", "Ctrl+W")) {
+          requestActionWithDirtyCheck(PendingAction::LoadWorkspace);
+        }
+        if (ImGui::MenuItem("Save Workspace", "Ctrl+S")) {
+          saveWorkspace();
+        }
+        if (ImGui::MenuItem("Save Workspace As...", "Ctrl+Shift+S")) {
+          beginSaveWorkspaceDialog();
+        }
+        if (ImGui::BeginMenu("Recent Workspaces", !recentWorkspacePaths_.empty())) {
+          for (size_t i = 0; i < recentWorkspacePaths_.size(); ++i) {
+            const std::string &path = recentWorkspacePaths_[i];
+            std::string label = utils::path::fileNameOnly(path) + "###recentws" + std::to_string(i);
+            if (ImGui::MenuItem(label.c_str())) {
+              requestActionWithDirtyCheck(PendingAction::LoadWorkspace, path);
+            }
+            if (ImGui::IsItemHovered()) {
+              ImGui::SetTooltip("%s", path.c_str());
+            }
+          }
+          ImGui::EndMenu();
+        }
+
+        ImGui::Separator();
+        if (ImGui::MenuItem("Exit", "Alt+F4")) {
+          requestExit();
+        }
         ImGui::EndMenu();
       }
-      if (ImGui::BeginMenu("View")) {
-        ImGui::MenuItem("ImGui Demo", nullptr, &showDemoWindow_);
-        ImGui::EndMenu();
-      }
+
       if (ImGui::BeginMenu("Panels")) {
 
         if (ImGui::MenuItem("Add Time Series Panel")) {
@@ -637,6 +1159,7 @@ namespace ui {
         if (ImGui::MenuItem("Add Table Overlay Panel")) {
           addTableOverlayPanel();
         }
+        ImGui::Separator();
         if (ImGui::MenuItem("Drive Regime Summary")) {
           getOrAddDriveRegimePanel();
         }
@@ -655,7 +1178,8 @@ namespace ui {
     }
   }
 
-  void App::renderDockspace() {
+  void App::renderDockspace()
+  {
     ImGuiWindowFlags hostFlags =
       ImGuiWindowFlags_NoDocking |
       ImGuiWindowFlags_NoTitleBar |
@@ -683,7 +1207,107 @@ namespace ui {
     ImGuiID dockspaceId = ImGui::GetID("MainDockSpace");
     ImGui::DockSpace(dockspaceId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
 
+    if (session_.rowCount() == 0 && panels_.empty()) {
+      renderWelcomeLanding();
+    }
+
     ImGui::End();
+  }
+
+  void App::renderWelcomeLanding()
+  {
+    constexpr float kFadeDuration = 0.8f;
+    if (welcomeFadeTimer_ < kFadeDuration) {
+      welcomeFadeTimer_ += ImGui::GetIO().DeltaTime;
+      if (welcomeFadeTimer_ > kFadeDuration) {
+        welcomeFadeTimer_ = kFadeDuration;
+      }
+    }
+
+    // Smooth quadratic ease-out: f(t) = 1 - (1 - t)^2
+    float t = welcomeFadeTimer_ / kFadeDuration;
+    float alpha = 1.0f - (1.0f - t) * (1.0f - t);
+
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(380.0f, 0.0f));
+
+    // 2. Scale card opacity with alpha
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 12.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(28.0f, 24.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 10.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
+
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.13f, 0.14f, 0.17f, 0.95f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.24f, 0.26f, 0.32f, 0.60f));
+
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration |
+      ImGuiWindowFlags_NoMove |
+      ImGuiWindowFlags_NoSavedSettings |
+      ImGuiWindowFlags_NoDocking;
+
+    if (ImGui::Begin("##WelcomeOverlay", nullptr, flags)) {
+
+      float availWidth = ImGui::GetContentRegionAvail().x;
+      const char *titleText = App::appBaseTitle();
+      ImVec2 titleSize = ImGui::CalcTextSize(titleText);
+
+      ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (availWidth - titleSize.x) * 0.5f);
+      ImGui::TextColored(ImVec4(0.40f, 0.75f, 1.0f, 1.0f), "%s", titleText);
+
+      const char *subText = "ECU Telemetry & Table Analysis Workbench";
+      ImVec2 subSize = ImGui::CalcTextSize(subText);
+      ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (availWidth - subSize.x) * 0.5f);
+      ImGui::TextColored(ImVec4(0.55f, 0.58f, 0.65f, 1.0f), "%s", subText);
+
+      ImGui::Dummy(ImVec2(0.0f, 12.0f));
+
+      const ImVec2 btnSize(availWidth, 40.0f);
+
+      if (ui::UI::ButtonPrimary(ICON_FA_FOLDER_OPEN "   Open Log File...", btnSize, "Open MegaSquirt (.msl) or Haltech (.dl) log")) {
+        beginOpenLogDialog();
+      }
+
+      if (ui::UI::ButtonSecondary(ICON_FA_FILE_INVOICE "   Load Workspace...", btnSize, "Load previously saved workspace")) {
+        requestActionWithDirtyCheck(PendingAction::LoadWorkspace);
+      }
+
+      if (!recentWorkspacePaths_.empty()) {
+        ImGui::Dummy(ImVec2(0.0f, 8.0f));
+        ImGui::Separator();
+        ImGui::Dummy(ImVec2(0.0f, 4.0f));
+
+        ImGui::TextColored(ImVec4(0.50f, 0.53f, 0.60f, 1.0f), "Recent Workspaces");
+        ImGui::Spacing();
+
+        for (size_t i = 0; i < recentWorkspacePaths_.size(); ++i) {
+          const auto &path = recentWorkspacePaths_[i];
+          std::string label = std::string(ICON_FA_CLOCK_ROTATE_LEFT) + "  " + utils::path::fileNameOnly(path);
+
+          ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.18f, 0.20f, 0.25f, 0.5f));
+          ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.22f, 0.25f, 0.32f, 0.8f));
+          ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.18f, 0.42f, 0.70f, 0.6f));
+
+          if (ImGui::Selectable(label.c_str(), false, 0, ImVec2(availWidth, 26.0f))) {
+            /*requestActionWithDirtyCheck(PendingAction::LoadWorkspace, path);*/
+            pendingRecentWorkspaceLoad_ = path;
+          }
+
+          ImGui::PopStyleColor(3);
+
+          if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("%s", path.c_str());
+          }
+        }
+      }
+
+      ImGui::End();
+    }
+
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar(6);
   }
 
   void App::renderLoadErrorPopup()
@@ -795,7 +1419,7 @@ namespace ui {
       // --- BOTTOM BUTTON BAR ---
       if (selectedIndex == -1) {
         // Add Mode
-        if (ui::UI::Button("Add Channel", {}, ImVec2(120, 0))) {
+        if (ui::UI::Button(ICON_FA_PLUS " Add Channel", {}, ImVec2(120, 0))) {
           core::CustomChannelDef def{ nameBuf, unitBuf, formulaBuf };
           std::string err;
 
@@ -811,7 +1435,7 @@ namespace ui {
         }
       } else {
         // Edit / Update Mode
-        if (ui::UI::Button("Update / Re-evaluate", {}, ImVec2(160, 0))) {
+        if (ui::UI::Button(ICON_FA_ROTATE " Update / Re-evaluate", {}, ImVec2(160, 0))) {
           core::CustomChannelDef def{ nameBuf, unitBuf, formulaBuf };
           std::string err;
 
@@ -831,7 +1455,7 @@ namespace ui {
         // Delete Mode
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.7f, 0.2f, 0.2f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9f, 0.3f, 0.3f, 1.0f));
-        if (ui::UI::Button("Delete Channel", {}, ImVec2(120, 0))) {
+        if (ui::UI::Button(ICON_FA_TRASH_CAN " Delete Channel", {}, ImVec2(120, 0))) {
           if (selectedIndex >= 0 && selectedIndex < static_cast<int>(channels.size())) {
             channels.erase(channels.begin() + selectedIndex);
             refreshPanelsFromSession(); // Rebind open panels so deleted channel is safely unbound
@@ -969,6 +1593,11 @@ namespace ui {
       pendingRecentWorkspaceLoad_.clear();
       loadWorkspaceFile(path);
     }
+    if (!pendingRecentLogLoad_.empty()) {
+      std::string path = std::move(pendingRecentLogLoad_);
+      pendingRecentLogLoad_.clear();
+      loadLogFile(path);
+    }
 
     pollPendingDialogs();
 
@@ -979,10 +1608,12 @@ namespace ui {
       }
     }
 
+    renderSavePromptModal();
     renderLoadProgressModal();
     renderLoadErrorPopup();
     renderCustomChannelModal();
     renderChannelMappingModal();
+    renderConcatLogModal();
 
     panels_.erase(
       std::remove_if(panels_.begin(), panels_.end(),

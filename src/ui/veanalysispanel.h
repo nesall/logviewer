@@ -39,6 +39,10 @@ namespace ui {
 
     void onRegimesUpdated() override;
 
+    void copyTableToClipboard(const core::Table2D &table, bool includeHeaders, int decimalPlaces = 2);
+    float copyToastTimer_ = 0.0f;
+    void renderToast();
+
     const core::LogSession *session_ = nullptr;
     bool open_ = true;
 

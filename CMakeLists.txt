@@ -82,6 +82,7 @@ target_link_libraries(implot PUBLIC imgui)
 #  5. Executable & Sources
 # =============================================================================
 add_executable(logviewer
+  include/3rdparty/zstd/zstd.c
   app.rc
   src/main.cpp
   src/utils/utils.h
@@ -94,6 +95,8 @@ add_executable(logviewer
   src/core/table2d.cpp
   src/core/regime.h
   src/core/regime.cpp
+  src/engine/decimator.h
+  src/engine/decimator.cpp
   src/engine/ve_analyzer.h
   src/engine/ve_analyzer.cpp
   src/engine/regime_analyzer.h
@@ -103,6 +106,8 @@ add_executable(logviewer
   src/io/megasquirtcsvparser.cpp
   src/io/haltechdlparser.h
   src/io/haltechdlparser.cpp
+  src/io/plogparser.h
+  src/io/plogparser.cpp
   src/ui/app.h
   src/ui/app.cpp
   src/ui/plotpanel.h

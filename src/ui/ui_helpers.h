@@ -17,6 +17,7 @@ namespace ui {
     inline constexpr const char *StatusPanelChannels = "Status Panel Channels###StatusPanelChannelsPopup";
     inline constexpr const char *ScatterPanelChannels = "Scatter Panel Channels###ScatterPanelChannelsPopup";
     inline constexpr const char *ChannelMapping = "Channel Semantic Mapping###ChannelMappingModal";
+    inline constexpr const char *ConcatLog = "Stitch / Concat Log###ConcatLogModal";
   } // namespace popups
 
 

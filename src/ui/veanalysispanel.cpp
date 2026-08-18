@@ -5,7 +5,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <sstream>
+#include <iomanip>
 #include <limits>
+
 #include "imgui.h"
 #include "imgui_internal.h"
 
@@ -238,7 +241,7 @@ namespace ui {
       ImGui::SameLine();
 
       ImGui::BeginDisabled(!hasTargetAfr() || !hasBaselineVe() || session_ == nullptr);
-      if (ui::UI::ButtonDanger("Reset to Calculated VE", {}, "Recomputes Suggested VE from log data, discarding any manual edits.")) {
+      if (ui::UI::ButtonDanger(ICON_FA_ROTATE_LEFT " Reset to Calculated VE", {}, "Recomputes Suggested VE from log data, discarding any manual edits.")) {
         computeSuggestedVe();
       }
       ImGui::EndDisabled();
@@ -438,6 +441,16 @@ namespace ui {
       computeObservedAfr();
     }
 
+    ImGui::SameLine();
+    if (ui::UI::ButtonSecondary(ICON_FA_COPY " Copy Grid")) {
+      copyTableToClipboard(observedAfrTable_, false);
+    }
+
+    ImGui::SameLine();
+    if (ui::UI::ButtonSecondary("Copy + Headers")) {
+      copyTableToClipboard(observedAfrTable_, true);
+    }
+
     if (!hasObservedData_) {
       ImGui::TextDisabled("No valid AFR log samples binned in current axes range.");
       return;
@@ -611,6 +624,16 @@ namespace ui {
 
     if (ui::UI::ButtonPrimary(ICON_FA_REPEAT " Recalculate AFR Delta")) {
       computeAfrDelta();
+    }
+
+    ImGui::SameLine();
+    if (ui::UI::ButtonSecondary(ICON_FA_COPY " Copy Grid")) {
+      copyTableToClipboard(afrDeltaTable_, false);
+    }
+
+    ImGui::SameLine();
+    if (ui::UI::ButtonSecondary("Copy + Headers")) {
+      copyTableToClipboard(afrDeltaTable_, true);
     }
 
     ImGui::SameLine();
@@ -789,6 +812,75 @@ namespace ui {
     suggestedVePanel_.recomputeRegimeCoverage();
   }
 
+  void VeAnalysisPanel::copyTableToClipboard(const core::Table2D &table, bool includeHeaders, int decimalPlaces)
+  {
+    const auto &xBp = table.xBreakpoints();
+    const auto &yBp = table.yBreakpoints();
+    if (xBp.empty() || yBp.empty()) return;
+
+    std::ostringstream ss;
+    ss << std::fixed << std::setprecision(decimalPlaces);
+
+    // 1. Column Headers (RPM)
+    if (includeHeaders) {
+      ss << "\t";
+      for (size_t c = 0; c < xBp.size(); ++c) {
+        ss << static_cast<int>(xBp[c]);
+        if (c + 1 < xBp.size()) ss << "\t";
+      }
+      ss << "\n";
+    }
+
+    // 2. Rows in descending Y order (High load at top to match TunerStudio / Grid layout)
+    for (size_t r = yBp.size(); r-- > 0; ) {
+      if (includeHeaders) {
+        ss << std::setprecision(1) << yBp[r] << "\t" << std::setprecision(decimalPlaces);
+      }
+      for (size_t c = 0; c < xBp.size(); ++c) {
+        double val = table.value(r, c);
+        if (std::isnan(val) || val <= 0.0) {
+          ss << ""; // Or "-" depending on preference; empty tab aligns best in Excel/TunerStudio
+        } else {
+          ss << val;
+        }
+        if (c + 1 < xBp.size()) ss << "\t";
+      }
+      ss << "\n";
+    }
+
+    ImGui::SetClipboardText(ss.str().c_str());
+    copyToastTimer_ = 1.5f;
+  }
+
+  void VeAnalysisPanel::renderToast()
+  {
+    if (copyToastTimer_ > 0.0f) {
+      copyToastTimer_ -= ImGui::GetIO().DeltaTime;
+      float alpha = (copyToastTimer_ < 0.5f) ? (copyToastTimer_ / 0.5f) : 1.0f;
+      if (alpha < 0.0f) alpha = 0.0f;
+
+      ImVec2 winPos = ImGui::GetWindowPos();
+      ImVec2 winSize = ImGui::GetWindowSize();
+
+      ImVec2 toastSize(160.0f, 30.0f);
+      ImVec2 pMin(winPos.x + winSize.x - toastSize.x - 20.0f, winPos.y + 35.0f);
+      ImVec2 pMax(pMin.x + toastSize.x, pMin.y + toastSize.y);
+
+      ImU32 bgCol = ImGui::ColorConvertFloat4ToU32(ImVec4(0.1f, 0.3f, 0.1f, 0.9f * alpha));
+      ImU32 textCol = ImGui::ColorConvertFloat4ToU32(ImVec4(0.4f, 1.0f, 0.4f, alpha));
+      ImU32 borderCol = ImGui::ColorConvertFloat4ToU32(ImVec4(0.2f, 0.6f, 0.2f, 0.9f * alpha));
+
+      ImDrawList *drawList = ImGui::GetForegroundDrawList();
+      drawList->AddRectFilled(pMin, pMax, bgCol, 4.0f);
+      drawList->AddRect(pMin, pMax, borderCol, 4.0f);
+
+      const char *text = "Copied to clipboard!";
+      ImVec2 textSize = ImGui::CalcTextSize(text);
+      ImVec2 textPos(pMin.x + (toastSize.x - textSize.x) * 0.5f, pMin.y + (toastSize.y - textSize.y) * 0.5f);
+      drawList->AddText(textPos, textCol, text);
+    }
+  }
+
   bool VeAnalysisPanel::hasBaselineVe() const
   {
     const auto &tbl = baselineVePanel_.table();
@@ -825,7 +917,7 @@ namespace ui {
 
   void VeAnalysisPanel::render(PlotCursor &cursor)
   {
-    std::string windowLabel = "VE Analyzer###" + title();
+    std::string windowLabel = std::string{ ICON_FA_SLIDERS } + " VE Analyzer###" + title();
     ImGui::Begin(windowLabel.c_str(), &open_);
 
     if (ImGui::BeginTabBar("VeAnalyzerTabBar")) {

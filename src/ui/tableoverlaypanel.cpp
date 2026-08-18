@@ -225,7 +225,7 @@ namespace ui {
 
   void TableOverlayPanel::render(PlotCursor &cursor)
   {
-    std::string windowLabel = "Table Overlay###" + title();
+    std::string windowLabel = std::string{ ICON_FA_LAYER_GROUP } + " Table Overlay###" + title();
     ImGui::Begin(windowLabel.c_str(), &open_);
 
     if (session_ == nullptr) {

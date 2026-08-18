@@ -9,6 +9,8 @@
 #include <utility>
 
 #include "3rdparty/nlohmann/json.hpp"
+#include "3rdparty/IconsFontAwesome7.h"
+
 #include "imgui.h"
 
 namespace ui {
@@ -231,7 +233,7 @@ namespace ui {
 
   void StatusPanel::render(PlotCursor &cursor)
   {
-    std::string windowLabel = "Status###" + title();
+    std::string windowLabel = std::string{ ICON_FA_GAUGE } + " Status###" + title();
     ImGui::Begin(windowLabel.c_str(), &open_);
 
     renderChannelPickerPopup();

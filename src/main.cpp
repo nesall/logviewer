@@ -75,11 +75,20 @@ int main() {
   while (!glfwWindowShouldClose(window)) {
     glfwPollEvents();
 
+    if (glfwWindowShouldClose(window)) {
+      glfwSetWindowShouldClose(window, GLFW_FALSE);
+      app.requestExit();
+    }
+
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
     app.render();
+
+    if (app.wantsExit()) {
+      glfwSetWindowShouldClose(window, GLFW_TRUE);
+    }
 
     ImGui::Render();
     int display_w = 0;

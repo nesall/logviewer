@@ -11,6 +11,7 @@
 #include "ui/plotpanel.h"
 #include "io/megasquirtcsvparser.h"
 #include "io/haltechdlparser.h"
+#include "io/plogparser.h"
 
 
 struct GLFWwindow;
@@ -37,8 +38,22 @@ namespace ui {
 
     static const char *appBaseTitle();
 
+    void requestExit();
+    bool wantsExit() const { return readyToExit_; }
+
+  private:
+    enum class PendingAction {
+      None,
+      Exit,
+      NewWorkspace,
+      LoadWorkspace,
+      CloseLog,
+      LoadLog
+    };
+
   private:
     void renderDockspace();
+    void renderWelcomeLanding();
     void renderMenuBar();
     void renderLoadErrorPopup();
     void renderCustomChannelModal();
@@ -73,8 +88,28 @@ namespace ui {
 
     int getNextPanelIdForPrefix(const std::string &prefix) const;
 
+    void saveWorkspace(); // Direct Save (Ctrl+S) or fallback to Save As...
+    void markDirty();
+
+    void beginAppendLogDialog();
+    void initConcatModalResolutions();
+    void renderConcatLogModal();
+    void startAsyncConcatLoad(const std::string &path);
+
+    void renderLoadProgressModal();
+    void startAsyncLogLoad(const std::string &path, std::function<void()> onComplete = nullptr);
+
+    void requestActionWithDirtyCheck(PendingAction action, std::string pathPayload = "");
+    void executePendingAction();
+    void renderSavePromptModal();
+
+    void beginExportLogDialog();
+    void addRecentLog(const std::string &path);
+
+  private:
     bool showDemoWindow_ = false;
     bool firstFrame_ = true;
+    float welcomeFadeTimer_ = 0.0f;
 
     bool showCustomChannelModal_ = false;
     bool showChannelMappingModal_ = false;
@@ -84,13 +119,15 @@ namespace ui {
     std::string customChannelError_;
 
     GLFWwindow *window_ = nullptr;
-    std::string currentWorkspacePath_; // empty until a workspace is saved/loaded
+    std::string currentWorkspacePath_;
 
     PlotCursor cursor_;
     std::vector<std::unique_ptr<PlotPanel>> panels_;
 
     io::MegasquirtCsvParser mslParser_;
     io::HaltechDlParser haltechParser_;
+    io::PlogParser plogParser_;
+
     core::LogSession session_;
 
     bool showLoadErrorPopup_ = false;
@@ -100,23 +137,14 @@ namespace ui {
     std::unique_ptr<pfd::save_file> pendingSaveWorkspaceDialog_;
     std::unique_ptr<pfd::open_file> pendingLoadWorkspaceDialog_;
 
-    // Most-recent-first, capped at kMaxRecentWorkspaces. In-memory only
-    // for now -- resets on app restart. Say the word if you'd rather this
-    // persist across restarts (small addition: read/write a tiny settings
-    // file alongside the executable).
     static constexpr size_t kMaxRecentWorkspaces = 5;
     std::vector<std::string> recentWorkspacePaths_;
+    std::vector<std::string> recentLogPaths_;
+    static constexpr size_t kMaxRecentLogs = 5;
 
-    // Set when a "Recent Workspaces" menu item is clicked, consumed right
-    // after the menu finishes rendering. Loading immediately from inside
-    // the menu's loop would mutate recentWorkspacePaths_ (via
-    // addRecentWorkspace_) while we're still iterating over it.
+    std::string pendingRecentLogLoad_;
     std::string pendingRecentWorkspaceLoad_;
 
-    void renderLoadProgressModal();
-    void startAsyncLogLoad(const std::string &path, std::function<void()> onComplete = nullptr);
-
-    // Async loader state
     bool showProgressModal_ = false;
     std::atomic<float> loadProgress_{ 0.0f };
     std::atomic<bool> loadCancelRequested_{ false };
@@ -129,6 +157,25 @@ namespace ui {
     };
     std::future<LoadResult> activeLoadTask_;
     std::function<void()> pendingOnCompleteCallback_;
+
+    bool isDirty_ = false;
+    bool readyToExit_ = false;
+    bool pendingSaveBeforeExit_ = false;
+
+    PendingAction pendingAction_ = PendingAction::None;
+    std::string pendingActionPathPayload_;
+    bool showSavePromptModal_ = false;
+
+  private:
+    std::unique_ptr<pfd::open_file> pendingAppendLogDialog_;
+    core::LogSession incomingConcatSession_;
+    std::string incomingConcatPath_;
+    bool showConcatModal_ = false;
+
+    core::StitchPosition concatPosition_ = core::StitchPosition::AppendToEnd;
+    std::vector<core::ChannelMergeResolution> concatResolutions_;
+
+    std::unique_ptr<pfd::save_file> pendingExportLogDialog_;
   };
 
 } // namespace ui

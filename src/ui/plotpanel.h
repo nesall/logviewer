@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <functional>
 
 #include "3rdparty/nlohmann/json_fwd.hpp"
 
@@ -24,36 +25,35 @@ namespace ui {
     explicit PlotPanel(std::string title);
     virtual ~PlotPanel() = default;
 
-    // Renders the panel's ImGui window and contents for this frame.
+    // Render the panel for this frame. May update 'cursor'.
     virtual void render(PlotCursor &cursor) = 0;
 
-    // True once the user has closed this panel (e.g. via the window's
-    // close button). App removes panels that return true after render().
-    // Default false for panel types that don't support closing.
+    // True if the user closed the panel. Default: false.
     virtual bool wantsClose() const { return false; }
 
-    // Called by App after a log loads (or reloads). Default no-op for
-    // panel types that don't bind to session data directly.
+    // Called after a log loads/reloads. Default: no-op.
     virtual void setSession(const core::LogSession * /*session*/) {}
 
-    // Stable type tag used in saved workspace files to know which
-    // concrete panel type to reconstruct on load. Keep existing values
-    // stable across versions -- renaming breaks old workspace files.
+    // Stable identifier used in workspace files; keep stable across versions.
     virtual std::string panelTypeId() const = 0;
 
-    // Panel-specific selection state (which channel(s) are chosen, etc.)
-    // for workspace save/load. Defaults to "nothing to save" for panel
-    // types that don't need it.
+    // Persist/restore panel-specific selection state. Defaults represent "nothing to save".
     virtual nlohmann::json saveState() const;
     virtual void loadState(const nlohmann::json &state);
 
-    // Called by App after Regimes change.
+    // Notified when Regimes change. Default: no-op.
     virtual void onRegimesUpdated() {}
+
+    void setOnDataChangedCallback(std::function<void()> callback) { onDataChanged_ = std::move(callback); }
 
     const std::string &title() const { return title_; }
 
+  protected:
+    virtual void notifyDataChanged() { if (onDataChanged_) onDataChanged_(); }
+
   private:
     std::string title_;
+    std::function<void()> onDataChanged_;
   };
 
 } // namespace ui

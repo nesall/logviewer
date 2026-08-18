@@ -389,17 +389,17 @@ namespace ui {
       ImGui::InputDouble("##batchVal", &batchValue_, 0.0, 0.0, "%.2f");
 
       ImGui::SameLine();
-      if (ui::UI::Button("* Scale", {}, {}, "Multiply selected cells by factor")) {
+      if (ui::UI::Button(ICON_FA_X " Scale", {}, {}, "Multiply selected cells by factor")) {
         applyBatchMultiply(batchValue_);
       }
 
       ImGui::SameLine();
-      if (ui::UI::Button("+ Offset", {}, {}, "Add offset to selected cells")) {
+      if (ui::UI::Button(ICON_FA_PLUS " Offset", {}, {}, "Add offset to selected cells")) {
         applyBatchOffset(batchValue_);
       }
 
       ImGui::SameLine();
-      if (ui::UI::Button("= Set", {}, {}, "Set all selected cells to value")) {
+      if (ui::UI::Button(ICON_FA_EQUALS " Set", {}, {}, "Set all selected cells to value")) {
         applyBatchSetValue(batchValue_);
       }
 
@@ -419,7 +419,7 @@ namespace ui {
       }
 
       ImGui::SameLine();
-      if (ui::UI::Button("Extrapolate VE", {}, {}, "Extrapolate values for selected cells")) {
+      if (ui::UI::Button(ICON_FA_ARROW_TREND_UP " Extrapolate", {}, {}, "Extrapolate values for selected cells")) {
         showExtrapolateModal_ = true;
         wasExtrapolateModalOpen_ = false;
         ImGui::OpenPopup(ui::popups::ExtrapolateVe);
@@ -1288,7 +1288,7 @@ namespace ui {
       }
     }
 
-    if (ui::UI::Button("Edit vertical axis")) {
+    if (ui::UI::Button(ICON_FA_ARROWS_UP_DOWN " Edit Y Axis")) {
       axisEditorValues_ = table_.yBreakpoints();
       axisEditorBinCount_ = static_cast<int>(axisEditorValues_.size());
       editingAxis_ = AxisEditing::Y;
@@ -1297,7 +1297,7 @@ namespace ui {
 
     ImGui::SameLine();
 
-    if (ui::UI::Button("Edit horizontal axis")) {
+    if (ui::UI::Button(ICON_FA_ARROWS_LEFT_RIGHT " Edit X Axis")) {
       axisEditorValues_ = table_.xBreakpoints();
       axisEditorBinCount_ = static_cast<int>(axisEditorValues_.size());
       editingAxis_ = AxisEditing::X;
@@ -1306,13 +1306,13 @@ namespace ui {
 
     ImGui::SameLine();
 
-    if (ui::UI::Button("Import / Export...")) {
+    if (ui::UI::Button(ICON_FA_FILE_IMPORT " Import / Export...")) {
       ImGui::OpenPopup(ui::popups::TableImportExportMenu);
     }
 
     ImGui::SameLine();
 
-    if (ui::UI::Button(show3DView_ ? "Show 2D Table Grid" : "Show 3D Surface View")) {
+    if (ui::UI::Button(show3DView_ ? ICON_FA_TABLE_CELLS " 2D Table" : ICON_FA_CUBE " 3D Surface")) {
       show3DView_ = !show3DView_;
     }
 

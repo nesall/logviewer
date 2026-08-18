@@ -242,4 +242,105 @@ namespace core {
     return (rowIndex >= cropStartIndex() && rowIndex <= cropEndIndex());
   }
 
+  bool LogSession::stitchSession(const LogSession &incoming, StitchPosition position, const std::vector<ChannelMergeResolution> &resolutions, std::string &errorOut)
+  {
+    if (incoming.rowCount() == 0) {
+      errorOut = "Incoming session has no rows.";
+      return false;
+    }
+
+    if (rowCount_ == 0) {
+      *this = incoming;
+      return true;
+    }
+
+    // Build lookup for quick access to incoming channels
+    std::unordered_map<std::string, const Channel *> incomingLookup;
+    for (const auto &ch : incoming.channels()) {
+      incomingLookup[ch.name()] = &ch;
+    }
+
+    // 1. Time Channel Calculation & Offsets
+    const auto *curTime = timeSec();
+    const auto *incTime = incoming.timeSec();
+
+    double curStart = (curTime && !curTime->empty()) ? curTime->front() : 0.0;
+    double curEnd = (curTime && !curTime->empty()) ? curTime->back() : 0.0;
+    double incStart = (incTime && !incTime->empty()) ? incTime->front() : 0.0;
+    double incEnd = (incTime && !incTime->empty()) ? incTime->back() : 0.0;
+    double incDuration = std::max(0.1, incEnd - incStart);
+
+    constexpr double kInterLogGapSec = 1.0; // 1 second separation gap between drive logs
+
+    // 2. Prepare new value vectors for each active channel
+    const size_t curRows = rowCount_;
+    const size_t incRows = incoming.rowCount();
+    const size_t newTotalRows = curRows + incRows;
+
+    // Create a resolution lookup by activeChannelName
+    std::unordered_map<std::string, std::string> resMap;
+    for (const auto &r : resolutions) {
+      resMap[r.activeChannelName] = r.incomingChannelName;
+    }
+
+    for (size_t i = 0; i < channels_.size(); ++i) {
+      auto &actCh = channels_[i];
+      std::vector<double> combined;
+      combined.reserve(newTotalRows);
+
+      // Check if this is the dedicated Time channel
+      bool isTimeCh = (timeChannelIndex_.has_value() && *timeChannelIndex_ == i) || (actCh.name() == "Time");
+
+      std::vector<double> incVals(incRows, std::numeric_limits<double>::quiet_NaN());
+      auto it = resMap.find(actCh.name());
+      if (it != resMap.end() && !it->second.empty() && it->second != "<NaN>") {
+        auto incIt = incomingLookup.find(it->second);
+        if (incIt != incomingLookup.end() && incIt->second->values().size() == incRows) {
+          incVals = incIt->second->values();
+        }
+      }
+
+      if (isTimeCh) {
+        if (position == StitchPosition::AppendToEnd) {
+          // Keep current time, offset incoming timestamps
+          combined = actCh.values();
+          double timeBase = curEnd + kInterLogGapSec;
+          for (size_t r = 0; r < incRows; ++r) {
+            double rawT = (incTime && r < incTime->size()) ? (*incTime)[r] : static_cast<double>(r);
+            combined.push_back(timeBase + (rawT - incStart));
+          }
+          stitchPoints_.push_back(timeBase - (kInterLogGapSec / 2.0));
+        } else {
+          // Prepend incoming time, shift current time forward
+          double timeBase = 0.0;
+          for (size_t r = 0; r < incRows; ++r) {
+            double rawT = (incTime && r < incTime->size()) ? (*incTime)[r] : static_cast<double>(r);
+            combined.push_back(timeBase + (rawT - incStart));
+          }
+          double curShift = (incDuration + kInterLogGapSec) - curStart;
+          for (double t : actCh.values()) {
+            combined.push_back(t + curShift);
+          }
+          stitchPoints_.push_back(curShift - (kInterLogGapSec / 2.0));
+        }
+      } else {
+        if (position == StitchPosition::AppendToEnd) {
+          combined = std::move(actCh.values());
+          combined.insert(combined.end(), incVals.begin(), incVals.end());
+        } else {
+          combined = std::move(incVals);
+          combined.insert(combined.end(), actCh.values().begin(), actCh.values().end());
+        }
+      }
+
+      actCh.values() = std::move(combined);
+    }
+
+    rowCount_ = newTotalRows;
+    sourcePath_ += " + " + incoming.sourcePath();
+    resetCropRange();
+    return true;
+  }
+
+
 } // namespace core

@@ -44,6 +44,18 @@ namespace core {
     bool active = false;
   };
 
+  enum class StitchPosition {
+    AppendToEnd,
+    PrependToBeginning
+  };
+
+  struct ChannelMergeResolution {
+    std::string activeChannelName;
+    // Name of channel in the incoming session to bind to.
+    // Empty or "<NaN>" means fill with NaNs.
+    std::string incomingChannelName;
+  };
+
   class LogSession {
   public:
     void addChannel(Channel channel);
@@ -57,6 +69,7 @@ namespace core {
     const Channel *findChannel(const std::string &name) const;
 
     const std::vector<double> *timeSec() const;
+    std::optional<size_t> timeChannelIndex() const { return timeChannelIndex_; }
     void setTimeChannelIndex(std::optional<size_t> index) { timeChannelIndex_ = index; }
 
     const std::string &sourcePath() const { return sourcePath_; }
@@ -84,6 +97,11 @@ namespace core {
     const std::vector<RegimeSummary> &regimeSummaries() const { return regimeSummaries_; }
     void setRegimeSummaries(std::vector<RegimeSummary> summaries) { regimeSummaries_ = std::move(summaries); }
 
+    bool stitchSession(const LogSession &incoming, StitchPosition position, const std::vector<ChannelMergeResolution> &resolutions, std::string &errorOut);
+    const std::vector<double> &stitchPoints() const { return stitchPoints_; }
+    void setStitchPoints(std::vector<double> points) { stitchPoints_ = std::move(points); }
+    void clearStitchPoints() { stitchPoints_.clear(); }
+
   private:
     std::vector<Channel> channels_;
     ChannelMapping channelMapping_;
@@ -96,6 +114,8 @@ namespace core {
 
     TimeCropRange cropRange_;
     std::vector<RegimeSummary> regimeSummaries_;
+
+    std::vector<double> stitchPoints_;
   };
 
 } // namespace core

@@ -77,7 +77,7 @@ namespace ui {
           }
         }
 
-        selectedIdx = 0;
+        //selectedIdx = 0;
         initialized = true;
       }
 
@@ -297,15 +297,22 @@ namespace ui {
       ImGui::Separator();
 
       // --- BOTTOM BAR ---
-      if (ui::UI::ButtonPrimary("Apply & Re-Analyze", ImVec2(160, 0))) {
+      if (ui::UI::ButtonPrimary("Apply", ImVec2(90, 0))) {
         userDefinitions_ = workingDefs;
         reanalyze();
-        notifyRegimesChanged();
+        notifyDataChanged();
+        initialized = false;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::SameLine();
+      if (ui::UI::ButtonPrimary("Apply & Close", ImVec2(150, 0))) {
+        userDefinitions_ = workingDefs;
+        reanalyze();
+        notifyDataChanged();
         initialized = false;
         showConfigModal_ = false;
         ImGui::CloseCurrentPopup();
       }
-
       ImGui::SameLine();
       if (ui::UI::Button("Cancel", {}, ImVec2(90, 0))) {
         initialized = false;
@@ -319,7 +326,7 @@ namespace ui {
 
   void DriveRegimePanel::render(PlotCursor &cursor)
   {
-    std::string windowLabel = title() + "###" + panelTypeId();
+    std::string windowLabel = std::string{ ICON_FA_FLAG } + " " + title() + "###" + panelTypeId();
     ImGui::Begin(windowLabel.c_str(), &open_);
 
     if (!session_) {
@@ -394,14 +401,14 @@ namespace ui {
 
         if (ImGui::Checkbox("Shade Timeline", &summaries.at(j).def.showShading)) {
           syncToUserDefinitions(reg.def);
-          notifyRegimesChanged();
+          notifyDataChanged();
         }
 
         ImGui::SameLine();
         ImGui::SetNextItemWidth(100.0f);
         if (ImGui::ColorEdit4("Highlight Color", (float *)&reg.def.color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoAlpha)) {
           syncToUserDefinitions(reg.def);
-          notifyRegimesChanged();
+          notifyDataChanged();
         }
 
         ImGui::Spacing();

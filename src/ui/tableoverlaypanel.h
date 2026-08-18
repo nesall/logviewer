@@ -64,7 +64,6 @@ namespace ui {
     float overlayFilterMax_ = 0.0f;
     bool overlayFilterMinMaxSet_ = false;
 
-    // Embedded Table Editor for full grid manipulation, import/export, and rendering
     TableEditorPanel innerTable_;
   };
 

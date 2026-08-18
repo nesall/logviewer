@@ -181,20 +181,18 @@ namespace engine {
     }
 
     // 2. Compute confidence weight matrix w_{r,c} \in [0.0, 1.0]
-    constexpr double sigmaAfr = 0.5; // AFR error sensitivity band
     const double minSamplesThreshold = static_cast<double>(std::max<size_t>(1, config.minSamplesPerBin));
     core::Table2D confidenceWeights(suggestedVe.xBreakpoints(), suggestedVe.yBreakpoints());
     for (size_t r = 0; r < rows; ++r) {
       for (size_t c = 0; c < cols; ++c) {
-        double dAfr = deltaAfr.value(r, c);
         size_t nSamples = sampleCounts[r][c];
-        if (std::isnan(dAfr) || nSamples == 0) {
+        if (nSamples == 0) {
           confidenceWeights.setValue(r, c, 0.0);
           continue;
         }
-        double errFactor = std::exp(-std::pow(dAfr / sigmaAfr, 2.0));
+        // Confidence scales purely with sample density up to the threshold
         double densityFactor = std::min(1.0, static_cast<double>(nSamples) / minSamplesThreshold);
-        confidenceWeights.setValue(r, c, errFactor * densityFactor);
+        confidenceWeights.setValue(r, c, densityFactor);
       }
     }
 

@@ -1,7 +1,6 @@
 #include "ui/timeseriespanel.h"
 #include "ui/ui_helpers.h"
 #include "utils/utils.h"
-#include "3rdparty/IconsFontAwesome7.h"
 
 #include <algorithm>
 #include <cctype>
@@ -10,6 +9,8 @@
 #include <utility>
 
 #include "3rdparty/nlohmann/json.hpp"
+#include "3rdparty/IconsFontAwesome7.h"
+
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "implot.h"
@@ -234,6 +235,28 @@ namespace ui {
     ImGui::SameLine();
 
     renderCropControls(cursor);
+
+    if (session_ && !session_->stitchPoints().empty()) {
+      ImGui::SameLine();
+      ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(160.0f);
+      if (ImGui::BeginCombo("##StitchSelector", ICON_FA_CODE_MERGE " Stitch Points")) {
+        const auto &points = session_->stitchPoints();
+        for (size_t i = 0; i < points.size(); ++i) {
+          double stitchTime = points[i];
+          std::string label = "Stitch #" + std::to_string(i + 1) + " (" + std::to_string(static_cast<int>(stitchTime)) + " s)";
+          if (ImGui::Selectable(label.c_str())) {
+            std::string tag = "Stitch #" + std::to_string(i + 1);
+            jumpCursorToIndex(getCursorIndex(stitchTime), cursor, tag);
+          }
+          if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Jump cursor and center view on stitch at %.3f s", stitchTime);
+          }
+        }
+        ImGui::EndCombo();
+      }
+    }
 
     if (session_ && !session_->regimeSummaries().empty()) {
       ImGui::SameLine();
@@ -654,6 +677,29 @@ namespace ui {
             ImGui::End();
           }
 
+          if (session_) {
+            const auto &stitchPoints = session_->stitchPoints();
+            ImDrawList *drawList = ImPlot::GetPlotDrawList();
+
+            for (size_t i = 0; i < stitchPoints.size(); ++i) {
+              double stitchMid = stitchPoints[i];
+              double xMin = stitchMid - 0.5; // 1.0s gap width
+              double xMax = stitchMid + 0.5;
+
+              // 1. Shaded gap band across full subplot height
+              ImVec2 pMin = ImPlot::PlotToPixels(ImPlotPoint(xMin, yAxisMax_));
+              ImVec2 pMax = ImPlot::PlotToPixels(ImPlotPoint(xMax, yAxisMin_));
+              drawList->AddRectFilled(pMin, pMax, IM_COL32(160, 90, 220, 55));
+
+              // 2. Bounding seam edges
+              ImPlot::DragLineX(static_cast<int>(100 + i * 2), &xMin, ImVec4(0.65f, 0.35f, 0.85f, 0.40f), 1.0f, ImPlotDragToolFlags_NoInputs);
+              ImPlot::DragLineX(static_cast<int>(100 + i * 2 + 1), &xMax, ImVec4(0.65f, 0.35f, 0.85f, 0.40f), 1.0f, ImPlotDragToolFlags_NoInputs);
+
+              // 3. Axis header tag at midpoint
+              ImPlot::TagX(stitchMid, ImVec4(0.65f, 0.35f, 0.85f, 0.85f), "Stitch #%d", static_cast<int>(i + 1));
+            }
+          }
+
           ImPlot::EndPlot();
         }
       }
@@ -661,126 +707,11 @@ namespace ui {
     }
     if (doJump) pendingXAxisCenter_ = false;
     if (doLoadLimits) bPendingAfterLoad_ = false;
-
-#if 0
-    bool renderOverlay = false;
-    ImVec2 lastPlotPos, lastPlotSize;
-
-    // Common overlay window flags
-    const ImGuiWindowFlags overlayFlags = ImGuiWindowFlags_NoDecoration |
-      ImGuiWindowFlags_AlwaysAutoResize |
-      ImGuiWindowFlags_NoSavedSettings |
-      ImGuiWindowFlags_NoFocusOnAppearing |
-      ImGuiWindowFlags_NoNav |
-      ImGuiWindowFlags_NoMove |
-      ImGuiWindowFlags_NoDocking;
-
-    // --- Bottom-Left Legend Overlay (Channel Min/Max Range Summary) ---
-    if (renderOverlay && hasRealData && !activeChannels.empty()) {
-      ImVec2 bottomLeftPos = ImVec2(lastPlotPos.x + 10.0f, lastPlotPos.y + lastPlotSize.y - 10.0f);
-
-      ImGui::SetNextWindowPos(bottomLeftPos, ImGuiCond_Always, ImVec2(0.0f, 1.0f));
-      ImGui::SetNextWindowBgAlpha(0.75f);
-
-      std::string rangeWindowID = "##RangeOverlay_" + title();
-      bool open = true;
-
-      if (ImGui::Begin(rangeWindowID.c_str(), &open, overlayFlags)) {
-        ImGui::TextDisabled("Channel Ranges (Click to Jump)");
-        ImGui::Separator();
-
-        for (const auto *channel : activeChannels) {
-          const auto &st = channelStates_[channel->name()];
-          ImGui::PushID(channel->name().c_str());
-
-          ImGui::TextColored(st.color, "%s:", channel->name().c_str());
-          ImGui::SameLine();
-
-          // Interactive Min label
-          char minBuf[32];
-          std::snprintf(minBuf, sizeof(minBuf), "[%.1f", st.cachedMin);
-          ImGui::TextUnformatted(minBuf);
-          if (ImGui::IsItemHovered()) {
-            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-            ImGui::SetTooltip("Click to jump to Min (%.2f)", st.cachedMin);
-          }
-          if (ImGui::IsItemClicked()) {
-            jumpCursorToIndex(st.minIdx, cursor);
-          }
-
-          ImGui::SameLine(0, 2.0f);
-          ImGui::TextUnformatted("-");
-          ImGui::SameLine(0, 2.0f);
-
-          // Interactive Max label
-          char maxBuf[32];
-          std::snprintf(maxBuf, sizeof(maxBuf), "%.1f]", st.cachedMax);
-          ImGui::TextUnformatted(maxBuf);
-          if (ImGui::IsItemHovered()) {
-            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-            ImGui::SetTooltip("Click to jump to Max (%.2f)", st.cachedMax);
-          }
-          if (ImGui::IsItemClicked()) {
-            jumpCursorToIndex(st.maxIdx, cursor);
-          }
-
-          ImGui::PopID();
-        }
-      }
-      ImGui::End();
-    }
-
-    // --- Bottom-Right Legend Overlay (Cursor Values) ---
-    if (renderOverlay && cursor.active) {
-      size_t cursorIdx = getCursorIndex(cursor.timeSec);
-      ImVec2 bottomRightPos = ImVec2(lastPlotPos.x + lastPlotSize.x - 10.0f, lastPlotPos.y + lastPlotSize.y - 10.0f);
-
-      ImGui::SetNextWindowPos(bottomRightPos, ImGuiCond_Always, ImVec2(1.0f, 1.0f)); // Anchor bottom-right
-      ImGui::SetNextWindowBgAlpha(0.85f);
-
-      std::string overlayWindowID = "##CursorOverlay_" + title();
-      bool open = true;
-
-      if (ImGui::Begin(overlayWindowID.c_str(), &open, overlayFlags)) {
-        ImGui::TextDisabled("Cursor @ %.3f s", cursor.timeSec);
-
-        if (artifactCursor_.active) {
-          double deltaTime = cursor.timeSec - artifactCursor_.timeSec;
-          ImGui::SameLine();
-          ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "(dt: %+.3f s)", deltaTime);
-        }
-
-        ImGui::Separator();
-
-        if (hasRealData) {
-          if (!activeChannels.empty()) {
-            for (const auto *channel : activeChannels) {
-              const auto &st = channelStates_[channel->name()];
-              double val = (cursorIdx < channel->values().size()) ? channel->values()[cursorIdx] : 0.0;
-
-              ImGui::TextColored(st.color, "%s:", channel->name().c_str());
-              ImGui::SameLine();
-              if (!channel->unit().empty()) {
-                ImGui::Text("%.2f %s", val, channel->unit().c_str());
-              } else {
-                ImGui::Text("%.2f", val);
-              }
-            }
-          } else {
-            ImGui::TextDisabled("No active channels");
-          }
-        } else {
-          ImGui::Text("%.2f", placeholderValue_[cursorIdx % placeholderValue_.size()]);
-        }
-      }
-      ImGui::End();
-    }
-#endif
   }
 
   void TimeSeriesPanel::render(PlotCursor &cursor)
   {
-    std::string windowLabel = "Time Series###" + title();
+    std::string windowLabel = std::string{ ICON_FA_CHART_LINE } + " Time Series###" + title();
     ImGui::Begin(windowLabel.c_str(), &open_);
 
     renderHeaderControls(cursor);

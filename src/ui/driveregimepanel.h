@@ -24,13 +24,9 @@ namespace ui {
     const std::vector<core::RegimeSummary> &regimes() const;
     std::vector<core::RegimeSummary> &regimes();
 
-    void setOnRegimesChangedCallback(std::function<void()> callback) { onRegimesChanged_ = std::move(callback); }
-
   private:
     void reanalyze();
     void renderConfigModal();
-    void notifyRegimesChanged() { if (onRegimesChanged_) onRegimesChanged_(); }
-    std::function<void()> onRegimesChanged_;
     const core::LogSession *session_ = nullptr;
     bool open_ = true;    
     bool showConfigModal_ = false;

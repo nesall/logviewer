@@ -9,6 +9,8 @@
 #include <utility>
 
 #include "3rdparty/nlohmann/json.hpp"
+#include "3rdparty/IconsFontAwesome7.h"
+
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "implot.h"
@@ -192,7 +194,7 @@ namespace ui {
 
   void ScatterPanel::render(PlotCursor &cursor)
   {
-    std::string legendLabel = selectedXChannel_ + " vs " + selectedYChannel_;
+    std::string legendLabel = std::string{ ICON_FA_CHART_SIMPLE } + " " + selectedXChannel_ + " vs " + selectedYChannel_;
     if (!selectedColorChannel_.empty()) {
       legendLabel += " vs " + selectedColorChannel_;
     }
