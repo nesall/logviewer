@@ -33,6 +33,8 @@ namespace ui {
     void rebindChannels();
     void rebuildColorData();
     void computeFilteredStats();
+    void renderChannelsCombos(bool sameLine = false);
+    void renderChannelsPopup();
 
     std::string selectedXChannel_;
     std::string selectedYChannel_;
