@@ -21,6 +21,8 @@ namespace ui {
     inline constexpr const char *ConcatLog = "Stitch / Concat Log###ConcatLogModal";
     inline constexpr const char *AddAnnotation = "Add Annotation###AddAnnotationModal";
     inline constexpr const char *TimelineAction = "Timeline Action###TimelineActionPopup";
+    inline constexpr const char *ExportCsv = "Export CSV###ExportCsvModal";
+    inline constexpr const char *ExportCsvProgress = "Exporting CSV###ExportCsvProgressModal";
   } // namespace popups
 
 

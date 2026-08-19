@@ -108,6 +108,8 @@ add_executable(logviewer
   src/io/haltechdlparser.cpp
   src/io/plogparser.h
   src/io/plogparser.cpp
+  src/io/csvexporter.h
+  src/io/csvexporter.cpp
   src/ui/app.h
   src/ui/app.cpp
   src/ui/plotpanel.h

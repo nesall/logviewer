@@ -1468,6 +1468,38 @@ namespace ui {
       ImGui::InputText("Channel Name", nameBuf, sizeof(nameBuf));
       ImGui::InputText("Unit", unitBuf, sizeof(unitBuf));
       ImGui::InputText("Formula", formulaBuf, sizeof(formulaBuf));
+      ImGui::Spacing();
+
+      if (ImGui::BeginCombo(ICON_FA_WAND_MAGIC_SPARKLES " Load Preset...", "Select a common math preset...")) {
+        std::string lastCategory;
+        for (const auto &preset : core::FormulaEvaluator::allPresets()) {
+          if (preset.category != lastCategory) {
+            if (!lastCategory.empty()) ImGui::Separator();
+            ImGui::TextDisabled("%s", preset.category.c_str());
+            lastCategory = preset.category;
+          }
+
+          if (ImGui::Selectable(preset.name.c_str())) {
+            std::string missing;
+            std::string resolved = core::FormulaEvaluator::resolvePresetFormula(preset, session_, missing);
+
+            std::snprintf(nameBuf, sizeof(nameBuf), "%s", preset.name.c_str());
+            std::snprintf(unitBuf, sizeof(unitBuf), "%s", preset.defaultUnit.c_str());
+
+            if (!resolved.empty()) {
+              std::snprintf(formulaBuf, sizeof(formulaBuf), "%s", resolved.c_str());
+              customChannelError_.clear();
+            } else {
+              std::snprintf(formulaBuf, sizeof(formulaBuf), "%s", preset.formulaTemplate.c_str());
+              customChannelError_ = "Unmapped slot " + missing + ". Check Channel Semantic Mapping.";
+            }
+          }
+          if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("%s\nFormula: %s", preset.description.c_str(), preset.formulaTemplate.c_str());
+          }
+        }
+        ImGui::EndCombo();
+      }
 
       ImGui::Spacing();
       ImGui::TextWrapped("Use [ChannelName] for variables, e.g. [MAP] - 101.3 or ([RPM] * [PW]) / 12000");

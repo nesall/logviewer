@@ -6,6 +6,7 @@
 
 #include "core/logsession.h"
 #include "ui/plotpanel.h"
+#include "3rdparty/portable-file-dialogs.h"
 
 #include <imgui.h>
 
@@ -75,6 +76,12 @@ namespace ui {
     void shiftXAxis(double shiftSeconds);
     void computeChannelStats(const core::Channel &channel, ChannelStats &outStats) const;
     void renderStatsOverlay(int plotIdx, const std::vector<const core::Channel *> &subplotChannels, const ImVec2 &plotPos, const ImVec2 &plotSize);
+    void renderExportCsvModal();
+    void pollExportCsvDialog();
+    void renderExportProgressModal();
+    void renderMinimap(PlotCursor &cursor, const ImVec2 &size);
+    void updateMinimapOverviewCache();
+
 
     bool pendingXAxisCenter_ = false;
     //bool pendingXAxisShift_ = false;
@@ -120,6 +127,44 @@ namespace ui {
       bool cropActive = false;
     };
     mutable std::unordered_map<std::string, CachedStatsEntry> statsCache_;
+
+    bool showExportCsvModal_ = false;
+    int exportRangeMode_ = 0;
+    int exportChannelMode_ = 0;
+    bool exportIncludeUnits_ = true;
+    int exportDelimiterIdx_ = 0;
+    std::unique_ptr<pfd::save_file> pendingCsvSaveDialog_;
+    std::string exportErrorMessage_;
+    bool showExportError_ = false;
+    // Async Export Progress State
+    bool isExporting_ = false;
+    std::atomic<float> exportProgress_{ 0.0f };
+    std::atomic<bool> exportCancelRequested_{ false };
+    struct ExportResult {
+      bool success = false;
+      std::string error;
+    };
+    std::future<ExportResult> activeExportTask_;
+
+    bool showMinimap_ = true;
+    float minimapHeight_ = 48.0f;
+    // Background waveform cache for minimap
+    std::vector<double> minimapX_;
+    std::vector<double> minimapYNorm_;
+    uint64_t minimapCacheRevision_ = 0;
+    const core::LogSession *minimapCacheSession_ = nullptr;
+    // Minimap drag interaction states
+    enum class MinimapDragMode {
+      None,
+      PanWindow,
+      ResizeLeft,
+      ResizeRight
+    };
+    MinimapDragMode minimapDragMode_ = MinimapDragMode::None;
+    double minimapDragInitialXMin_ = 0.0;
+    double minimapDragInitialXMax_ = 0.0;
+    float minimapDragStartMouseX_ = 0.0f;
+
   private:
     void generatePlaceholderData();
   };

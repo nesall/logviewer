@@ -74,6 +74,7 @@ namespace core {
     std::vector<Channel> &channels() { return channels_; }
 
     const Channel *findChannel(const std::string &name) const;
+    const Channel *channelByIndex(size_t i) const;
 
     const std::vector<double> *timeSec() const;
     std::optional<size_t> timeChannelIndex() const { return timeChannelIndex_; }

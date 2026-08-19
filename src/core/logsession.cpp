@@ -199,6 +199,14 @@ namespace core {
     return nullptr;
   }
 
+  const Channel *LogSession::channelByIndex(size_t i) const
+  {
+    if (i < channels_.size()) {
+      return &channels_[i];
+    }
+    return nullptr;
+  }
+
   const std::vector<double> *LogSession::timeSec() const
   {
     if (!timeChannelIndex_.has_value() || *timeChannelIndex_ >= channels_.size()) {

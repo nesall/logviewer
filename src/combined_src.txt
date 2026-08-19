@@ -166,6 +166,59 @@ core::Channel core::FormulaEvaluator::evaluate(const CustomChannelDef &def, cons
   return resultChannel;
 }
 
+const std::vector<core::MathPreset> &core::FormulaEvaluator::allPresets()
+{
+  static const std::vector<core::MathPreset> presets = {
+    // --- Pressure & Boost ---
+    { "Pressure", "Boost Pressure (PSI)", "psi", "([{LOAD}] - 101.325) * 0.145038", "Relative boost pressure from absolute MAP (assuming 101.3 kPa baro)." },
+    { "Pressure", "Boost Pressure (Bar)", "bar", "([{LOAD}] - 101.325) / 100.0", "Relative boost in bar." },
+    { "Pressure", "MAP (PSI Absolute)", "psia", "[{LOAD}] * 0.145038", "Converts kPa manifold pressure to absolute PSI." },
+
+    // --- Air/Fuel & Lambda ---
+    { "AFR / Lambda", "Lambda from Gasoline AFR", "λ", "[{AFR}] / 14.7", "Normalizes Gasoline 14.7 stoichiometric AFR to Lambda." },
+    { "AFR / Lambda", "Lambda from E85 AFR", "λ", "[{AFR}] / 9.8", "Normalizes E85 9.8 stoichiometric AFR to Lambda." },
+    { "AFR / Lambda", "AFR from Lambda", "AFR", "[{AFR}] * 14.7", "Converts Lambda (1.0) into Gasoline AFR." },
+
+    // --- Temperatures ---
+    { "Temperature", "CLT (°F to °C)", "°C", "([{CLT}] - 32) * (5 / 9)", "Converts Fahrenheit coolant to Celsius." },
+    { "Temperature", "CLT (°C to °F)", "°F", "([{CLT}] * 9 / 5) + 32", "Converts Celsius coolant to Fahrenheit." },
+    { "Temperature", "MAT (°F to °C)", "°C", "([{MAT}] - 32) * (5 / 9)", "Converts Fahrenheit intake air to Celsius." },
+    { "Temperature", "MAT (°C to °F)", "°F", "([{MAT}] * 9 / 5) + 32", "Converts Celsius intake air to Fahrenheit." },
+
+    // --- Fuel Dynamics & Math ---
+    { "Fuel Dynamics", "Injector Duty Cycle (%)", "%", "([{RPM}] * [{PW}]) / 1200.0", "Calculates 4-stroke injector duty cycle from RPM and Pulse Width (ms)." },
+    { "Fuel Dynamics", "Estimated Mass Airflow (g/s)", "g/s", "([{RPM}] * [{LOAD}] * 1.3) / 12000.0", "Approximate speed-density airflow estimation based on displacement constant." }
+  };
+  return presets;
+}
+
+std::string core::FormulaEvaluator::resolvePresetFormula(const MathPreset &preset, const LogSession &session, std::string &missingChannel)
+{
+  std::string resolved = preset.formulaTemplate;
+  const auto &cm = session.channelMapping();
+
+  auto replaceToken = [&](const std::string &token, const std::string &channelName) -> bool {
+    size_t pos = resolved.find(token);
+    if (pos != std::string::npos) {
+      if (channelName.empty() || session.findChannel(channelName) == nullptr) {
+        missingChannel = token;
+        return false;
+      }
+      resolved.replace(pos, token.length(), channelName);
+    }
+    return true;
+    };
+
+  if (!replaceToken("{LOAD}", cm.load)) return "";
+  if (!replaceToken("{RPM}", cm.rpm)) return "";
+  if (!replaceToken("{AFR}", cm.afr)) return "";
+  if (!replaceToken("{CLT}", cm.clt)) return "";
+  if (!replaceToken("{MAT}", cm.mat)) return "";
+  if (!replaceToken("{PW}", cm.pw)) return "";
+
+  return resolved;
+}
+
 
 
 ## File: src/core/formula_evaluator.h
@@ -175,6 +228,7 @@ core::Channel core::FormulaEvaluator::evaluate(const CustomChannelDef &def, cons
 #include <cmath>
 #include <limits>
 #include <string>
+#include <vector>
 
 namespace core {
 
@@ -187,9 +241,20 @@ namespace core {
     std::string formula; // e.g. "[MAP] - 101.3" or "([RPM] * [PW]) / 12000"
   };
 
+  struct MathPreset {
+    std::string category;
+    std::string name;
+    std::string defaultUnit;
+    std::string formulaTemplate; // Uses semantic tokens e.g. {LOAD}, {CLT}, {RPM}, {PW}
+    std::string description;
+  };
+
   class FormulaEvaluator {
   public:
     static Channel evaluate(const CustomChannelDef &def, const LogSession &session, std::string &errorOut);
+
+    static const std::vector<MathPreset> &allPresets();
+    static std::string resolvePresetFormula(const MathPreset &preset, const LogSession &session, std::string &missingChannel);
   };
 
 } // namespace core
@@ -398,6 +463,14 @@ namespace core {
     return nullptr;
   }
 
+  const Channel *LogSession::channelByIndex(size_t i) const
+  {
+    if (i < channels_.size()) {
+      return &channels_[i];
+    }
+    return nullptr;
+  }
+
   const std::vector<double> *LogSession::timeSec() const
   {
     if (!timeChannelIndex_.has_value() || *timeChannelIndex_ >= channels_.size()) {
@@ -544,6 +617,15 @@ namespace core {
     return true;
   }
 
+  void LogSession::removeAnnotation(size_t index)
+  {
+    if (index < annotations_.size()) {
+      annotations_.erase(annotations_.begin() + index);
+      ++revision_;
+    }
+  }
+
+
 
 } // namespace core
 
@@ -601,6 +683,13 @@ namespace core {
     PrependToBeginning
   };
 
+  // aka Bookmark
+  struct Annotation {
+    double timeSec;
+    std::string label;
+    ImVec4 color;
+  };
+
   struct ChannelMergeResolution {
     std::string activeChannelName;
     // Name of channel in the incoming session to bind to.
@@ -619,6 +708,7 @@ namespace core {
     std::vector<Channel> &channels() { return channels_; }
 
     const Channel *findChannel(const std::string &name) const;
+    const Channel *channelByIndex(size_t i) const;
 
     const std::vector<double> *timeSec() const;
     std::optional<size_t> timeChannelIndex() const { return timeChannelIndex_; }
@@ -654,6 +744,11 @@ namespace core {
     void setStitchPoints(std::vector<double> points) { stitchPoints_ = std::move(points); }
     void clearStitchPoints() { stitchPoints_.clear(); }
 
+    const std::vector<Annotation> &annotations() const { return annotations_; }
+    void setAnnotations(std::vector<Annotation> annotations) { annotations_ = std::move(annotations); }
+    void addAnnotation(Annotation annotation) { annotations_.push_back(std::move(annotation)); ++revision_; }
+    void removeAnnotation(size_t index);
+
     uint64_t revision() const { return revision_; }
 
   private:
@@ -670,6 +765,7 @@ namespace core {
     std::vector<RegimeSummary> regimeSummaries_;
 
     std::vector<double> stitchPoints_;
+    std::vector<Annotation> annotations_;
     uint64_t revision_ = 0;
   };
 
@@ -2005,6 +2101,155 @@ namespace engine {
 } // namespace engine
 
 
+## File: src/io/csvexporter.cpp
+
+#include "csvexporter.h"
+
+bool io::CsvExporter::write(
+  const std::string &path, 
+  const core::LogSession &session, 
+  const CsvExportOptions &options, 
+  std::string &errorOut, 
+  std::atomic<float> *progress, 
+  std::atomic<bool> *stopRequested)
+{
+  if (session.rowCount() == 0) {
+    errorOut = "Session contains no data rows.";
+    return false;
+  }
+
+  std::ofstream file(path);
+  if (!file.is_open()) {
+    errorOut = "Could not open file for writing: " + path;
+    return false;
+  }
+
+  // 1. Resolve channels
+  std::vector<const core::Channel *> exportChannels;
+  if (options.selectedChannelsOnly && !options.targetChannelNames.empty()) {
+    if (const auto *timeCh = session.findChannel("Time")) {
+      exportChannels.push_back(timeCh);
+    }
+    for (const auto &name : options.targetChannelNames) {
+      if (name == "Time") continue;
+      if (const auto *ch = session.findChannel(name)) {
+        exportChannels.push_back(ch);
+      }
+    }
+  } else {
+    for (const auto &ch : session.channels()) {
+      exportChannels.push_back(&ch);
+    }
+  }
+
+  if (exportChannels.empty()) {
+    errorOut = "No valid channels selected for export.";
+    return false;
+  }
+
+  // 2. Resolve crop rows
+  size_t startRow = 0;
+  size_t endRow = session.rowCount() - 1;
+  if (options.cropOnly && session.cropRange().active) {
+    startRow = session.cropStartIndex();
+    endRow = session.cropEndIndex();
+  }
+
+  const char delim = options.delimiter;
+  const size_t totalRows = (endRow >= startRow) ? (endRow - startRow + 1) : 0;
+  if (totalRows == 0) {
+    errorOut = "No rows within selected range.";
+    return false;
+  }
+
+  // 3. Header lines
+  for (size_t i = 0; i < exportChannels.size(); ++i) {
+    file << exportChannels[i]->name();
+    if (i + 1 < exportChannels.size()) file << delim;
+  }
+  file << "\n";
+
+  if (options.includeUnitsRow) {
+    for (size_t i = 0; i < exportChannels.size(); ++i) {
+      file << exportChannels[i]->unit();
+      if (i + 1 < exportChannels.size()) file << delim;
+    }
+    file << "\n";
+  }
+
+  // 4. Stream rows using a fast line buffer
+  std::string lineBuf;
+  lineBuf.reserve(1024);
+  char valBuf[32];
+
+  for (size_t r = startRow; r <= endRow; ++r) {
+    if (stopRequested && stopRequested->load()) {
+      file.close();
+      errorOut = "Export stopped by user.";
+      return true;
+    }
+
+    lineBuf.clear();
+    for (size_t i = 0; i < exportChannels.size(); ++i) {
+      const auto &vals = exportChannels[i]->values();
+      if (r < vals.size()) {
+        double v = vals[r];
+        if (!std::isnan(v)) {
+          int len = std::snprintf(valBuf, sizeof(valBuf), "%.4f", v);
+          lineBuf.append(valBuf, len);
+        }
+      }
+      if (i + 1 < exportChannels.size()) lineBuf.push_back(delim);
+    }
+    lineBuf.push_back('\n');
+    file.write(lineBuf.data(), lineBuf.size());
+
+    if (progress && (r % 1000 == 0)) {
+      progress->store(static_cast<float>(r - startRow) / static_cast<float>(totalRows));
+    }
+  }
+
+  if (progress) progress->store(1.0f);
+  return true;
+}
+
+
+
+## File: src/io/csvexporter.h
+
+#pragma once
+
+#include <string>
+#include <vector>
+#include <fstream>
+#include <cmath>
+#include <atomic>
+#include "core/logsession.h"
+
+namespace io {
+
+  struct CsvExportOptions {
+    bool cropOnly = true;
+    bool selectedChannelsOnly = true;
+    std::vector<std::string> targetChannelNames;
+    bool includeUnitsRow = true;
+    char delimiter = ',';
+  };
+
+  class CsvExporter {
+  public:
+    static bool write(
+      const std::string &path,
+      const core::LogSession &session,
+      const CsvExportOptions &options,
+      std::string &errorOut,
+      std::atomic<float> *progress = nullptr,
+      std::atomic<bool> *cancelRequested = nullptr);
+  };
+
+} // namespace io
+
+
 ## File: src/io/haltechdlparser.cpp
 
 #include "io/haltechdlparser.h"
@@ -2479,7 +2724,7 @@ namespace io {
 
   namespace {
     constexpr uint32_t kPlogMagic = 0x474F4C50; // "PLOG" in Little Endian
-    constexpr uint32_t kPlogVersion = 1;
+    constexpr uint32_t kPlogVersion = 2;
 
     constexpr int32_t kPlogRealNaN = std::numeric_limits<int32_t>::min();
     constexpr int8_t kPlogBooleanNaN = 0xFF;
@@ -2524,8 +2769,8 @@ namespace io {
     inb.read(reinterpret_cast<char *>(&magic), sizeof(magic));
     inb.read(reinterpret_cast<char *>(&version), sizeof(version));
 
-    if (magic != kPlogMagic || version != kPlogVersion) {
-      errorOut = "Invalid or unsupported .plog file format: " + path;
+    if (magic != kPlogMagic || version < 1 || version > kPlogVersion) {
+      errorOut = "Unsupported or corrupt .plog format version (" + std::to_string(version) + "): " + path;
       return false;
     }
 
@@ -2570,6 +2815,18 @@ namespace io {
     std::vector<double> stitchPoints(nofStitches);
     if (0 < nofStitches) {
       inb.read(reinterpret_cast<char *>(stitchPoints.data()), stitchPoints.size() * sizeof(double));
+    }
+
+    std::vector<core::Annotation> annotations;
+    if (2 <= kPlogVersion) {
+      uint64_t nofAnnots;
+      inb.read(reinterpret_cast<char *>(&nofAnnots), sizeof(nofAnnots));
+      annotations.resize(nofAnnots);
+      for (auto &a : annotations) {
+        inb.read(reinterpret_cast<char *>(&a.timeSec), sizeof(double));
+        a.label = readString();
+        inb.read(reinterpret_cast<char *>(&a.color), sizeof(ImVec4));
+      }
     }
 
     std::vector<core::Channel> channels;
@@ -2617,6 +2874,7 @@ namespace io {
       outSession.setTimeChannelIndex(static_cast<size_t>(timeChannelIdx));
     }
     outSession.setStitchPoints(stitchPoints);
+    outSession.setAnnotations(annotations);
 
     for (auto &ch : channels) {
       outSession.addChannel(std::move(ch));
@@ -2677,10 +2935,18 @@ namespace io {
       writeString(ch.formula());
     }
 
-    const std::vector<double> &stitchPoints = session.stitchPoints();
+    const auto &stitchPoints = session.stitchPoints();
     uint64_t nofStitches = stitchPoints.size();
     out.write(reinterpret_cast<const char *>(&nofStitches), sizeof(nofStitches));
     out.write(reinterpret_cast<const char *>(stitchPoints.data()), stitchPoints.size() * sizeof(double));
+
+    uint64_t nofAnnots = session.annotations().size();
+    out.write(reinterpret_cast<const char *>(&nofAnnots), sizeof(nofAnnots));
+    for (const auto &a : session.annotations()) {
+      out.write(reinterpret_cast<const char *>(&a.timeSec), sizeof(double));
+      writeString(a.label);
+      out.write(reinterpret_cast<const char *>(&a.color), sizeof(ImVec4));
+    }
 
     for (size_t i = 0; i < session.channels().size(); ++i) {
       const auto &ch = session.channels()[i];
@@ -2964,7 +3230,7 @@ namespace ui {
   {
     if (pendingExportLogDialog_) return;
     pendingExportLogDialog_ = std::make_unique<pfd::save_file>(
-      "Export Log File", "stitched_log.plog",
+      "Export Log File", "log-" + currentDateStamp() + ".plog",
       std::vector<std::string>{
       "Binary Log File (*.plog)", "*.plog",
         "All Files", "*"
@@ -3034,13 +3300,19 @@ namespace ui {
       std::string exportPath = pendingExportLogDialog_->result();
       pendingExportLogDialog_.reset();
       if (!exportPath.empty()) {
-        std::string err;
-        if (!io::PlogParser::write(exportPath, session_, err)) {
-          loadErrorMessage_ = err;
-          showLoadErrorPopup_ = true;
-        } else {
-          addRecentLog(exportPath);
-        }
+        savingPlogTask_ = std::async(std::launch::async, [this, exportPath]()
+          {
+            std::string err;
+            bool res = io::PlogParser::write(exportPath, session_, err);
+            if (!res) {
+              saveErrorMessage_ = err;
+              showSaveErrorPopup_ = true;
+            } else {
+              addRecentLog(exportPath);
+            }
+            isSavingPlog_ = false;
+            return res;
+          });
       }
     }
   }
@@ -3348,6 +3620,9 @@ namespace ui {
     std::string title{ App::appBaseTitle() };
     if (!currentWorkspacePath_.empty()) {
       title += " - " + utils::path::fileNameWithoutExtension(currentWorkspacePath_);
+    }
+    if (session_.rowCount() && !session_.sourcePath().empty()) {
+      title += " [" + utils::path::fileNameOnly(session_.sourcePath()) + "]";
     }
     if (isDirty_) {
       title += "*";
@@ -3958,20 +4233,44 @@ namespace ui {
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O, false)) {
       beginOpenLogDialog();
     }
+
+    bool hasSession = 0 < session_.rowCount();
+    bool isPlogFile = hasSession &&
+      session_.sourcePath().size() >= 5 &&
+      session_.sourcePath().substr(session_.sourcePath().size() - 5) == ".plog";
+
     if (ImGui::BeginMenuBar()) {
       if (ImGui::BeginMenu("File")) {
         if (ImGui::MenuItem("Open Log...", "Ctrl+O")) {
           beginOpenLogDialog();
         }
-        ImGui::BeginDisabled(session_.rowCount() == 0);
-        if (ImGui::MenuItem("Append / Prepend Log...")) {
-          beginAppendLogDialog();
-        }
-        if (ImGui::MenuItem("Export Active / Stitched Log (.plog)...")) {
-          beginExportLogDialog();
-        }
-        if (ImGui::MenuItem("Close Log")) {
-          requestActionWithDirtyCheck(PendingAction::CloseLog);
+        ImGui::BeginDisabled(!hasSession);
+        {
+          ImGui::BeginDisabled(!isPlogFile || isSavingPlog_);
+          if (ImGui::MenuItem("Save Log", "Ctrl+Alt+S")) {
+            isSavingPlog_ = true;
+            savingPlogTask_ = std::async(std::launch::async, [this, sessionCopy = session_]()
+              {
+                std::string err;
+                bool res = io::PlogParser::write(sessionCopy.sourcePath(), sessionCopy, err);
+                if (!res) {
+                  saveErrorMessage_ = err;
+                  showSaveErrorPopup_ = true;
+                }
+                isSavingPlog_ = false;
+                return res;
+              });
+          }
+          ImGui::EndDisabled();
+          if (ImGui::MenuItem("Save Log As / Export (.plog)...")) {
+            beginExportLogDialog();
+          }
+          if (ImGui::MenuItem("Append / Prepend Log...")) {
+            beginAppendLogDialog();
+          }
+          if (ImGui::MenuItem("Close Log")) {
+            requestActionWithDirtyCheck(PendingAction::CloseLog);
+          }
         }
         ImGui::EndDisabled();
 
@@ -4057,6 +4356,12 @@ namespace ui {
           showChannelMappingModal_ = true;
         }
         ImGui::EndMenu();
+      }
+      if (isSavingPlog_) {
+        float time = (float)ImGui::GetTime();
+        ImVec4 spinColor = ImVec4(0.3f, 0.7f, 1.0f, 0.5f + 0.5f * sinf(time * 6.0f));
+        ImGui::SameLine(ImGui::GetWindowWidth() - 140.0f);
+        ImGui::TextColored(spinColor, ICON_FA_FLOPPY_DISK " Saving .plog...");
       }
       ImGui::EndMenuBar();
     }
@@ -4210,6 +4515,22 @@ namespace ui {
     }
   }
 
+  void App::renderSaveErrorPopup()
+  {
+    if (showSaveErrorPopup_) {
+      ImGui::OpenPopup(ui::popups::SaveError);
+      showSaveErrorPopup_ = false;
+    }
+
+    if (ImGui::BeginPopupModal(ui::popups::SaveError, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::TextWrapped("%s", saveErrorMessage_.c_str());
+      if (ui::UI::Button("OK", {}, ImVec2(120, 0))) {
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
+    }
+  }
+
   void App::renderCustomChannelModal()
   {
     if (showCustomChannelModal_) {
@@ -4286,6 +4607,38 @@ namespace ui {
       ImGui::InputText("Channel Name", nameBuf, sizeof(nameBuf));
       ImGui::InputText("Unit", unitBuf, sizeof(unitBuf));
       ImGui::InputText("Formula", formulaBuf, sizeof(formulaBuf));
+      ImGui::Spacing();
+
+      if (ImGui::BeginCombo(ICON_FA_WAND_MAGIC_SPARKLES " Load Preset...", "Select a common math preset...")) {
+        std::string lastCategory;
+        for (const auto &preset : core::FormulaEvaluator::allPresets()) {
+          if (preset.category != lastCategory) {
+            if (!lastCategory.empty()) ImGui::Separator();
+            ImGui::TextDisabled("%s", preset.category.c_str());
+            lastCategory = preset.category;
+          }
+
+          if (ImGui::Selectable(preset.name.c_str())) {
+            std::string missing;
+            std::string resolved = core::FormulaEvaluator::resolvePresetFormula(preset, session_, missing);
+
+            std::snprintf(nameBuf, sizeof(nameBuf), "%s", preset.name.c_str());
+            std::snprintf(unitBuf, sizeof(unitBuf), "%s", preset.defaultUnit.c_str());
+
+            if (!resolved.empty()) {
+              std::snprintf(formulaBuf, sizeof(formulaBuf), "%s", resolved.c_str());
+              customChannelError_.clear();
+            } else {
+              std::snprintf(formulaBuf, sizeof(formulaBuf), "%s", preset.formulaTemplate.c_str());
+              customChannelError_ = "Unmapped slot " + missing + ". Check Channel Semantic Mapping.";
+            }
+          }
+          if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("%s\nFormula: %s", preset.description.c_str(), preset.formulaTemplate.c_str());
+          }
+        }
+        ImGui::EndCombo();
+      }
 
       ImGui::Spacing();
       ImGui::TextWrapped("Use [ChannelName] for variables, e.g. [MAP] - 101.3 or ([RPM] * [PW]) / 12000");
@@ -4495,6 +4848,7 @@ namespace ui {
     renderSavePromptModal();
     renderLoadProgressModal();
     renderLoadErrorPopup();
+    renderSaveErrorPopup();
     renderCustomChannelModal();
     renderChannelMappingModal();
     renderConcatLogModal();
@@ -4574,6 +4928,7 @@ namespace ui {
     void renderWelcomeLanding();
     void renderMenuBar();
     void renderLoadErrorPopup();
+    void renderSaveErrorPopup();
     void renderCustomChannelModal();
     void renderChannelMappingModal();
 
@@ -4679,6 +5034,10 @@ namespace ui {
     bool isDirty_ = false;
     bool readyToExit_ = false;
     bool pendingSaveBeforeExit_ = false;
+    std::future<bool> savingPlogTask_;
+    std::atomic<bool> isSavingPlog_{ false };
+    std::atomic<bool> showSaveErrorPopup_{ false };
+    std::string saveErrorMessage_;
 
     PendingAction pendingAction_ = PendingAction::None;
     std::string pendingActionPathPayload_;
@@ -8395,6 +8754,7 @@ namespace ui {
 #include "ui/ui_helpers.h"
 #include "engine/decimator.h"
 #include "utils/utils.h"
+#include "io/csvexporter.h"
 
 #include <algorithm>
 #include <cctype>
@@ -8506,6 +8866,8 @@ namespace ui {
     j["yAxisMin"] = yAxisMin_;
     j["yAxisMax"] = yAxisMax_;
     j["sidebarWidth"] = sidebarWidth_;
+    j["showStatsOverlay"] = showStatsOverlay_;
+    j["showMinimap"] = showMinimap_;
     return j;
   }
 
@@ -8542,7 +8904,12 @@ namespace ui {
     if (state.contains("sidebarWidth") && state["sidebarWidth"].is_number()) {
       sidebarWidth_ = state["sidebarWidth"].get<float>();
     }
-
+    if (state.contains("showStatsOverlay") && state["showStatsOverlay"].is_boolean()) {
+      showStatsOverlay_ = state["showStatsOverlay"].get<bool>();
+    }
+    if (state.contains("showMinimap") && state["showMinimap"].is_boolean()) {
+      showMinimap_ = state["showMinimap"].get<bool>();
+    }
     if (state.contains("channels") && state["channels"].is_object()) {
       for (auto it = state["channels"].begin(); it != state["channels"].end(); ++it) {
         ChannelState cs;
@@ -8557,7 +8924,7 @@ namespace ui {
         }
         if (it.value().contains("selectionOrder")) {
           cs.selectionOrder = it.value()["selectionOrder"].get<uint64_t>();
-          nextSelectionOrder_ = std::max(nextSelectionOrder_, cs.selectionOrder + 1);
+          nextSelectionOrder_ = (std::max)(nextSelectionOrder_, cs.selectionOrder + 1);
         }
         channelStates_[it.key()] = cs;
       }
@@ -8631,7 +8998,7 @@ namespace ui {
       return;
     }
 
-    const int targetPoints = std::max(kMinDecimationTargetPoints, static_cast<int>(widthPx) * kPointsPerPixel);
+    const int targetPoints = (std::max)(kMinDecimationTargetPoints, static_cast<int>(widthPx) * kPointsPerPixel);
 
     engine::DecimatedSeries series = engine::Decimator::decimate(*cachedTimeSec_, rawVals, xMin, xMax, targetPoints);
 
@@ -8670,6 +9037,552 @@ namespace ui {
     pendingXAxisCenter_ = true;
   }
 
+  void TimeSeriesPanel::computeChannelStats(const core::Channel &channel, ChannelStats &outStats) const
+  {
+    outStats = ChannelStats{};
+    if (!session_ || channel.values().empty()) return;
+
+    const auto &vals = channel.values();
+    size_t startIdx = session_->cropStartIndex();
+    size_t endIdx = session_->cropEndIndex();
+
+    if (startIdx >= vals.size() || endIdx >= vals.size() || startIdx > endIdx) {
+      startIdx = 0;
+      endIdx = vals.size() - 1;
+    }
+
+    double minVal = (std::numeric_limits<double>::max)();
+    double maxVal = -(std::numeric_limits<double>::max)();
+    double sum = 0.0;
+    size_t validCount = 0;
+
+    // First pass: Min, Max, Mean
+    for (size_t i = startIdx; i <= endIdx; ++i) {
+      double v = vals[i];
+      if (std::isnan(v)) continue;
+
+      if (v < minVal) minVal = v;
+      if (v > maxVal) maxVal = v;
+      sum += v;
+      ++validCount;
+    }
+
+    if (validCount == 0) return;
+
+    double meanVal = sum / static_cast<double>(validCount);
+
+    // Second pass: Variance / Standard Deviation
+    double sumSqDiff = 0.0;
+    for (size_t i = startIdx; i <= endIdx; ++i) {
+      double v = vals[i];
+      if (std::isnan(v)) continue;
+      double diff = v - meanVal;
+      sumSqDiff += diff * diff;
+    }
+
+    double variance = (validCount > 1) ? (sumSqDiff / static_cast<double>(validCount - 1)) : 0.0;
+
+    outStats.min = minVal;
+    outStats.max = maxVal;
+    outStats.mean = meanVal;
+    outStats.stdDev = std::sqrt(variance);
+    outStats.sampleCount = validCount;
+    outStats.valid = true;
+  }
+
+  void TimeSeriesPanel::renderStatsOverlay(int plotIdx, const std::vector<const core::Channel *> &subplotChannels, const ImVec2 &plotPos, const ImVec2 &plotSize)
+  {
+    if (!showStatsOverlay_ || subplotChannels.empty() || !session_) return;
+
+    // Position: Top-right corner of the subplot
+    ImVec2 topRightPos = ImVec2(plotPos.x + plotSize.x - 10.0f, plotPos.y + 10.0f);
+    ImGui::SetNextWindowPos(topRightPos, ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(0.80f);
+
+    const ImGuiWindowFlags overlayFlags = ImGuiWindowFlags_NoDecoration |
+      ImGuiWindowFlags_AlwaysAutoResize |
+      ImGuiWindowFlags_NoSavedSettings |
+      ImGuiWindowFlags_NoFocusOnAppearing |
+      ImGuiWindowFlags_NoNav |
+      ImGuiWindowFlags_NoMove |
+      ImGuiWindowFlags_NoDocking;
+
+    std::string overlayID = "##StatsOverlay_" + title() + "_" + std::to_string(plotIdx);
+
+    if (ImGui::Begin(overlayID.c_str(), nullptr, overlayFlags)) {
+      const auto &crop = session_->cropRange();
+      if (crop.active) {
+        ImGui::TextDisabled("Crop Stats [%.1fs - %.1fs]", crop.startSec, crop.endSec);
+      } else {
+        ImGui::TextDisabled("Full Log Stats");
+      }
+      ImGui::Separator();
+
+      const ImGuiTableFlags tableFlags = ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg;
+      if (ImGui::BeginTable("StatsGrid", 5, tableFlags)) {
+        ImGui::TableSetupColumn("Channel", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+        ImGui::TableSetupColumn("Min", ImGuiTableColumnFlags_WidthFixed, 55.0f);
+        ImGui::TableSetupColumn("Max", ImGuiTableColumnFlags_WidthFixed, 55.0f);
+        ImGui::TableSetupColumn("Avg", ImGuiTableColumnFlags_WidthFixed, 55.0f);
+        ImGui::TableSetupColumn("StdDev", ImGuiTableColumnFlags_WidthFixed, 55.0f);
+        ImGui::TableHeadersRow();
+
+        uint64_t currentRev = session_->revision();
+
+        for (const auto *ch : subplotChannels) {
+          auto &state = channelStates_[ch->name()];
+          auto &cached = statsCache_[ch->name()];
+
+          // Check if cached stats are valid
+          bool needsRecalc = !cached.stats.valid ||
+            cached.sessionRevision != currentRev ||
+            cached.cropActive != crop.active ||
+            std::abs(cached.cropStart - crop.startSec) > 1e-6 ||
+            std::abs(cached.cropEnd - crop.endSec) > 1e-6;
+
+          if (needsRecalc) {
+            computeChannelStats(*ch, cached.stats);
+            cached.sessionRevision = currentRev;
+            cached.cropActive = crop.active;
+            cached.cropStart = crop.startSec;
+            cached.cropEnd = crop.endSec;
+          }
+
+          if (!cached.stats.valid) continue;
+
+          ImGui::TableNextRow();
+
+          // 1. Channel Name
+          ImGui::TableSetColumnIndex(0);
+          ImGui::TextColored(state.color, "%s", ch->name().c_str());
+
+          // 2. Min
+          ImGui::TableSetColumnIndex(1);
+          ImGui::Text("%.1f", cached.stats.min);
+
+          // 3. Max
+          ImGui::TableSetColumnIndex(2);
+          ImGui::Text("%.1f", cached.stats.max);
+
+          // 4. Mean
+          ImGui::TableSetColumnIndex(3);
+          ImGui::Text("%.1f", cached.stats.mean);
+
+          // 5. StdDev (σ)
+          ImGui::TableSetColumnIndex(4);
+          ImGui::Text("%.2f", cached.stats.stdDev);
+        }
+        ImGui::EndTable();
+      }
+    }
+    ImGui::End();
+  }
+
+  void TimeSeriesPanel::pollExportCsvDialog()
+  {
+    if (pendingCsvSaveDialog_ && pendingCsvSaveDialog_->ready(0)) {
+      std::string path = pendingCsvSaveDialog_->result();
+      pendingCsvSaveDialog_.reset();
+
+      if (!path.empty() && session_) {
+        io::CsvExportOptions opts;
+        opts.cropOnly = (exportRangeMode_ == 0);
+        opts.selectedChannelsOnly = (exportChannelMode_ == 0);
+        opts.includeUnitsRow = exportIncludeUnits_;
+        opts.delimiter = (exportDelimiterIdx_ == 1) ? '\t' : ',';
+
+        if (opts.selectedChannelsOnly) {
+          for (const auto &[name, state] : channelStates_) {
+            if (state.enabled) {
+              opts.targetChannelNames.push_back(name);
+            }
+          }
+        }
+
+        exportProgress_.store(0.0f);
+        exportCancelRequested_.store(false);
+        isExporting_ = true;
+
+        activeExportTask_ = std::async(std::launch::async, [this, path, opts, sessionSnapshot = *session_]() {
+          ExportResult res;
+          res.success = io::CsvExporter::write(
+            path,
+            sessionSnapshot,
+            opts,
+            res.error,
+            &exportProgress_,
+            &exportCancelRequested_
+          );
+          return res;
+          });
+      }
+    }
+  }
+
+  void TimeSeriesPanel::renderExportProgressModal()
+  {
+    if (isExporting_) {
+      ImGui::OpenPopup(ui::popups::ExportCsvProgress);
+    }
+
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(360, 0));
+
+    if (ImGui::BeginPopupModal(ui::popups::ExportCsvProgress, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+      ImGui::Text("Exporting CSV Telemetry...");
+      ImGui::Spacing();
+
+      float p = exportProgress_.load();
+      char progressBuf[32];
+      std::snprintf(progressBuf, sizeof(progressBuf), "%.0f%%", p * 100.0f);
+      ImGui::ProgressBar(p, ImVec2(-1.0f, 0.0f), progressBuf);
+
+      ImGui::Spacing();
+      ImGui::Separator();
+      ImGui::Spacing();
+
+      if (ui::UI::ButtonDanger("Stop Export", ImVec2(-1.0f, 0.0f))) {
+        exportCancelRequested_.store(true);
+      }
+
+      if (activeExportTask_.valid() &&
+        activeExportTask_.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+        ExportResult res = activeExportTask_.get();
+        isExporting_ = false;
+        ImGui::CloseCurrentPopup();
+
+        if (!res.success && !exportCancelRequested_.load()) {
+          exportErrorMessage_ = res.error;
+          showExportError_ = true;
+        }
+      }
+
+      ImGui::EndPopup();
+    }
+  }
+
+  void TimeSeriesPanel::renderMinimap(PlotCursor &cursor, const ImVec2 &size)
+  {
+    if (!session_ || session_->rowCount() == 0 || !cachedTimeSec_ || cachedTimeSec_->size() < 2) {
+      return;
+    }
+
+    updateMinimapOverviewCache();
+
+    double tStart = cachedTimeSec_->front();
+    double tEnd = cachedTimeSec_->back();
+    double totalSpan = tEnd - tStart;
+    if (totalSpan <= 0.0) totalSpan = 1.0;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+    ImGui::InvisibleButton("##MinimapCanvas", size);
+    ImVec2 pMin = ImGui::GetItemRectMin();
+    ImVec2 pMax = ImGui::GetItemRectMax();
+    ImGui::PopStyleVar();
+
+    ImDrawList *drawList = ImGui::GetWindowDrawList();
+    drawList->PushClipRect(pMin, pMax, true);
+
+    // Background frame
+    drawList->AddRectFilled(pMin, pMax, IM_COL32(20, 22, 28, 255), 4.0f);
+    drawList->AddRect(pMin, pMax, IM_COL32(50, 54, 65, 255), 4.0f);
+
+    float mapW = pMax.x - pMin.x;
+    float mapH = pMax.y - pMin.y;
+
+    auto timeToScreenX = [&](double t) -> float {
+      float frac = static_cast<float>((t - tStart) / totalSpan);
+      return pMin.x + std::clamp(frac, 0.0f, 1.0f) * mapW;
+      };
+
+    auto screenXToTime = [&](float x) -> double {
+      float frac = std::clamp((x - pMin.x) / mapW, 0.0f, 1.0f);
+      return tStart + frac * totalSpan;
+      };
+
+    // 1. Shaded Out-of-Crop Regions
+    if (session_->cropRange().active) {
+      float cMinX = timeToScreenX(session_->cropRange().startSec);
+      float cMaxX = timeToScreenX(session_->cropRange().endSec);
+      if (cMinX > pMin.x) {
+        drawList->AddRectFilled(pMin, ImVec2(cMinX, pMax.y), IM_COL32(0, 0, 0, 110));
+      }
+      if (cMaxX < pMax.x) {
+        drawList->AddRectFilled(ImVec2(cMaxX, pMin.y), pMax, IM_COL32(0, 0, 0, 110));
+      }
+    }
+
+    // 2. Regime Shaded Bands
+    for (const auto &reg : session_->regimeSummaries()) {
+      if (!reg.def.showShading) continue;
+      ImU32 regCol = ImGui::ColorConvertFloat4ToU32(ImVec4(reg.def.color.x, reg.def.color.y, reg.def.color.z, 0.35f));
+      for (const auto &iv : reg.intervals) {
+        float rX1 = timeToScreenX(iv.startSec);
+        float rX2 = timeToScreenX(iv.endSec);
+        drawList->AddRectFilled(ImVec2(rX1, pMin.y + 2), ImVec2(rX2, pMax.y - 2), regCol);
+      }
+    }
+
+    // 3. Background Reference Waveform
+    if (!minimapX_.empty() && minimapX_.size() == minimapYNorm_.size()) {
+      for (size_t i = 0; i + 1 < minimapX_.size(); ++i) {
+        if (std::isnan(minimapYNorm_[i]) || std::isnan(minimapYNorm_[i + 1])) continue;
+        float x1 = timeToScreenX(minimapX_[i]);
+        float y1 = pMax.y - 4.0f - static_cast<float>(minimapYNorm_[i]) * (mapH - 8.0f);
+        float x2 = timeToScreenX(minimapX_[i + 1]);
+        float y2 = pMax.y - 4.0f - static_cast<float>(minimapYNorm_[i + 1]) * (mapH - 8.0f);
+        drawList->AddLine(ImVec2(x1, y1), ImVec2(x2, y2), IM_COL32(200, 205, 215, 70), 1.0f);
+      }
+    }
+
+    // 4. Stitch Points
+    for (double stitchMid : session_->stitchPoints()) {
+      float sX = timeToScreenX(stitchMid);
+      drawList->AddLine(ImVec2(sX, pMin.y), ImVec2(sX, pMax.y), IM_COL32(180, 110, 240, 180), 1.5f);
+    }
+
+    // 5. Annotations / Bookmarks
+    for (const auto &a : session_->annotations()) {
+      float aX = timeToScreenX(a.timeSec);
+      ImU32 aCol = ImGui::ColorConvertFloat4ToU32(a.color);
+      drawList->AddLine(ImVec2(aX, pMin.y), ImVec2(aX, pMax.y), aCol, 1.5f);
+      drawList->AddTriangleFilled(ImVec2(aX - 3.5f, pMin.y), ImVec2(aX + 3.5f, pMin.y), ImVec2(aX, pMin.y + 5.0f), aCol);
+    }
+
+    // 6. Viewport Window (Visible Range)
+    float winX1 = timeToScreenX(xAxisMin_);
+    float winX2 = timeToScreenX(xAxisMax_);
+    if (winX2 < winX1) std::swap(winX1, winX2);
+    if (winX2 - winX1 < 6.0f) winX2 = winX1 + 6.0f; // Minimum visual grab width
+
+    // Shaded body
+    drawList->AddRectFilled(ImVec2(winX1, pMin.y + 1), ImVec2(winX2, pMax.y - 1), IM_COL32(65, 140, 240, 60), 2.0f);
+    drawList->AddRect(ImVec2(winX1, pMin.y + 1), ImVec2(winX2, pMax.y - 1), IM_COL32(90, 170, 255, 200), 2.0f, 0, 1.5f);
+
+    // Grab handles
+    float handleW = 4.0f;
+    drawList->AddRectFilled(ImVec2(winX1, pMin.y + 3), ImVec2(winX1 + handleW, pMax.y - 3), IM_COL32(120, 190, 255, 220), 1.0f);
+    drawList->AddRectFilled(ImVec2(winX2 - handleW, pMin.y + 3), ImVec2(winX2, pMax.y - 3), IM_COL32(120, 190, 255, 220), 1.0f);
+
+    // 7. Cursor Line
+    if (cursor.active) {
+      float curX = timeToScreenX(cursor.timeSec);
+      drawList->AddLine(ImVec2(curX, pMin.y), ImVec2(curX, pMax.y), IM_COL32(255, 255, 60, 220), 1.0f);
+    }
+
+    // -------------------------------------------------------------------------
+    // Interaction & Event Handling
+    // -------------------------------------------------------------------------
+    bool isHovered = ImGui::IsItemHovered();
+    ImVec2 mousePos = ImGui::GetIO().MousePos;
+    constexpr float kHandleDetectPx = 6.0f;
+
+    bool nearLeft = std::abs(mousePos.x - winX1) <= kHandleDetectPx;
+    bool nearRight = std::abs(mousePos.x - winX2) <= kHandleDetectPx;
+    bool insideWindow = (mousePos.x >= winX1 && mousePos.x <= winX2);
+
+    // Set contextual cursor on hover
+    if (isHovered && minimapDragMode_ == MinimapDragMode::None) {
+      if (nearLeft || nearRight) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+      } else if (insideWindow) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+      } else {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+      }
+    }
+
+    // Mouse Wheel Interactions
+    if (isHovered && ImGui::GetIO().MouseWheel != 0.0f) {
+      float wheel = ImGui::GetIO().MouseWheel;
+      double currentSpan = xAxisMax_ - xAxisMin_;
+
+      if (insideWindow) {
+        // Zoom in / out
+        double zoomFactor = (wheel > 0.0f) ? 0.85 : 1.15;
+        double newSpan = std::clamp(currentSpan * zoomFactor, 0.5, totalSpan);
+        double center = (xAxisMin_ + xAxisMax_) * 0.5;
+        xAxisMin_ = std::clamp(center - newSpan * 0.5, tStart, tEnd - newSpan);
+        xAxisMax_ = xAxisMin_ + newSpan;
+        bPendingAfterLoad_ = true;
+      } else {
+        // Pan left / right
+        double panStep = currentSpan * 0.15 * (wheel > 0.0f ? -1.0 : 1.0);
+        shiftXAxis(panStep);
+      }
+    }
+
+    // Mouse Click & Drag
+    if (isHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+      minimapDragStartMouseX_ = mousePos.x;
+      minimapDragInitialXMin_ = xAxisMin_;
+      minimapDragInitialXMax_ = xAxisMax_;
+
+      if (nearLeft) {
+        minimapDragMode_ = MinimapDragMode::ResizeLeft;
+      } else if (nearRight) {
+        minimapDragMode_ = MinimapDragMode::ResizeRight;
+      } else if (insideWindow) {
+        minimapDragMode_ = MinimapDragMode::PanWindow;
+      } else {
+        // Click outside -> instant recenter
+        double clickedT = screenXToTime(mousePos.x);
+        double currentSpan = xAxisMax_ - xAxisMin_;
+        xAxisMin_ = std::clamp(clickedT - currentSpan * 0.5, tStart, tEnd - currentSpan);
+        xAxisMax_ = xAxisMin_ + currentSpan;
+        bPendingAfterLoad_ = true;
+      }
+    }
+
+    if (minimapDragMode_ != MinimapDragMode::None) {
+      if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        float dxPx = mousePos.x - minimapDragStartMouseX_;
+        double dt = (dxPx / mapW) * totalSpan;
+        double currentSpan = minimapDragInitialXMax_ - minimapDragInitialXMin_;
+
+        if (minimapDragMode_ == MinimapDragMode::PanWindow) {
+          xAxisMin_ = std::clamp(minimapDragInitialXMin_ + dt, tStart, tEnd - currentSpan);
+          xAxisMax_ = xAxisMin_ + currentSpan;
+          bPendingAfterLoad_ = true;
+        } else if (minimapDragMode_ == MinimapDragMode::ResizeLeft) {
+          xAxisMin_ = std::clamp(minimapDragInitialXMin_ + dt, tStart, xAxisMax_ - 0.2);
+          bPendingAfterLoad_ = true;
+        } else if (minimapDragMode_ == MinimapDragMode::ResizeRight) {
+          xAxisMax_ = std::clamp(minimapDragInitialXMax_ + dt, xAxisMin_ + 0.2, tEnd);
+          bPendingAfterLoad_ = true;
+        }
+      } else {
+        minimapDragMode_ = MinimapDragMode::None;
+      }
+    }
+
+    drawList->PopClipRect();
+  }
+
+  void TimeSeriesPanel::updateMinimapOverviewCache()
+  {
+    uint64_t currentRev = session_ ? session_->revision() : 0;
+    if (minimapCacheSession_ == session_ && minimapCacheRevision_ == currentRev) {
+      return;
+    }
+
+    minimapCacheSession_ = session_;
+    minimapCacheRevision_ = currentRev;
+    minimapX_.clear();
+    minimapYNorm_.clear();
+
+    if (!session_ || session_->rowCount() == 0 || !cachedTimeSec_ || cachedTimeSec_->empty()) {
+      return;
+    }
+
+    // Find RPM or fallback to first available channel
+    const core::Channel *refCh = session_->findChannel(session_->channelMapping().rpm);
+    if (!refCh && !session_->channels().empty()) {
+      refCh = &session_->channels().front();
+    }
+    if (!refCh || refCh->values().empty()) return;
+
+    double tMin = cachedTimeSec_->front();
+    double tMax = cachedTimeSec_->back();
+    constexpr int kMinimapPoints = 600;
+
+    engine::DecimatedSeries decimated = engine::Decimator::decimate(*cachedTimeSec_, refCh->values(), tMin, tMax, kMinimapPoints);
+
+    if (decimated.x.empty()) return;
+
+    auto [minIt, maxIt] = std::minmax_element(refCh->values().begin(), refCh->values().end());
+    double vMin = *minIt;
+    double vMax = *maxIt;
+    double span = vMax - vMin;
+
+    minimapX_ = std::move(decimated.x);
+    minimapYNorm_.resize(decimated.y.size());
+
+    for (size_t i = 0; i < decimated.y.size(); ++i) {
+      double v = decimated.y[i];
+      minimapYNorm_[i] = std::isnan(v) ? v : (span > 1e-6 ? (v - vMin) / span : 0.5);
+    }
+  }
+
+  void TimeSeriesPanel::renderExportCsvModal()
+  {
+    pollExportCsvDialog();
+
+    if (showExportCsvModal_) {
+      ImGui::OpenPopup(ui::popups::ExportCsv);
+      showExportCsvModal_ = false;
+    }
+
+    if (ImGui::BeginPopupModal(ui::popups::ExportCsv, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::TextDisabled("Export Session Telemetry to CSV");
+      ImGui::Separator();
+      ImGui::Spacing();
+
+      // 1. Data Span Selection
+      bool hasCrop = session_ && session_->cropRange().active;
+      if (!hasCrop) {
+        exportRangeMode_ = 1; // Force Full Session if no crop active
+      }
+
+      ImGui::Text("Data Range:");
+      ImGui::BeginDisabled(!hasCrop);
+      ImGui::RadioButton("Active Crop Range Only", &exportRangeMode_, 0);
+      ImGui::EndDisabled();
+
+      ImGui::RadioButton("Full Log Session", &exportRangeMode_, 1);
+      if (!hasCrop) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(No crop active)");
+      }
+
+      ImGui::Spacing();
+      ImGui::Separator();
+      ImGui::Spacing();
+
+      // 2. Channel Subset Selection
+      ImGui::Text("Channels:");
+      ImGui::RadioButton("Active / Plotted Channels Only", &exportChannelMode_, 0);
+      ImGui::RadioButton("All Available Log Channels", &exportChannelMode_, 1);
+
+      ImGui::Spacing();
+      ImGui::Separator();
+      ImGui::Spacing();
+
+      // 3. Format Options
+      ImGui::Checkbox("Include Units Row", &exportIncludeUnits_);
+      ImGui::SetNextItemWidth(140.0f);
+      const char *delimiters[] = { "Comma (,)", "Tab (\\t)" };
+      ImGui::Combo("Delimiter", &exportDelimiterIdx_, delimiters, IM_ARRAYSIZE(delimiters));
+
+      if (showExportError_) {
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Error: %s", exportErrorMessage_.c_str());
+      }
+
+      ImGui::Spacing();
+      ImGui::Separator();
+      ImGui::Spacing();
+
+      if (ui::UI::ButtonPrimary(ICON_FA_FLOPPY_DISK " Export...", ImVec2(120, 0))) {
+        showExportError_ = false;
+        std::string defaultName = utils::path::fileNameWithoutExtension(session_ ? session_->sourcePath() : "export") + "_export.csv";
+        pendingCsvSaveDialog_ = std::make_unique<pfd::save_file>(
+          "Export CSV", defaultName,
+          std::vector<std::string>{"CSV Files (*.csv)", "*.csv", "All Files", "*"});
+        ImGui::CloseCurrentPopup();
+      }
+
+      ImGui::SameLine();
+      if (ui::UI::Button("Cancel", {}, ImVec2(80, 0))) {
+        showExportError_ = false;
+        ImGui::CloseCurrentPopup();
+      }
+
+      ImGui::EndPopup();
+    }
+  }
+
   void TimeSeriesPanel::renderHeaderControls(PlotCursor &cursor)
   {
     if (ui::UI::Button(showSidebar_ ? "< Hide Channels" : "> Show Channels")) {
@@ -8688,9 +9601,34 @@ namespace ui {
     }
 
     ImGui::SameLine();
+    ImGui::Checkbox("Stats", &showStatsOverlay_);
+    if (ImGui::IsItemHovered()) {
+      ImGui::SetTooltip("Show floating min/max/avg/stddev overlay card for active channels.");
+    }
+    ImGui::SameLine();
+    ImGui::Checkbox("Minimap", &showMinimap_);
+
+    ImGui::SameLine();
     ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
     ImGui::SameLine();
+    if (ui::UI::ButtonSecondary(ICON_FA_FILE_CSV " Export CSV")) {
+      showExportCsvModal_ = true;
+    }
 
+    ImGui::SameLine();
+    ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+    ImGui::SameLine();
+    ImGuiIO &io = ImGui::GetIO();
+    ImGui::SameLine();
+    if (ui::UI::Button(ICON_FA_CHEVRON_LEFT, {}, {}, "Shift view backward by 10 seconds (Ctrl: 60 seconds)")) {
+      shiftXAxis(io.KeyCtrl ? -60.0 : -10.0);
+    }
+    ImGui::SameLine();
+    if (ui::UI::Button(ICON_FA_CHEVRON_RIGHT, {}, {}, "Shift view forward by 10 seconds (Ctrl: 60 seconds)")) {
+      shiftXAxis(io.KeyCtrl ? 60.0 : 10.0);
+    }
+
+    ImGui::SameLine();
     renderCropControls(cursor);
 
     if (session_ && !session_->stitchPoints().empty()) {
@@ -8715,30 +9653,49 @@ namespace ui {
       }
     }
 
-    ImGui::SameLine();
-    if (ui::UI::Button(ICON_FA_CHEVRON_LEFT, {}, {}, "Shift view backward by 10 seconds")) {
-      shiftXAxis(-10.0);
-    }
-    ImGui::SameLine();
-    if (ui::UI::Button(ICON_FA_CHEVRON_RIGHT, {}, {}, "Shift view forward by 10 seconds")) {
-      shiftXAxis(10.0);
+
+    if (session_ && !session_->annotations().empty()) {
+      ImGui::SameLine();
+      ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(160.0f);
+      if (ImGui::BeginCombo("##AnnotationSelector", ICON_FA_BOOKMARK " Bookmarks")) {
+        auto &annots = const_cast<core::LogSession *>(session_)->annotations();
+        for (size_t i = 0; i < annots.size(); ++i) {
+          ImGui::PushID(static_cast<int>(i));
+          std::string itemLabel = annots[i].label + " (" + std::to_string(static_cast<int>(annots[i].timeSec)) + " s)";
+          if (ImGui::Selectable(itemLabel.c_str())) {
+            jumpCursorToIndex(getCursorIndex(annots[i].timeSec), cursor, annots[i].label);
+          }
+          // RMB on combo item to delete
+          if (ImGui::BeginPopupContextItem("AnnotContextMenu")) {
+            if (ImGui::MenuItem("Delete Bookmark")) {
+              const_cast<core::LogSession *>(session_)->removeAnnotation(i);
+              notifyDataChanged();
+              ImGui::EndPopup();
+              ImGui::PopID();
+              break;
+            }
+            ImGui::EndPopup();
+          }
+
+          ImGui::PopID();
+        }
+        ImGui::EndCombo();
+      }
     }
 
     if (session_ && !session_->regimeSummaries().empty()) {
       ImGui::SameLine();
       ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
       ImGui::SameLine();
-
       for (const auto &reg : session_->regimeSummaries()) {
         if (!reg.def.showShading || reg.intervals.empty()) continue;
-
         ImGui::PushStyleColor(ImGuiCol_Button, reg.def.color);
-        std::string btnLabel = std::string(ICON_FA_FLAG) + " " + reg.def.displayName;
-
+        std::string btnLabel = std::string(ICON_FA_FLAG) + "###" + reg.def.displayName;
         if (ImGui::Button(btnLabel.c_str())) {
           // Find the next interval start time after the current cursor position
           double targetTime = reg.intervals.front().startSec; // Fallback / wrap to first
-
           for (const auto &interval : reg.intervals) {
             // Use a tiny epsilon (+0.1s) so pressing the button while standing on a start marker jumps to the NEXT one
             if (interval.startSec > cursor.timeSec + 0.1) {
@@ -8746,11 +9703,9 @@ namespace ui {
               break;
             }
           }
-
           jumpCursorToIndex(getCursorIndex(targetTime), cursor, reg.def.displayName);
         }
         ImGui::PopStyleColor();
-
         if (ImGui::IsItemHovered()) {
           if (!reg.warningMessage.empty()) {
             // Show warning banner first if present
@@ -8772,39 +9727,15 @@ namespace ui {
     }
   }
 
-  void TimeSeriesPanel::renderCropControls(PlotCursor &cursor)
+  void TimeSeriesPanel::renderCropControls(PlotCursor & /*cursor*/)
   {
-    if (session_ == nullptr) {
-      return;
-    }
-
-    bool hasCrop = session_->cropRange().active;
-
-    if (ui::UI::Button("Set [Start]")) {
-      double start = cursor.active ? cursor.timeSec : 0.0;
-      double end = hasCrop ? session_->cropRange().endSec
-        : (cachedTimeSec_ && !cachedTimeSec_->empty() ? cachedTimeSec_->back() : 0.0);
-      const_cast<core::LogSession *>(session_)->setCropRange(start, end);
-    }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Set crop start marker at current cursor time");
-
-    ImGui::SameLine();
-    if (ui::UI::Button("Set [End]")) {
-      double start = hasCrop ? session_->cropRange().startSec
-        : (cachedTimeSec_ && !cachedTimeSec_->empty() ? cachedTimeSec_->front() : 0.0);
-      double end = cursor.active ? cursor.timeSec : 0.0;
-      const_cast<core::LogSession *>(session_)->setCropRange(start, end);
-    }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Set crop end marker at current cursor time");
-
-    if (hasCrop) {
-      ImGui::SameLine();
-      if (ui::UI::Button("Reset Crop")) {
+    if (session_ && session_->cropRange().active) {
+      if (ui::UI::Button("Clear Crop", ui::ButtonStyle::Danger)) {
         const_cast<core::LogSession *>(session_)->resetCropRange();
+        notifyDataChanged();
       }
-
       ImGui::SameLine();
-      ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f),
+      ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), 
         "[Crop: %.2f s - %.2f s]", session_->cropRange().startSec, session_->cropRange().endSec);
     }
   }
@@ -8914,7 +9845,7 @@ namespace ui {
     }
 
     int numActive = static_cast<int>(activeChannels.size());
-    int maxPerPlot = std::max(1, maxChannelsPerPlot_);
+    int maxPerPlot = (std::max)(1, maxChannelsPerPlot_);
     int subplotCount = (numActive > 0) ? ((numActive + maxPerPlot - 1) / maxPerPlot) : 1;
 
     // Capture state BEFORE the loop so all subplots behave identically this frame
@@ -8961,7 +9892,7 @@ namespace ui {
 
           // Determine channel subset for THIS specific subplot
           int startIdx = plotIdx * maxPerPlot;
-          int endIdx = std::min(startIdx + maxPerPlot, numActive);
+          int endIdx = (std::min)(startIdx + maxPerPlot, numActive);
 
           std::vector<const core::Channel *> subplotChannels;
           if (hasRealData && numActive > 0) {
@@ -8969,22 +9900,6 @@ namespace ui {
               subplotChannels.push_back(activeChannels[i]);
             }
           }
-
-          // Plot channels for this subplot
-          //for (const auto *ch : subplotChannels) {
-          //  const auto &rawVals = ch->values();
-          //  if (rawVals.empty()) continue;
-          //  double minVal = channelStates_[ch->name()].cachedMin;
-          //  double maxVal = channelStates_[ch->name()].cachedMax;
-          //  double range = maxVal - minVal;
-          //  std::vector<double> normVals(rawVals.size());
-          //  for (size_t s = 0; s < rawVals.size(); ++s) {
-          //    normVals[s] = (range > 1e-6) ? ((rawVals[s] - minVal) / range) : 0.5;
-          //  }
-          //  ImPlotSpec spec;
-          //  spec.LineColor = channelStates_[ch->name()].color;
-          //  ImPlot::PlotLine(ch->name().c_str(), timeSec.data(), normVals.data(), static_cast<int>(timeSec.size()), spec);
-          //}
 
           // Plot channels for this subplot
           const float plotWidthPx = ImPlot::GetPlotSize().x;
@@ -9060,8 +9975,7 @@ namespace ui {
           // 1. Bottom-Left Overlay: Channel Ranges for THIS Subplot
           // -------------------------------------------------------------------
           if (hasRealData && !subplotChannels.empty()) {
-            ImVec2 bottomLeftPos = ImVec2(currentPlotPos.x + 10.0f,
-              currentPlotPos.y + currentPlotSize.y - 10.0f);
+            ImVec2 bottomLeftPos = ImVec2(currentPlotPos.x + 10.0f, currentPlotPos.y + currentPlotSize.y - 10.0f);
 
             ImGui::SetNextWindowPos(bottomLeftPos, ImGuiCond_Always, ImVec2(0.0f, 1.0f));
             ImGui::SetNextWindowBgAlpha(0.75f);
@@ -9151,6 +10065,8 @@ namespace ui {
             ImGui::End();
           }
 
+          renderStatsOverlay(plotIdx, subplotChannels, currentPlotPos, currentPlotSize);
+
           if (session_) {
             const auto &stitchPoints = session_->stitchPoints();
             ImDrawList *drawList = ImPlot::GetPlotDrawList();
@@ -9175,6 +10091,67 @@ namespace ui {
             }
           }
 
+          if (ImPlot::IsPlotHovered() && ImGui::GetIO().KeyAlt && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            timelineActionTime_ = ImPlot::GetPlotMousePos().x;
+            annotationLabelBuf_[0] = '\0';
+            showTimelineActionPopup_ = true;
+          }
+          if (ImPlot::IsPlotHovered() && session_) {
+            auto *s = const_cast<core::LogSession *>(session_);
+            double hoverT = ImPlot::GetPlotMousePos().x;
+
+            if (ImGui::IsKeyPressed(ImGuiKey_LeftBracket, false)) { // '[' -> Crop Start
+              double curEnd = s->cropRange().active ? s->cropRange().endSec
+                : (cachedTimeSec_ && !cachedTimeSec_->empty() ? cachedTimeSec_->back() : hoverT);
+              s->setCropRange(hoverT, curEnd);
+              notifyDataChanged();
+            } else if (ImGui::IsKeyPressed(ImGuiKey_RightBracket, false)) { // ']' -> Crop End
+              double curStart = s->cropRange().active ? s->cropRange().startSec
+                : (cachedTimeSec_ && !cachedTimeSec_->empty() ? cachedTimeSec_->front() : 0.0);
+              s->setCropRange(curStart, hoverT);
+              notifyDataChanged();
+            }
+          }
+          if (session_ && session_->cropRange().active) {
+            double cStart = session_->cropRange().startSec;
+            double cEnd = session_->cropRange().endSec;
+            const ImVec4 cropLineCol = ImVec4(0.2f, 0.7f, 1.0f, 0.65f);
+
+            // Vertical boundary lines & tags
+            ImPlot::DragLineX(300, &cStart, cropLineCol, 1.5f, ImPlotDragToolFlags_NoInputs);
+            ImPlot::DragLineX(301, &cEnd, cropLineCol, 1.5f, ImPlotDragToolFlags_NoInputs);
+            ImPlot::TagX(cStart, cropLineCol, "[Crop Start]");
+            ImPlot::TagX(cEnd, cropLineCol, "[Crop End]");
+          }
+          if (session_) {
+            const auto &annots = session_->annotations();
+            for (size_t i = 0; i < annots.size(); ++i) {
+              const auto &a = annots[i];
+              double aTime = a.timeSec;
+
+              ImPlot::DragLineX(static_cast<int>(500 + i), &aTime, a.color, 1.5f, ImPlotDragToolFlags_NoInputs);
+              ImPlot::TagX(a.timeSec, a.color, "%s", a.label.c_str());
+
+              // Right-click on tag to delete
+              ImGui::PushID(static_cast<int>(500 + i));
+              if (ImPlot::IsPlotHovered() && std::abs(ImPlot::GetPlotMousePos().x - a.timeSec) < (xAxisMax_ - xAxisMin_) * 0.015) {
+                if (ImGui::BeginPopupContextItem("AnnotTagContext")) {
+                  ImGui::TextDisabled("Bookmark: %s", a.label.c_str());
+                  ImGui::Separator();
+                  if (ImGui::MenuItem("Delete Bookmark")) {
+                    const_cast<core::LogSession *>(session_)->removeAnnotation(i);
+                    notifyDataChanged();
+                    ImGui::EndPopup();
+                    ImGui::PopID();
+                    break;
+                  }
+                  ImGui::EndPopup();
+                }
+              }
+              ImGui::PopID();
+            }
+          }
+
           ImPlot::EndPlot();
         }
       }
@@ -9184,43 +10161,171 @@ namespace ui {
     if (doLoadLimits && hasRealData) bPendingAfterLoad_ = false;
   }
 
+  void TimeSeriesPanel::renderAnnotationModal()
+  {
+    if (showAddAnnotationModal_) {
+      ImGui::OpenPopup(ui::popups::AddAnnotation);
+    }
+
+    ImGui::SetNextWindowSize(ImVec2(360, 0), ImGuiCond_Always);
+    if (ImGui::BeginPopupModal(ui::popups::AddAnnotation, &showAddAnnotationModal_, ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::Text("Time: %.3f s", pendingAnnotationTime_);
+      ImGui::Spacing();
+
+      ImGui::SetNextItemWidth(-1.0f);
+      if (ImGui::IsWindowAppearing()) {
+        ImGui::SetKeyboardFocusHere();
+      }
+      ImGui::InputTextWithHint("##AnnotLabel", "Annotation text...", annotationLabelBuf_, sizeof(annotationLabelBuf_));
+
+      ImGui::Spacing();
+      ImGui::ColorEdit4("Color", (float *)&annotationColor_, ImGuiColorEditFlags_NoAlpha);
+
+      ImGui::Spacing();
+      ImGui::Separator();
+      ImGui::Spacing();
+
+      if (ui::UI::ButtonPrimary("Add", ImVec2(100, 0))) {
+        if (session_ && annotationLabelBuf_[0] != '\0') {
+          core::Annotation a;
+          a.timeSec = pendingAnnotationTime_;
+          a.label = annotationLabelBuf_;
+          a.color = annotationColor_;
+          const_cast<core::LogSession *>(session_)->addAnnotation(std::move(a));
+          notifyDataChanged();
+        }
+        showAddAnnotationModal_ = false;
+        ImGui::CloseCurrentPopup();
+      }
+
+      ImGui::SameLine();
+      if (ui::UI::Button("Cancel", {}, ImVec2(80, 0))) {
+        showAddAnnotationModal_ = false;
+        ImGui::CloseCurrentPopup();
+      }
+
+      ImGui::EndPopup();
+    }
+  }
+
+  void TimeSeriesPanel::renderTimelineActionPopup(PlotCursor &cursor)
+  {
+    if (showTimelineActionPopup_) {
+      ImGui::OpenPopup(ui::popups::TimelineAction);
+      showTimelineActionPopup_ = false;
+    }
+
+    if (ImGui::BeginPopup(ui::popups::TimelineAction)) {
+      ImGui::TextDisabled("Timeline @ %.3f s", timelineActionTime_);
+      ImGui::Separator();
+
+      if (session_) {
+        auto *s = const_cast<core::LogSession *>(session_);
+        bool hasCrop = s->cropRange().active;
+
+        // 1. Set Crop Start
+        if (ImGui::MenuItem(ICON_FA_ARROW_RIGHT_TO_BRACKET "  Set Crop [Start]")) {
+          double curEnd = hasCrop ? s->cropRange().endSec
+            : (cachedTimeSec_ && !cachedTimeSec_->empty() ? cachedTimeSec_->back() : timelineActionTime_);
+          s->setCropRange(timelineActionTime_, curEnd);
+          notifyDataChanged();
+        }
+
+        // 2. Set Crop End
+        if (ImGui::MenuItem(ICON_FA_ARROW_RIGHT_FROM_BRACKET "  Set Crop [End]")) {
+          double curStart = hasCrop ? s->cropRange().startSec
+            : (cachedTimeSec_ && !cachedTimeSec_->empty() ? cachedTimeSec_->front() : 0.0);
+          s->setCropRange(curStart, timelineActionTime_);
+          notifyDataChanged();
+        }
+
+        // 3. Zoom / Snap View to Crop Range
+        ImGui::BeginDisabled(!hasCrop);
+        if (ImGui::MenuItem(ICON_FA_MAGNIFYING_GLASS_PLUS "  Zoom to Crop Range")) {
+          xAxisMin_ = s->cropRange().startSec;
+          xAxisMax_ = s->cropRange().endSec;
+          bPendingAfterLoad_ = true;
+        }
+
+        // 4. Reset Crop
+        if (ImGui::MenuItem(ICON_FA_XMARK "  Clear Crop")) {
+          s->resetCropRange();
+          notifyDataChanged();
+        }
+        ImGui::EndDisabled();
+
+        ImGui::Separator();
+        ImGui::TextDisabled("Add Bookmark:");
+        ImGui::Spacing();
+
+        ImGui::SetNextItemWidth(220.0f);
+        ImGui::InputTextWithHint("##AnnotLabel", "Bookmark label...", annotationLabelBuf_, sizeof(annotationLabelBuf_));
+
+        ImGui::SameLine();
+        ImGui::ColorEdit4("##AnnotColor", (float *)&annotationColor_, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoAlpha);
+
+        ImGui::Spacing();
+        if (ui::UI::ButtonPrimary(ICON_FA_PLUS " Add Bookmark", ImVec2(-1.0f, 0.0f))) {
+          if (annotationLabelBuf_[0] != '\0') {
+            core::Annotation a;
+            a.timeSec = timelineActionTime_;
+            a.label = annotationLabelBuf_;
+            a.color = annotationColor_;
+            s->addAnnotation(std::move(a));
+            notifyDataChanged();
+            ImGui::CloseCurrentPopup();
+          }
+        }
+      }
+
+      ImGui::EndPopup();
+    } else {
+      showTimelineActionPopup_ = false;
+    }
+  }
+
   void TimeSeriesPanel::render(PlotCursor &cursor)
   {
     std::string windowLabel = std::string{ ICON_FA_CHART_LINE } + " Time Series###" + title();
     ImGui::Begin(windowLabel.c_str(), &open_);
 
     renderHeaderControls(cursor);
+    renderTimelineActionPopup(cursor);
+    renderExportCsvModal();
+    renderExportProgressModal();
+
     ImGui::Separator();
 
-    if (showSidebar_) {
-      // 1. Enforce min/max sidebar width bounds
-      const float minWidth = 120.0f;
-      const float maxWidth = ImGui::GetContentRegionAvail().x - 150.0f; // Leave space for plot
-      sidebarWidth_ = std::clamp(sidebarWidth_, minWidth, std::max(minWidth, maxWidth));
+    float totalAvailHeight = ImGui::GetContentRegionAvail().y;
+    float plotAreaHeight = (showMinimap_ && session_ && session_->rowCount() > 0)
+      ? (totalAvailHeight - minimapHeight_ - ImGui::GetStyle().ItemSpacing.y)
+      : totalAvailHeight;
 
-      // 2. Render Sidebar Child Window
+    // Sidebar + Main Plot Area Child
+    ImGui::BeginChild("UpperPlotSplit", ImVec2(0.0f, plotAreaHeight), false);
+
+    if (showSidebar_) {
+      const float minWidth = 120.0f;
+      const float maxWidth = ImGui::GetContentRegionAvail().x - 150.0f;
+      sidebarWidth_ = std::clamp(sidebarWidth_, minWidth, (std::max)(minWidth, maxWidth));
+
       ImGui::BeginChild("SidebarChild", ImVec2(sidebarWidth_, 0.0f), true);
       renderLeftSidebar(cursor);
       ImGui::EndChild();
 
       ImGui::SameLine();
 
-      // 3. Render Resizable Splitter
       const float splitterThickness = 4.0f;
       ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
       ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImGui::GetStyleColorVec4(ImGuiCol_SeparatorActive));
       ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_SeparatorHovered));
 
       ImGui::Button("##Splitter", ImVec2(splitterThickness, -1.0f));
-
       ImGui::PopStyleColor(3);
 
-      // Set resize cursor on hover/active
       if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
       }
-
-      // Handle drag movement
       if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
         sidebarWidth_ += ImGui::GetIO().MouseDelta.x;
       }
@@ -9228,10 +10333,17 @@ namespace ui {
       ImGui::SameLine();
     }
 
-    // 4. Render Main Plot Region with remaining width
     ImGui::BeginChild("PlotChild", ImVec2(0.0f, 0.0f), false);
     renderPlotArea(cursor);
     ImGui::EndChild();
+
+    ImGui::EndChild();
+
+    // Bottom Minimap Strip
+    if (showMinimap_ && session_ && session_->rowCount() > 0) {
+      ImGui::Spacing();
+      renderMinimap(cursor, ImVec2(ImGui::GetContentRegionAvail().x, minimapHeight_));
+    }
 
     ImGui::End();
   }
@@ -9249,6 +10361,7 @@ namespace ui {
 
 #include "core/logsession.h"
 #include "ui/plotpanel.h"
+#include "3rdparty/portable-file-dialogs.h"
 
 #include <imgui.h>
 
@@ -9289,24 +10402,41 @@ namespace ui {
       std::vector<double> decimatedYNorm;
     };
 
+    struct ChannelStats {
+      double min = 0.0;
+      double max = 0.0;
+      double mean = 0.0;
+      double stdDev = 0.0;
+      size_t sampleCount = 0;
+      bool valid = false;
+    };
+
     struct ArtifactCursor {
       double timeSec = 0.0;
       bool active = false;
       std::string label; // e.g., "RPM Max (7200.0)"
       ImVec4 color = ImVec4(0.9f, 0.9f, 0.3f, 0.4f); // Dimmed/grayed out
-    };
-
-    ArtifactCursor artifactCursor_;
+    } artifactCursor_;
 
     void rebindChannels();
     void renderHeaderControls(PlotCursor &cursor);
     void renderCropControls(PlotCursor &cursor);
     void renderLeftSidebar(PlotCursor &cursor);
     void renderPlotArea(PlotCursor &cursor);
+    void renderAnnotationModal();
+    void renderTimelineActionPopup(PlotCursor &cursor);
     size_t getCursorIndex(double queryTime) const;
     void jumpCursorToIndex(size_t index, PlotCursor &cursor, const std::string &label = "");
     void ensureDecimatedCache(ChannelState &state, const core::Channel &channel, double xMin, double xMax, float widthPx);
     void shiftXAxis(double shiftSeconds);
+    void computeChannelStats(const core::Channel &channel, ChannelStats &outStats) const;
+    void renderStatsOverlay(int plotIdx, const std::vector<const core::Channel *> &subplotChannels, const ImVec2 &plotPos, const ImVec2 &plotSize);
+    void renderExportCsvModal();
+    void pollExportCsvDialog();
+    void renderExportProgressModal();
+    void renderMinimap(PlotCursor &cursor, const ImVec2 &size);
+    void updateMinimapOverviewCache();
+
 
     bool pendingXAxisCenter_ = false;
     //bool pendingXAxisShift_ = false;
@@ -9335,6 +10465,62 @@ namespace ui {
     double yAxisMax_ = 1.0;
     bool bPendingAfterLoad_ = false;
 
+    bool showTimelineActionPopup_ = false;
+    double timelineActionTime_ = 0.0;
+    bool showAddAnnotationModal_ = false;
+    double pendingAnnotationTime_ = 0.0;
+    char annotationLabelBuf_[128] = "";
+    ImVec4 annotationColor_ = ImVec4(1.0f, 0.8f, 0.2f, 1.0f);
+
+    bool showStatsOverlay_ = false;
+    // Cache stats per channel with dirty-tracking
+    struct CachedStatsEntry {
+      ChannelStats stats;
+      uint64_t sessionRevision = 0;
+      double cropStart = 0.0;
+      double cropEnd = 0.0;
+      bool cropActive = false;
+    };
+    mutable std::unordered_map<std::string, CachedStatsEntry> statsCache_;
+
+    bool showExportCsvModal_ = false;
+    int exportRangeMode_ = 0;
+    int exportChannelMode_ = 0;
+    bool exportIncludeUnits_ = true;
+    int exportDelimiterIdx_ = 0;
+    std::unique_ptr<pfd::save_file> pendingCsvSaveDialog_;
+    std::string exportErrorMessage_;
+    bool showExportError_ = false;
+    // Async Export Progress State
+    bool isExporting_ = false;
+    std::atomic<float> exportProgress_{ 0.0f };
+    std::atomic<bool> exportCancelRequested_{ false };
+    struct ExportResult {
+      bool success = false;
+      std::string error;
+    };
+    std::future<ExportResult> activeExportTask_;
+
+    bool showMinimap_ = true;
+    float minimapHeight_ = 48.0f;
+    // Background waveform cache for minimap
+    std::vector<double> minimapX_;
+    std::vector<double> minimapYNorm_;
+    uint64_t minimapCacheRevision_ = 0;
+    const core::LogSession *minimapCacheSession_ = nullptr;
+    // Minimap drag interaction states
+    enum class MinimapDragMode {
+      None,
+      PanWindow,
+      ResizeLeft,
+      ResizeRight
+    };
+    MinimapDragMode minimapDragMode_ = MinimapDragMode::None;
+    double minimapDragInitialXMin_ = 0.0;
+    double minimapDragInitialXMax_ = 0.0;
+    float minimapDragStartMouseX_ = 0.0f;
+
+  private:
     void generatePlaceholderData();
   };
 
@@ -9359,10 +10545,15 @@ namespace ui {
     inline constexpr const char *ExtrapolateVe = "Extrapolate VE###ExtrapolateVeModal";
     inline constexpr const char *CustomChannels = "Custom Calculated Channels###CustomChannelsModal";
     inline constexpr const char *LoadError = "Load Error###LoadErrorModal";
+    inline constexpr const char *SaveError = "Save Error###SaveErrorModal";
     inline constexpr const char *StatusPanelChannels = "Status Panel Channels###StatusPanelChannelsPopup";
     inline constexpr const char *ScatterPanelChannels = "Scatter Panel Channels###ScatterPanelChannelsPopup";
     inline constexpr const char *ChannelMapping = "Channel Semantic Mapping###ChannelMappingModal";
     inline constexpr const char *ConcatLog = "Stitch / Concat Log###ConcatLogModal";
+    inline constexpr const char *AddAnnotation = "Add Annotation###AddAnnotationModal";
+    inline constexpr const char *TimelineAction = "Timeline Action###TimelineActionPopup";
+    inline constexpr const char *ExportCsv = "Export CSV###ExportCsvModal";
+    inline constexpr const char *ExportCsvProgress = "Exporting CSV###ExportCsvProgressModal";
   } // namespace popups
 
 
