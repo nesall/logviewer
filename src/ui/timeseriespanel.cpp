@@ -113,6 +113,7 @@ namespace ui {
     j["yAxisMin"] = yAxisMin_;
     j["yAxisMax"] = yAxisMax_;
     j["sidebarWidth"] = sidebarWidth_;
+    j["showStatsOverlay"] = showStatsOverlay_;
     return j;
   }
 
@@ -149,7 +150,9 @@ namespace ui {
     if (state.contains("sidebarWidth") && state["sidebarWidth"].is_number()) {
       sidebarWidth_ = state["sidebarWidth"].get<float>();
     }
-
+    if (state.contains("showStatsOverlay") && state["showStatsOverlay"].is_boolean()) {
+      showStatsOverlay_ = state["showStatsOverlay"].get<bool>();
+    }
     if (state.contains("channels") && state["channels"].is_object()) {
       for (auto it = state["channels"].begin(); it != state["channels"].end(); ++it) {
         ChannelState cs;
@@ -255,6 +258,169 @@ namespace ui {
     state.decimatedYNorm = std::move(normY);
   }
 
+  void TimeSeriesPanel::shiftXAxis(double shiftSeconds)
+  {
+    if (!cachedTimeSec_ || cachedTimeSec_->empty()) return;
+
+    // Calculate the new center position
+    double currentSpan = xAxisMax_ - xAxisMin_;
+    double currentCenter = (xAxisMax_ + xAxisMin_) * 0.5;
+    double newCenter = currentCenter + shiftSeconds;
+
+    // Clamp to valid time range (optional but prevents scrolling into nowhere)
+    double minTime = cachedTimeSec_->front();
+    double maxTime = cachedTimeSec_->back();
+    double halfSpan = currentSpan * 0.5;
+
+    // Keep at least half the span visible within the data range
+    newCenter = std::clamp(newCenter, minTime + halfSpan, maxTime - halfSpan);
+
+    // Update the axis limits via pending state
+    targetXCenterTime_ = newCenter;
+    pendingXAxisCenter_ = true;
+  }
+
+  void TimeSeriesPanel::computeChannelStats(const core::Channel &channel, ChannelStats &outStats) const
+  {
+    outStats = ChannelStats{};
+    if (!session_ || channel.values().empty()) return;
+
+    const auto &vals = channel.values();
+    size_t startIdx = session_->cropStartIndex();
+    size_t endIdx = session_->cropEndIndex();
+
+    if (startIdx >= vals.size() || endIdx >= vals.size() || startIdx > endIdx) {
+      startIdx = 0;
+      endIdx = vals.size() - 1;
+    }
+
+    double minVal = std::numeric_limits<double>::max();
+    double maxVal = -std::numeric_limits<double>::max();
+    double sum = 0.0;
+    size_t validCount = 0;
+
+    // First pass: Min, Max, Mean
+    for (size_t i = startIdx; i <= endIdx; ++i) {
+      double v = vals[i];
+      if (std::isnan(v)) continue;
+
+      if (v < minVal) minVal = v;
+      if (v > maxVal) maxVal = v;
+      sum += v;
+      ++validCount;
+    }
+
+    if (validCount == 0) return;
+
+    double meanVal = sum / static_cast<double>(validCount);
+
+    // Second pass: Variance / Standard Deviation
+    double sumSqDiff = 0.0;
+    for (size_t i = startIdx; i <= endIdx; ++i) {
+      double v = vals[i];
+      if (std::isnan(v)) continue;
+      double diff = v - meanVal;
+      sumSqDiff += diff * diff;
+    }
+
+    double variance = (validCount > 1) ? (sumSqDiff / static_cast<double>(validCount - 1)) : 0.0;
+
+    outStats.min = minVal;
+    outStats.max = maxVal;
+    outStats.mean = meanVal;
+    outStats.stdDev = std::sqrt(variance);
+    outStats.sampleCount = validCount;
+    outStats.valid = true;
+  }
+
+  void TimeSeriesPanel::renderStatsOverlay(int plotIdx, const std::vector<const core::Channel *> &subplotChannels, const ImVec2 &plotPos, const ImVec2 &plotSize)
+  {
+    if (!showStatsOverlay_ || subplotChannels.empty() || !session_) return;
+
+    // Position: Top-right corner of the subplot
+    ImVec2 topRightPos = ImVec2(plotPos.x + plotSize.x - 10.0f, plotPos.y + 10.0f);
+    ImGui::SetNextWindowPos(topRightPos, ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(0.80f);
+
+    const ImGuiWindowFlags overlayFlags = ImGuiWindowFlags_NoDecoration |
+      ImGuiWindowFlags_AlwaysAutoResize |
+      ImGuiWindowFlags_NoSavedSettings |
+      ImGuiWindowFlags_NoFocusOnAppearing |
+      ImGuiWindowFlags_NoNav |
+      ImGuiWindowFlags_NoMove |
+      ImGuiWindowFlags_NoDocking;
+
+    std::string overlayID = "##StatsOverlay_" + title() + "_" + std::to_string(plotIdx);
+
+    if (ImGui::Begin(overlayID.c_str(), nullptr, overlayFlags)) {
+      const auto &crop = session_->cropRange();
+      if (crop.active) {
+        ImGui::TextDisabled("Crop Stats [%.1fs - %.1fs]", crop.startSec, crop.endSec);
+      } else {
+        ImGui::TextDisabled("Full Log Stats");
+      }
+      ImGui::Separator();
+
+      const ImGuiTableFlags tableFlags = ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg;
+      if (ImGui::BeginTable("StatsGrid", 5, tableFlags)) {
+        ImGui::TableSetupColumn("Channel", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+        ImGui::TableSetupColumn("Min", ImGuiTableColumnFlags_WidthFixed, 55.0f);
+        ImGui::TableSetupColumn("Max", ImGuiTableColumnFlags_WidthFixed, 55.0f);
+        ImGui::TableSetupColumn("Avg", ImGuiTableColumnFlags_WidthFixed, 55.0f);
+        ImGui::TableSetupColumn("StdDev", ImGuiTableColumnFlags_WidthFixed, 55.0f);
+        ImGui::TableHeadersRow();
+
+        uint64_t currentRev = session_->revision();
+
+        for (const auto *ch : subplotChannels) {
+          auto &state = channelStates_[ch->name()];
+          auto &cached = statsCache_[ch->name()];
+
+          // Check if cached stats are valid
+          bool needsRecalc = !cached.stats.valid ||
+            cached.sessionRevision != currentRev ||
+            cached.cropActive != crop.active ||
+            std::abs(cached.cropStart - crop.startSec) > 1e-6 ||
+            std::abs(cached.cropEnd - crop.endSec) > 1e-6;
+
+          if (needsRecalc) {
+            computeChannelStats(*ch, cached.stats);
+            cached.sessionRevision = currentRev;
+            cached.cropActive = crop.active;
+            cached.cropStart = crop.startSec;
+            cached.cropEnd = crop.endSec;
+          }
+
+          if (!cached.stats.valid) continue;
+
+          ImGui::TableNextRow();
+
+          // 1. Channel Name
+          ImGui::TableSetColumnIndex(0);
+          ImGui::TextColored(state.color, "%s", ch->name().c_str());
+
+          // 2. Min
+          ImGui::TableSetColumnIndex(1);
+          ImGui::Text("%.1f", cached.stats.min);
+
+          // 3. Max
+          ImGui::TableSetColumnIndex(2);
+          ImGui::Text("%.1f", cached.stats.max);
+
+          // 4. Mean
+          ImGui::TableSetColumnIndex(3);
+          ImGui::Text("%.1f", cached.stats.mean);
+
+          // 5. StdDev (σ)
+          ImGui::TableSetColumnIndex(4);
+          ImGui::Text("%.2f", cached.stats.stdDev);
+        }
+        ImGui::EndTable();
+      }
+    }
+    ImGui::End();
+  }
+
   void TimeSeriesPanel::renderHeaderControls(PlotCursor &cursor)
   {
     if (ui::UI::Button(showSidebar_ ? "< Hide Channels" : "> Show Channels")) {
@@ -298,6 +464,25 @@ namespace ui {
         }
         ImGui::EndCombo();
       }
+    }
+
+    ImGuiIO &io = ImGui::GetIO();
+
+    ImGui::SameLine();
+    if (ui::UI::Button(ICON_FA_CHEVRON_LEFT, {}, {}, "Shift view backward by 10 seconds (Ctrl: 60 seconds)")) {
+      shiftXAxis(io.KeyCtrl ? -60.0 : -10.0);
+    }
+    ImGui::SameLine();
+    if (ui::UI::Button(ICON_FA_CHEVRON_RIGHT, {}, {}, "Shift view forward by 10 seconds (Ctrl: 60 seconds)")) {
+      shiftXAxis(io.KeyCtrl ? 60.0 : 10.0);
+    }
+
+    ImGui::SameLine();
+    ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+    ImGui::SameLine();
+    ImGui::Checkbox("Stats", &showStatsOverlay_);
+    if (ImGui::IsItemHovered()) {
+      ImGui::SetTooltip("Show floating min/max/avg/stddev overlay card for active channels.");
     }
 
     if (session_ && !session_->regimeSummaries().empty()) {
@@ -346,41 +531,48 @@ namespace ui {
         ImGui::SameLine();
       }
     }
+
+    if (session_ && !session_->annotations().empty()) {
+      ImGui::SameLine();
+      ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(160.0f);
+      if (ImGui::BeginCombo("##AnnotationSelector", ICON_FA_BOOKMARK " Bookmarks")) {
+        auto &annots = const_cast<core::LogSession *>(session_)->annotations();
+        for (size_t i = 0; i < annots.size(); ++i) {
+          ImGui::PushID(static_cast<int>(i));
+          std::string itemLabel = annots[i].label + " (" + std::to_string(static_cast<int>(annots[i].timeSec)) + " s)";
+          if (ImGui::Selectable(itemLabel.c_str())) {
+            jumpCursorToIndex(getCursorIndex(annots[i].timeSec), cursor, annots[i].label);
+          }
+          // RMB on combo item to delete
+          if (ImGui::BeginPopupContextItem("AnnotContextMenu")) {
+            if (ImGui::MenuItem("Delete Bookmark")) {
+              const_cast<core::LogSession *>(session_)->removeAnnotation(i);
+              notifyDataChanged();
+              ImGui::EndPopup();
+              ImGui::PopID();
+              break;
+            }
+            ImGui::EndPopup();
+          }
+
+          ImGui::PopID();
+        }
+        ImGui::EndCombo();
+      }
+    }
   }
 
-  void TimeSeriesPanel::renderCropControls(PlotCursor &cursor)
+  void TimeSeriesPanel::renderCropControls(PlotCursor & /*cursor*/)
   {
-    if (session_ == nullptr) {
-      return;
-    }
-
-    bool hasCrop = session_->cropRange().active;
-
-    if (ui::UI::Button("Set [Start]")) {
-      double start = cursor.active ? cursor.timeSec : 0.0;
-      double end = hasCrop ? session_->cropRange().endSec
-        : (cachedTimeSec_ && !cachedTimeSec_->empty() ? cachedTimeSec_->back() : 0.0);
-      const_cast<core::LogSession *>(session_)->setCropRange(start, end);
-    }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Set crop start marker at current cursor time");
-
-    ImGui::SameLine();
-    if (ui::UI::Button("Set [End]")) {
-      double start = hasCrop ? session_->cropRange().startSec
-        : (cachedTimeSec_ && !cachedTimeSec_->empty() ? cachedTimeSec_->front() : 0.0);
-      double end = cursor.active ? cursor.timeSec : 0.0;
-      const_cast<core::LogSession *>(session_)->setCropRange(start, end);
-    }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Set crop end marker at current cursor time");
-
-    if (hasCrop) {
-      ImGui::SameLine();
-      if (ui::UI::Button("Reset Crop")) {
+    if (session_ && session_->cropRange().active) {
+      if (ui::UI::Button("Clear Crop", ui::ButtonStyle::Danger)) {
         const_cast<core::LogSession *>(session_)->resetCropRange();
+        notifyDataChanged();
       }
-
       ImGui::SameLine();
-      ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f),
+      ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), 
         "[Crop: %.2f s - %.2f s]", session_->cropRange().startSec, session_->cropRange().endSec);
     }
   }
@@ -547,22 +739,6 @@ namespace ui {
           }
 
           // Plot channels for this subplot
-          //for (const auto *ch : subplotChannels) {
-          //  const auto &rawVals = ch->values();
-          //  if (rawVals.empty()) continue;
-          //  double minVal = channelStates_[ch->name()].cachedMin;
-          //  double maxVal = channelStates_[ch->name()].cachedMax;
-          //  double range = maxVal - minVal;
-          //  std::vector<double> normVals(rawVals.size());
-          //  for (size_t s = 0; s < rawVals.size(); ++s) {
-          //    normVals[s] = (range > 1e-6) ? ((rawVals[s] - minVal) / range) : 0.5;
-          //  }
-          //  ImPlotSpec spec;
-          //  spec.LineColor = channelStates_[ch->name()].color;
-          //  ImPlot::PlotLine(ch->name().c_str(), timeSec.data(), normVals.data(), static_cast<int>(timeSec.size()), spec);
-          //}
-
-          // Plot channels for this subplot
           const float plotWidthPx = ImPlot::GetPlotSize().x;
           for (const auto *ch : subplotChannels) {
             if (ch->values().empty()) continue;
@@ -636,8 +812,7 @@ namespace ui {
           // 1. Bottom-Left Overlay: Channel Ranges for THIS Subplot
           // -------------------------------------------------------------------
           if (hasRealData && !subplotChannels.empty()) {
-            ImVec2 bottomLeftPos = ImVec2(currentPlotPos.x + 10.0f,
-              currentPlotPos.y + currentPlotSize.y - 10.0f);
+            ImVec2 bottomLeftPos = ImVec2(currentPlotPos.x + 10.0f, currentPlotPos.y + currentPlotSize.y - 10.0f);
 
             ImGui::SetNextWindowPos(bottomLeftPos, ImGuiCond_Always, ImVec2(0.0f, 1.0f));
             ImGui::SetNextWindowBgAlpha(0.75f);
@@ -727,6 +902,8 @@ namespace ui {
             ImGui::End();
           }
 
+          renderStatsOverlay(plotIdx, subplotChannels, currentPlotPos, currentPlotSize);
+
           if (session_) {
             const auto &stitchPoints = session_->stitchPoints();
             ImDrawList *drawList = ImPlot::GetPlotDrawList();
@@ -751,6 +928,67 @@ namespace ui {
             }
           }
 
+          if (ImPlot::IsPlotHovered() && ImGui::GetIO().KeyAlt && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            timelineActionTime_ = ImPlot::GetPlotMousePos().x;
+            annotationLabelBuf_[0] = '\0';
+            showTimelineActionPopup_ = true;
+          }
+          if (ImPlot::IsPlotHovered() && session_) {
+            auto *s = const_cast<core::LogSession *>(session_);
+            double hoverT = ImPlot::GetPlotMousePos().x;
+
+            if (ImGui::IsKeyPressed(ImGuiKey_LeftBracket, false)) { // '[' -> Crop Start
+              double curEnd = s->cropRange().active ? s->cropRange().endSec
+                : (cachedTimeSec_ && !cachedTimeSec_->empty() ? cachedTimeSec_->back() : hoverT);
+              s->setCropRange(hoverT, curEnd);
+              notifyDataChanged();
+            } else if (ImGui::IsKeyPressed(ImGuiKey_RightBracket, false)) { // ']' -> Crop End
+              double curStart = s->cropRange().active ? s->cropRange().startSec
+                : (cachedTimeSec_ && !cachedTimeSec_->empty() ? cachedTimeSec_->front() : 0.0);
+              s->setCropRange(curStart, hoverT);
+              notifyDataChanged();
+            }
+          }
+          if (session_ && session_->cropRange().active) {
+            double cStart = session_->cropRange().startSec;
+            double cEnd = session_->cropRange().endSec;
+            const ImVec4 cropLineCol = ImVec4(0.2f, 0.7f, 1.0f, 0.65f);
+
+            // Vertical boundary lines & tags
+            ImPlot::DragLineX(300, &cStart, cropLineCol, 1.5f, ImPlotDragToolFlags_NoInputs);
+            ImPlot::DragLineX(301, &cEnd, cropLineCol, 1.5f, ImPlotDragToolFlags_NoInputs);
+            ImPlot::TagX(cStart, cropLineCol, "[Crop Start]");
+            ImPlot::TagX(cEnd, cropLineCol, "[Crop End]");
+          }
+          if (session_) {
+            const auto &annots = session_->annotations();
+            for (size_t i = 0; i < annots.size(); ++i) {
+              const auto &a = annots[i];
+              double aTime = a.timeSec;
+
+              ImPlot::DragLineX(static_cast<int>(500 + i), &aTime, a.color, 1.5f, ImPlotDragToolFlags_NoInputs);
+              ImPlot::TagX(a.timeSec, a.color, "%s", a.label.c_str());
+
+              // Right-click on tag to delete
+              ImGui::PushID(static_cast<int>(500 + i));
+              if (ImPlot::IsPlotHovered() && std::abs(ImPlot::GetPlotMousePos().x - a.timeSec) < (xAxisMax_ - xAxisMin_) * 0.015) {
+                if (ImGui::BeginPopupContextItem("AnnotTagContext")) {
+                  ImGui::TextDisabled("Bookmark: %s", a.label.c_str());
+                  ImGui::Separator();
+                  if (ImGui::MenuItem("Delete Bookmark")) {
+                    const_cast<core::LogSession *>(session_)->removeAnnotation(i);
+                    notifyDataChanged();
+                    ImGui::EndPopup();
+                    ImGui::PopID();
+                    break;
+                  }
+                  ImGui::EndPopup();
+                }
+              }
+              ImGui::PopID();
+            }
+          }
+
           ImPlot::EndPlot();
         }
       }
@@ -760,12 +998,137 @@ namespace ui {
     if (doLoadLimits && hasRealData) bPendingAfterLoad_ = false;
   }
 
+  void TimeSeriesPanel::renderAnnotationModal()
+  {
+    if (showAddAnnotationModal_) {
+      ImGui::OpenPopup(ui::popups::AddAnnotation);
+    }
+
+    ImGui::SetNextWindowSize(ImVec2(360, 0), ImGuiCond_Always);
+    if (ImGui::BeginPopupModal(ui::popups::AddAnnotation, &showAddAnnotationModal_, ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::Text("Time: %.3f s", pendingAnnotationTime_);
+      ImGui::Spacing();
+
+      ImGui::SetNextItemWidth(-1.0f);
+      if (ImGui::IsWindowAppearing()) {
+        ImGui::SetKeyboardFocusHere();
+      }
+      ImGui::InputTextWithHint("##AnnotLabel", "Annotation text...", annotationLabelBuf_, sizeof(annotationLabelBuf_));
+
+      ImGui::Spacing();
+      ImGui::ColorEdit4("Color", (float *)&annotationColor_, ImGuiColorEditFlags_NoAlpha);
+
+      ImGui::Spacing();
+      ImGui::Separator();
+      ImGui::Spacing();
+
+      if (ui::UI::ButtonPrimary("Add", ImVec2(100, 0))) {
+        if (session_ && annotationLabelBuf_[0] != '\0') {
+          core::Annotation a;
+          a.timeSec = pendingAnnotationTime_;
+          a.label = annotationLabelBuf_;
+          a.color = annotationColor_;
+          const_cast<core::LogSession *>(session_)->addAnnotation(std::move(a));
+          notifyDataChanged();
+        }
+        showAddAnnotationModal_ = false;
+        ImGui::CloseCurrentPopup();
+      }
+
+      ImGui::SameLine();
+      if (ui::UI::Button("Cancel", {}, ImVec2(80, 0))) {
+        showAddAnnotationModal_ = false;
+        ImGui::CloseCurrentPopup();
+      }
+
+      ImGui::EndPopup();
+    }
+  }
+
+  void TimeSeriesPanel::renderTimelineActionPopup(PlotCursor &cursor)
+  {
+    if (showTimelineActionPopup_) {
+      ImGui::OpenPopup(ui::popups::TimelineAction);
+      showTimelineActionPopup_ = false;
+    }
+
+    if (ImGui::BeginPopup(ui::popups::TimelineAction)) {
+      ImGui::TextDisabled("Timeline @ %.3f s", timelineActionTime_);
+      ImGui::Separator();
+
+      if (session_) {
+        auto *s = const_cast<core::LogSession *>(session_);
+        bool hasCrop = s->cropRange().active;
+
+        // 1. Set Crop Start
+        if (ImGui::MenuItem(ICON_FA_ARROW_RIGHT_TO_BRACKET "  Set Crop [Start]")) {
+          double curEnd = hasCrop ? s->cropRange().endSec
+            : (cachedTimeSec_ && !cachedTimeSec_->empty() ? cachedTimeSec_->back() : timelineActionTime_);
+          s->setCropRange(timelineActionTime_, curEnd);
+          notifyDataChanged();
+        }
+
+        // 2. Set Crop End
+        if (ImGui::MenuItem(ICON_FA_ARROW_RIGHT_FROM_BRACKET "  Set Crop [End]")) {
+          double curStart = hasCrop ? s->cropRange().startSec
+            : (cachedTimeSec_ && !cachedTimeSec_->empty() ? cachedTimeSec_->front() : 0.0);
+          s->setCropRange(curStart, timelineActionTime_);
+          notifyDataChanged();
+        }
+
+        // 3. Zoom / Snap View to Crop Range
+        ImGui::BeginDisabled(!hasCrop);
+        if (ImGui::MenuItem(ICON_FA_MAGNIFYING_GLASS_PLUS "  Zoom to Crop Range")) {
+          xAxisMin_ = s->cropRange().startSec;
+          xAxisMax_ = s->cropRange().endSec;
+          bPendingAfterLoad_ = true;
+        }
+
+        // 4. Reset Crop
+        if (ImGui::MenuItem(ICON_FA_XMARK "  Clear Crop")) {
+          s->resetCropRange();
+          notifyDataChanged();
+        }
+        ImGui::EndDisabled();
+
+        ImGui::Separator();
+        ImGui::TextDisabled("Add Bookmark:");
+        ImGui::Spacing();
+
+        ImGui::SetNextItemWidth(220.0f);
+        ImGui::InputTextWithHint("##AnnotLabel", "Bookmark label...", annotationLabelBuf_, sizeof(annotationLabelBuf_));
+
+        ImGui::SameLine();
+        ImGui::ColorEdit4("##AnnotColor", (float *)&annotationColor_, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoAlpha);
+
+        ImGui::Spacing();
+        if (ui::UI::ButtonPrimary(ICON_FA_PLUS " Add Bookmark", ImVec2(-1.0f, 0.0f))) {
+          if (annotationLabelBuf_[0] != '\0') {
+            core::Annotation a;
+            a.timeSec = timelineActionTime_;
+            a.label = annotationLabelBuf_;
+            a.color = annotationColor_;
+            s->addAnnotation(std::move(a));
+            notifyDataChanged();
+            ImGui::CloseCurrentPopup();
+          }
+        }
+      }
+
+      ImGui::EndPopup();
+    } else {
+      showTimelineActionPopup_ = false;
+    }
+  }
+
   void TimeSeriesPanel::render(PlotCursor &cursor)
   {
     std::string windowLabel = std::string{ ICON_FA_CHART_LINE } + " Time Series###" + title();
     ImGui::Begin(windowLabel.c_str(), &open_);
 
     renderHeaderControls(cursor);
+    renderTimelineActionPopup(cursor);
+
     ImGui::Separator();
 
     if (showSidebar_) {

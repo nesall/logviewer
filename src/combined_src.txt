@@ -5487,65 +5487,211 @@ namespace ui {
     filteredYValues_.clear();
     filteredPointColors_.clear();
 
-    if (selectedColorChannel_.empty() || session_ == nullptr || cachedXValues_ == nullptr || cachedYValues_ == nullptr) {
+    if (session_ == nullptr || cachedXValues_ == nullptr || cachedYValues_ == nullptr)
       return;
-    }
 
-    const core::Channel *colorChannel = session_->findChannel(selectedColorChannel_);
-    if (colorChannel == nullptr || colorChannel->values().size() != cachedXValues_->size()) {
+    const size_t totalPoints = cachedXValues_->size();
+    if (totalPoints == 0)
       return;
-    }
 
-    const std::vector<double> &colorValues = colorChannel->values();
     const std::vector<double> &xValues = *cachedXValues_;
     const std::vector<double> &yValues = *cachedYValues_;
 
-    double normMin = colorValues.front();
-    double normMax = colorValues.front();
-
-    for (double v : colorValues) {
-      if (std::isnan(v)) continue;
-      if (v < normMin) normMin = v;
-      if (v > normMax) normMax = v;
+    // Resolve Z Channel
+    const std::vector<double> *zValues = nullptr;
+    if (!selectedColorChannel_.empty()) {
+      const core::Channel *colorChannel = session_->findChannel(selectedColorChannel_);
+      if (colorChannel && colorChannel->values().size() == totalPoints) {
+        zValues = &colorChannel->values();
+      }
     }
 
-    colorChannelMin_ = normMin;
-    colorChannelMax_ = normMax;
+    // 1. Compute dataset bounds
+    double minX = std::numeric_limits<double>::max();
+    double maxX = -std::numeric_limits<double>::max();
+    double minY = std::numeric_limits<double>::max();
+    double maxY = -std::numeric_limits<double>::max();
+    double normMinZ = std::numeric_limits<double>::max();
+    double normMaxZ = -std::numeric_limits<double>::max();
 
-    if (!colorFilterMinMaxSet_) {
-      colorFilterMin_ = normMin;
-      colorFilterMax_ = normMax;
-      colorFilterMinMaxSet_ = true;
-    }
-
-    const double range = normMax - normMin;
-    size_t totalPoints = colorValues.size();
-
-    filteredXValues_.reserve(totalPoints);
-    filteredYValues_.reserve(totalPoints);
-    filteredPointColors_.reserve(totalPoints);
-
+    // First pass: compute bounds
     for (size_t i = 0; i < totalPoints; ++i) {
-      double xVal = xValues[i];
-      double yVal = yValues[i];
-      double zVal = colorValues[i];
+      double x = xValues[i];
+      double y = yValues[i];
+      if (std::isnan(x) || std::isnan(y))
+        continue;
 
-      if (std::isnan(xVal) || std::isnan(yVal) || std::isnan(zVal)) continue;
+      minX = std::min(minX, x);
+      maxX = std::max(maxX, x);
+      minY = std::min(minY, y);
+      maxY = std::max(maxY, y);
 
-      if (enableColorFilter_) {
-        if (zVal < colorFilterMin_ || zVal > colorFilterMax_) {
-          continue;
+      if (zValues) {
+        double z = (*zValues)[i];
+        if (!std::isnan(z)) {
+          normMinZ = std::min(normMinZ, z);
+          normMaxZ = std::max(normMaxZ, z);
         }
       }
-
-      float t = (range > 1e-9) ? static_cast<float>((zVal - normMin) / range) : 0.5f;
-      ImVec4 color = ImPlot::SampleColormap(t, ImPlotColormap_Viridis);
-
-      filteredXValues_.push_back(xVal);
-      filteredYValues_.push_back(yVal);
-      filteredPointColors_.push_back(ImGui::ColorConvertFloat4ToU32(color));
     }
+
+    // Handle degenerate cases
+    if (maxX <= minX) {
+      maxX = minX + 1.0;
+      minX = minX - 0.5;
+    }
+    if (maxY <= minY) {
+      maxY = minY + 1.0;
+      minY = minY - 0.5;
+    }
+
+    // Store color channel bounds
+    if (zValues) {
+      colorChannelMin_ = normMinZ;
+      colorChannelMax_ = normMaxZ;
+
+      // Initialize filter bounds only once, or if they're stale
+      if (!colorFilterMinMaxSet_ || colorChannelMin_ != normMinZ || colorChannelMax_ != normMaxZ) {
+        colorFilterMin_ = normMinZ;
+        colorFilterMax_ = normMaxZ;
+        colorFilterMinMaxSet_ = true;
+      }
+    }
+
+    // If no valid Z data and no filter, we're done (will plot with default colors)
+    if (!zValues) {
+      // For non-colored scatter, we could still bin, but we skip for performance
+      // Just use all points
+      filteredXValues_ = xValues;
+      filteredYValues_ = yValues;
+      computeFilteredStats();
+      return;
+    }
+
+    // 2. 2D Spatial Binning (250x250 virtual grid)
+    constexpr int kGridSize = 250;
+    std::vector<size_t> grid(kGridSize * kGridSize, std::numeric_limits<size_t>::max());
+    std::vector<size_t> activeCells;
+    activeCells.reserve(std::min(totalPoints, static_cast<size_t>(kGridSize * kGridSize)));
+
+    double rangeX = maxX - minX;
+    double rangeY = maxY - minY;
+    double rangeZ = normMaxZ - normMinZ;
+
+    // Second pass: binning with filtering
+    for (size_t i = 0; i < totalPoints; ++i) {
+      double x = xValues[i];
+      double y = yValues[i];
+      double z = (*zValues)[i];
+
+      // Validate data
+      if (std::isnan(x) || std::isnan(y) || std::isnan(z))
+        continue;
+
+      // Apply Z filter early (before spatial calculations)
+      if (enableColorFilter_ && (z < colorFilterMin_ || z > colorFilterMax_))
+        continue;
+
+      // Compute grid position
+      int gx = static_cast<int>((x - minX) / rangeX * (kGridSize - 1));
+      int gy = static_cast<int>((y - minY) / rangeY * (kGridSize - 1));
+      gx = std::clamp(gx, 0, kGridSize - 1);
+      gy = std::clamp(gy, 0, kGridSize - 1);
+
+      size_t cellIdx = static_cast<size_t>(gy) * kGridSize + static_cast<size_t>(gx);
+
+      // Store highest Z value in each cell
+      if (grid[cellIdx] == std::numeric_limits<size_t>::max()) {
+        grid[cellIdx] = i;
+        activeCells.push_back(cellIdx);
+      } else {
+        size_t storedIdx = grid[cellIdx];
+        double storedZ = (*zValues)[storedIdx];
+        if (z > storedZ) {
+          grid[cellIdx] = i;
+        }
+      }
+    }
+
+    // 3. Extract decimated points to plot buffers
+    if (rangeZ > 0.0) {
+      const float invRangeZ = 1.0f / static_cast<float>(rangeZ);
+      filteredXValues_.reserve(activeCells.size());
+      filteredYValues_.reserve(activeCells.size());
+      filteredPointColors_.reserve(activeCells.size());
+
+      for (size_t cellIdx : activeCells) {
+        size_t pointIdx = grid[cellIdx];
+        filteredXValues_.push_back(xValues[pointIdx]);
+        filteredYValues_.push_back(yValues[pointIdx]);
+
+        // Map Z value to color using Viridis colormap
+        float t = static_cast<float>(((*zValues)[pointIdx] - normMinZ) * invRangeZ);
+        t = std::clamp(t, 0.0f, 1.0f);
+        ImVec4 color = ImPlot::SampleColormap(t, ImPlotColormap_Viridis);
+        filteredPointColors_.push_back(ImGui::ColorConvertFloat4ToU32(color));
+      }
+    }
+
     computeFilteredStats();
+  }
+
+  void ScatterPanel::renderChannelsCombos(bool sameLine)
+  {
+    ImGui::SetNextItemWidth(180.0f);
+    if (ImGui::BeginCombo("X Axis", selectedXChannel_.c_str())) {
+      for (const auto &channel : session_->channels()) {
+        bool isSelected = (channel.name() == selectedXChannel_);
+        if (ImGui::Selectable(channel.name().c_str(), isSelected)) {
+          selectedXChannel_ = channel.name();
+          rebindChannels();
+        }
+        if (isSelected) ImGui::SetItemDefaultFocus();
+      }
+      ImGui::EndCombo();
+    }
+    if (sameLine) ImGui::SameLine();
+    ImGui::SetNextItemWidth(180.0f);
+    if (ImGui::BeginCombo("Y Axis", selectedYChannel_.c_str())) {
+      for (const auto &channel : session_->channels()) {
+        bool isSelected = (channel.name() == selectedYChannel_);
+        if (ImGui::Selectable(channel.name().c_str(), isSelected)) {
+          selectedYChannel_ = channel.name();
+          rebindChannels();
+        }
+        if (isSelected) ImGui::SetItemDefaultFocus();
+      }
+      ImGui::EndCombo();
+    }
+    if (sameLine) ImGui::SameLine();
+    ImGui::SetNextItemWidth(180.0f);
+    const char *colorComboLabel = selectedColorChannel_.empty() ? "None" : selectedColorChannel_.c_str();
+    if (ImGui::BeginCombo("Color (Z)", colorComboLabel)) {
+      bool noneSelected = selectedColorChannel_.empty();
+      if (ImGui::Selectable("None", noneSelected)) {
+        selectedColorChannel_.clear();
+        rebuildColorData();
+      }
+      if (noneSelected) ImGui::SetItemDefaultFocus();
+
+      for (const auto &channel : session_->channels()) {
+        bool isSelected = (channel.name() == selectedColorChannel_);
+        if (ImGui::Selectable(channel.name().c_str(), isSelected)) {
+          selectedColorChannel_ = channel.name();
+          rebuildColorData();
+        }
+        if (isSelected) ImGui::SetItemDefaultFocus();
+      }
+      ImGui::EndCombo();
+    }
+  }
+
+  void ScatterPanel::renderChannelsPopup()
+  {
+    if (ImGui::BeginPopup(ui::popups::ScatterPanelChannels)) {
+      renderChannelsCombos();
+      ImGui::EndPopup();
+    }
   }
 
   void ScatterPanel::render(PlotCursor &cursor)
@@ -5560,8 +5706,14 @@ namespace ui {
     const bool haveSession = (session_ != nullptr && !session_->channels().empty());
 
     if (haveSession) {
-      if (ui::UI::Button("Channels...", {}, {}, "Open channel selection popup")) {
-        ImGui::OpenPopup(ui::popups::ScatterPanelChannels);
+      // Fetch window size
+      ImVec2 windowSize = ImGui::GetWindowSize();
+      if (windowSize.x < 600) {
+        if (ui::UI::Button("Channels...", {}, {}, "Open channel selection popup")) {
+          ImGui::OpenPopup(ui::popups::ScatterPanelChannels);
+        }
+      } else {
+        renderChannelsCombos(true);
       }
 
       ImGui::SameLine();
@@ -5599,56 +5751,7 @@ namespace ui {
         }
       }
 
-      if (ImGui::BeginPopup(ui::popups::ScatterPanelChannels)) {
-        ImGui::SetNextItemWidth(180.0f);
-        if (ImGui::BeginCombo("X Axis", selectedXChannel_.c_str())) {
-          for (const auto &channel : session_->channels()) {
-            bool isSelected = (channel.name() == selectedXChannel_);
-            if (ImGui::Selectable(channel.name().c_str(), isSelected)) {
-              selectedXChannel_ = channel.name();
-              rebindChannels();
-            }
-            if (isSelected) ImGui::SetItemDefaultFocus();
-          }
-          ImGui::EndCombo();
-        }
-
-        ImGui::SetNextItemWidth(180.0f);
-        if (ImGui::BeginCombo("Y Axis", selectedYChannel_.c_str())) {
-          for (const auto &channel : session_->channels()) {
-            bool isSelected = (channel.name() == selectedYChannel_);
-            if (ImGui::Selectable(channel.name().c_str(), isSelected)) {
-              selectedYChannel_ = channel.name();
-              rebindChannels();
-            }
-            if (isSelected) ImGui::SetItemDefaultFocus();
-          }
-          ImGui::EndCombo();
-        }
-
-        ImGui::SetNextItemWidth(180.0f);
-        const char *colorComboLabel = selectedColorChannel_.empty() ? "None" : selectedColorChannel_.c_str();
-        if (ImGui::BeginCombo("Color (Z)", colorComboLabel)) {
-          bool noneSelected = selectedColorChannel_.empty();
-          if (ImGui::Selectable("None", noneSelected)) {
-            selectedColorChannel_.clear();
-            rebuildColorData();
-          }
-          if (noneSelected) ImGui::SetItemDefaultFocus();
-
-          for (const auto &channel : session_->channels()) {
-            bool isSelected = (channel.name() == selectedColorChannel_);
-            if (ImGui::Selectable(channel.name().c_str(), isSelected)) {
-              selectedColorChannel_ = channel.name();
-              rebuildColorData();
-            }
-            if (isSelected) ImGui::SetItemDefaultFocus();
-          }
-          ImGui::EndCombo();
-        }
-
-        ImGui::EndPopup();
-      }
+      renderChannelsPopup();
     } else {
       ImGui::TextDisabled("No log loaded yet.");
     }
@@ -5896,6 +5999,8 @@ namespace ui {
     void rebindChannels();
     void rebuildColorData();
     void computeFilteredStats();
+    void renderChannelsCombos(bool sameLine = false);
+    void renderChannelsPopup();
 
     std::string selectedXChannel_;
     std::string selectedYChannel_;
@@ -8543,6 +8648,28 @@ namespace ui {
     state.decimatedYNorm = std::move(normY);
   }
 
+  void TimeSeriesPanel::shiftXAxis(double shiftSeconds)
+  {
+    if (!cachedTimeSec_ || cachedTimeSec_->empty()) return;
+
+    // Calculate the new center position
+    double currentSpan = xAxisMax_ - xAxisMin_;
+    double currentCenter = (xAxisMax_ + xAxisMin_) * 0.5;
+    double newCenter = currentCenter + shiftSeconds;
+
+    // Clamp to valid time range (optional but prevents scrolling into nowhere)
+    double minTime = cachedTimeSec_->front();
+    double maxTime = cachedTimeSec_->back();
+    double halfSpan = currentSpan * 0.5;
+
+    // Keep at least half the span visible within the data range
+    newCenter = std::clamp(newCenter, minTime + halfSpan, maxTime - halfSpan);
+
+    // Update the axis limits via pending state
+    targetXCenterTime_ = newCenter;
+    pendingXAxisCenter_ = true;
+  }
+
   void TimeSeriesPanel::renderHeaderControls(PlotCursor &cursor)
   {
     if (ui::UI::Button(showSidebar_ ? "< Hide Channels" : "> Show Channels")) {
@@ -8586,6 +8713,15 @@ namespace ui {
         }
         ImGui::EndCombo();
       }
+    }
+
+    ImGui::SameLine();
+    if (ui::UI::Button(ICON_FA_CHEVRON_LEFT, {}, {}, "Shift view backward by 10 seconds")) {
+      shiftXAxis(-10.0);
+    }
+    ImGui::SameLine();
+    if (ui::UI::Button(ICON_FA_CHEVRON_RIGHT, {}, {}, "Shift view forward by 10 seconds")) {
+      shiftXAxis(10.0);
     }
 
     if (session_ && !session_->regimeSummaries().empty()) {
@@ -9170,8 +9306,10 @@ namespace ui {
     size_t getCursorIndex(double queryTime) const;
     void jumpCursorToIndex(size_t index, PlotCursor &cursor, const std::string &label = "");
     void ensureDecimatedCache(ChannelState &state, const core::Channel &channel, double xMin, double xMax, float widthPx);
+    void shiftXAxis(double shiftSeconds);
 
     bool pendingXAxisCenter_ = false;
+    //bool pendingXAxisShift_ = false;
     double targetXCenterTime_ = 0.0;
     
     const core::LogSession *session_ = nullptr;

@@ -345,5 +345,14 @@ namespace core {
     return true;
   }
 
+  void LogSession::removeAnnotation(size_t index)
+  {
+    if (index < annotations_.size()) {
+      annotations_.erase(annotations_.begin() + index);
+      ++revision_;
+    }
+  }
+
+
 
 } // namespace core

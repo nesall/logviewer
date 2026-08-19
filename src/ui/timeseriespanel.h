@@ -46,25 +46,38 @@ namespace ui {
       std::vector<double> decimatedYNorm;
     };
 
+    struct ChannelStats {
+      double min = 0.0;
+      double max = 0.0;
+      double mean = 0.0;
+      double stdDev = 0.0;
+      size_t sampleCount = 0;
+      bool valid = false;
+    };
+
     struct ArtifactCursor {
       double timeSec = 0.0;
       bool active = false;
       std::string label; // e.g., "RPM Max (7200.0)"
       ImVec4 color = ImVec4(0.9f, 0.9f, 0.3f, 0.4f); // Dimmed/grayed out
-    };
-
-    ArtifactCursor artifactCursor_;
+    } artifactCursor_;
 
     void rebindChannels();
     void renderHeaderControls(PlotCursor &cursor);
     void renderCropControls(PlotCursor &cursor);
     void renderLeftSidebar(PlotCursor &cursor);
     void renderPlotArea(PlotCursor &cursor);
+    void renderAnnotationModal();
+    void renderTimelineActionPopup(PlotCursor &cursor);
     size_t getCursorIndex(double queryTime) const;
     void jumpCursorToIndex(size_t index, PlotCursor &cursor, const std::string &label = "");
     void ensureDecimatedCache(ChannelState &state, const core::Channel &channel, double xMin, double xMax, float widthPx);
+    void shiftXAxis(double shiftSeconds);
+    void computeChannelStats(const core::Channel &channel, ChannelStats &outStats) const;
+    void renderStatsOverlay(int plotIdx, const std::vector<const core::Channel *> &subplotChannels, const ImVec2 &plotPos, const ImVec2 &plotSize);
 
     bool pendingXAxisCenter_ = false;
+    //bool pendingXAxisShift_ = false;
     double targetXCenterTime_ = 0.0;
     
     const core::LogSession *session_ = nullptr;
@@ -90,6 +103,24 @@ namespace ui {
     double yAxisMax_ = 1.0;
     bool bPendingAfterLoad_ = false;
 
+    bool showTimelineActionPopup_ = false;
+    double timelineActionTime_ = 0.0;
+    bool showAddAnnotationModal_ = false;
+    double pendingAnnotationTime_ = 0.0;
+    char annotationLabelBuf_[128] = "";
+    ImVec4 annotationColor_ = ImVec4(1.0f, 0.8f, 0.2f, 1.0f);
+
+    bool showStatsOverlay_ = false;
+    // Cache stats per channel with dirty-tracking
+    struct CachedStatsEntry {
+      ChannelStats stats;
+      uint64_t sessionRevision = 0;
+      double cropStart = 0.0;
+      double cropEnd = 0.0;
+      bool cropActive = false;
+    };
+    mutable std::unordered_map<std::string, CachedStatsEntry> statsCache_;
+  private:
     void generatePlaceholderData();
   };
 

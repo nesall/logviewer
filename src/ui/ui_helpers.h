@@ -14,10 +14,13 @@ namespace ui {
     inline constexpr const char *ExtrapolateVe = "Extrapolate VE###ExtrapolateVeModal";
     inline constexpr const char *CustomChannels = "Custom Calculated Channels###CustomChannelsModal";
     inline constexpr const char *LoadError = "Load Error###LoadErrorModal";
+    inline constexpr const char *SaveError = "Save Error###SaveErrorModal";
     inline constexpr const char *StatusPanelChannels = "Status Panel Channels###StatusPanelChannelsPopup";
     inline constexpr const char *ScatterPanelChannels = "Scatter Panel Channels###ScatterPanelChannelsPopup";
     inline constexpr const char *ChannelMapping = "Channel Semantic Mapping###ChannelMappingModal";
     inline constexpr const char *ConcatLog = "Stitch / Concat Log###ConcatLogModal";
+    inline constexpr const char *AddAnnotation = "Add Annotation###AddAnnotationModal";
+    inline constexpr const char *TimelineAction = "Timeline Action###TimelineActionPopup";
   } // namespace popups
 
 

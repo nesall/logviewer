@@ -10,7 +10,7 @@ namespace io {
 
   namespace {
     constexpr uint32_t kPlogMagic = 0x474F4C50; // "PLOG" in Little Endian
-    constexpr uint32_t kPlogVersion = 1;
+    constexpr uint32_t kPlogVersion = 2;
 
     constexpr int32_t kPlogRealNaN = std::numeric_limits<int32_t>::min();
     constexpr int8_t kPlogBooleanNaN = 0xFF;
@@ -55,8 +55,8 @@ namespace io {
     inb.read(reinterpret_cast<char *>(&magic), sizeof(magic));
     inb.read(reinterpret_cast<char *>(&version), sizeof(version));
 
-    if (magic != kPlogMagic || version != kPlogVersion) {
-      errorOut = "Invalid or unsupported .plog file format: " + path;
+    if (magic != kPlogMagic || version < 1 || version > kPlogVersion) {
+      errorOut = "Unsupported or corrupt .plog format version (" + std::to_string(version) + "): " + path;
       return false;
     }
 
@@ -101,6 +101,18 @@ namespace io {
     std::vector<double> stitchPoints(nofStitches);
     if (0 < nofStitches) {
       inb.read(reinterpret_cast<char *>(stitchPoints.data()), stitchPoints.size() * sizeof(double));
+    }
+
+    std::vector<core::Annotation> annotations;
+    if (2 <= kPlogVersion) {
+      uint64_t nofAnnots;
+      inb.read(reinterpret_cast<char *>(&nofAnnots), sizeof(nofAnnots));
+      annotations.resize(nofAnnots);
+      for (auto &a : annotations) {
+        inb.read(reinterpret_cast<char *>(&a.timeSec), sizeof(double));
+        a.label = readString();
+        inb.read(reinterpret_cast<char *>(&a.color), sizeof(ImVec4));
+      }
     }
 
     std::vector<core::Channel> channels;
@@ -148,6 +160,7 @@ namespace io {
       outSession.setTimeChannelIndex(static_cast<size_t>(timeChannelIdx));
     }
     outSession.setStitchPoints(stitchPoints);
+    outSession.setAnnotations(annotations);
 
     for (auto &ch : channels) {
       outSession.addChannel(std::move(ch));
@@ -208,10 +221,18 @@ namespace io {
       writeString(ch.formula());
     }
 
-    const std::vector<double> &stitchPoints = session.stitchPoints();
+    const auto &stitchPoints = session.stitchPoints();
     uint64_t nofStitches = stitchPoints.size();
     out.write(reinterpret_cast<const char *>(&nofStitches), sizeof(nofStitches));
     out.write(reinterpret_cast<const char *>(stitchPoints.data()), stitchPoints.size() * sizeof(double));
+
+    uint64_t nofAnnots = session.annotations().size();
+    out.write(reinterpret_cast<const char *>(&nofAnnots), sizeof(nofAnnots));
+    for (const auto &a : session.annotations()) {
+      out.write(reinterpret_cast<const char *>(&a.timeSec), sizeof(double));
+      writeString(a.label);
+      out.write(reinterpret_cast<const char *>(&a.color), sizeof(ImVec4));
+    }
 
     for (size_t i = 0; i < session.channels().size(); ++i) {
       const auto &ch = session.channels()[i];

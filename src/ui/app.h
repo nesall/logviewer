@@ -56,6 +56,7 @@ namespace ui {
     void renderWelcomeLanding();
     void renderMenuBar();
     void renderLoadErrorPopup();
+    void renderSaveErrorPopup();
     void renderCustomChannelModal();
     void renderChannelMappingModal();
 
@@ -161,6 +162,10 @@ namespace ui {
     bool isDirty_ = false;
     bool readyToExit_ = false;
     bool pendingSaveBeforeExit_ = false;
+    std::future<bool> savingPlogTask_;
+    std::atomic<bool> isSavingPlog_{ false };
+    std::atomic<bool> showSaveErrorPopup_{ false };
+    std::string saveErrorMessage_;
 
     PendingAction pendingAction_ = PendingAction::None;
     std::string pendingActionPathPayload_;

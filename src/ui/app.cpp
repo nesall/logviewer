@@ -91,7 +91,7 @@ namespace ui {
   {
     if (pendingExportLogDialog_) return;
     pendingExportLogDialog_ = std::make_unique<pfd::save_file>(
-      "Export Log File", "stitched_log.plog",
+      "Export Log File", "log-" + currentDateStamp() + ".plog",
       std::vector<std::string>{
       "Binary Log File (*.plog)", "*.plog",
         "All Files", "*"
@@ -161,13 +161,19 @@ namespace ui {
       std::string exportPath = pendingExportLogDialog_->result();
       pendingExportLogDialog_.reset();
       if (!exportPath.empty()) {
-        std::string err;
-        if (!io::PlogParser::write(exportPath, session_, err)) {
-          loadErrorMessage_ = err;
-          showLoadErrorPopup_ = true;
-        } else {
-          addRecentLog(exportPath);
-        }
+        savingPlogTask_ = std::async(std::launch::async, [this, exportPath]()
+          {
+            std::string err;
+            bool res = io::PlogParser::write(exportPath, session_, err);
+            if (!res) {
+              saveErrorMessage_ = err;
+              showSaveErrorPopup_ = true;
+            } else {
+              addRecentLog(exportPath);
+            }
+            isSavingPlog_ = false;
+            return res;
+          });
       }
     }
   }
@@ -475,6 +481,9 @@ namespace ui {
     std::string title{ App::appBaseTitle() };
     if (!currentWorkspacePath_.empty()) {
       title += " - " + utils::path::fileNameWithoutExtension(currentWorkspacePath_);
+    }
+    if (session_.rowCount() && !session_.sourcePath().empty()) {
+      title += " [" + utils::path::fileNameOnly(session_.sourcePath()) + "]";
     }
     if (isDirty_) {
       title += "*";
@@ -1085,20 +1094,44 @@ namespace ui {
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O, false)) {
       beginOpenLogDialog();
     }
+
+    bool hasSession = 0 < session_.rowCount();
+    bool isPlogFile = hasSession &&
+      session_.sourcePath().size() >= 5 &&
+      session_.sourcePath().substr(session_.sourcePath().size() - 5) == ".plog";
+
     if (ImGui::BeginMenuBar()) {
       if (ImGui::BeginMenu("File")) {
         if (ImGui::MenuItem("Open Log...", "Ctrl+O")) {
           beginOpenLogDialog();
         }
-        ImGui::BeginDisabled(session_.rowCount() == 0);
-        if (ImGui::MenuItem("Append / Prepend Log...")) {
-          beginAppendLogDialog();
-        }
-        if (ImGui::MenuItem("Export Active / Stitched Log (.plog)...")) {
-          beginExportLogDialog();
-        }
-        if (ImGui::MenuItem("Close Log")) {
-          requestActionWithDirtyCheck(PendingAction::CloseLog);
+        ImGui::BeginDisabled(!hasSession);
+        {
+          ImGui::BeginDisabled(!isPlogFile || isSavingPlog_);
+          if (ImGui::MenuItem("Save Log", "Ctrl+Alt+S")) {
+            isSavingPlog_ = true;
+            savingPlogTask_ = std::async(std::launch::async, [this, sessionCopy = session_]()
+              {
+                std::string err;
+                bool res = io::PlogParser::write(sessionCopy.sourcePath(), sessionCopy, err);
+                if (!res) {
+                  saveErrorMessage_ = err;
+                  showSaveErrorPopup_ = true;
+                }
+                isSavingPlog_ = false;
+                return res;
+              });
+          }
+          ImGui::EndDisabled();
+          if (ImGui::MenuItem("Save Log As / Export (.plog)...")) {
+            beginExportLogDialog();
+          }
+          if (ImGui::MenuItem("Append / Prepend Log...")) {
+            beginAppendLogDialog();
+          }
+          if (ImGui::MenuItem("Close Log")) {
+            requestActionWithDirtyCheck(PendingAction::CloseLog);
+          }
         }
         ImGui::EndDisabled();
 
@@ -1184,6 +1217,12 @@ namespace ui {
           showChannelMappingModal_ = true;
         }
         ImGui::EndMenu();
+      }
+      if (isSavingPlog_) {
+        float time = (float)ImGui::GetTime();
+        ImVec4 spinColor = ImVec4(0.3f, 0.7f, 1.0f, 0.5f + 0.5f * sinf(time * 6.0f));
+        ImGui::SameLine(ImGui::GetWindowWidth() - 140.0f);
+        ImGui::TextColored(spinColor, ICON_FA_FLOPPY_DISK " Saving .plog...");
       }
       ImGui::EndMenuBar();
     }
@@ -1330,6 +1369,22 @@ namespace ui {
 
     if (ImGui::BeginPopupModal(ui::popups::LoadError, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
       ImGui::TextWrapped("%s", loadErrorMessage_.c_str());
+      if (ui::UI::Button("OK", {}, ImVec2(120, 0))) {
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
+    }
+  }
+
+  void App::renderSaveErrorPopup()
+  {
+    if (showSaveErrorPopup_) {
+      ImGui::OpenPopup(ui::popups::SaveError);
+      showSaveErrorPopup_ = false;
+    }
+
+    if (ImGui::BeginPopupModal(ui::popups::SaveError, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::TextWrapped("%s", saveErrorMessage_.c_str());
       if (ui::UI::Button("OK", {}, ImVec2(120, 0))) {
         ImGui::CloseCurrentPopup();
       }
@@ -1622,6 +1677,7 @@ namespace ui {
     renderSavePromptModal();
     renderLoadProgressModal();
     renderLoadErrorPopup();
+    renderSaveErrorPopup();
     renderCustomChannelModal();
     renderChannelMappingModal();
     renderConcatLogModal();

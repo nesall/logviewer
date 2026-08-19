@@ -49,6 +49,13 @@ namespace core {
     PrependToBeginning
   };
 
+  // aka Bookmark
+  struct Annotation {
+    double timeSec;
+    std::string label;
+    ImVec4 color;
+  };
+
   struct ChannelMergeResolution {
     std::string activeChannelName;
     // Name of channel in the incoming session to bind to.
@@ -102,6 +109,11 @@ namespace core {
     void setStitchPoints(std::vector<double> points) { stitchPoints_ = std::move(points); }
     void clearStitchPoints() { stitchPoints_.clear(); }
 
+    const std::vector<Annotation> &annotations() const { return annotations_; }
+    void setAnnotations(std::vector<Annotation> annotations) { annotations_ = std::move(annotations); }
+    void addAnnotation(Annotation annotation) { annotations_.push_back(std::move(annotation)); ++revision_; }
+    void removeAnnotation(size_t index);
+
     uint64_t revision() const { return revision_; }
 
   private:
@@ -118,6 +130,7 @@ namespace core {
     std::vector<RegimeSummary> regimeSummaries_;
 
     std::vector<double> stitchPoints_;
+    std::vector<Annotation> annotations_;
     uint64_t revision_ = 0;
   };
 
