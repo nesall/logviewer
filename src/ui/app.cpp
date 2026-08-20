@@ -32,6 +32,7 @@
 #include "ui/tableoverlaypanel.h"
 #include "ui/driveregimepanel.h"
 #include "ui/curve2dpanel.h"
+#include "ui/virtualdynopanel.h"
 #include "utils/utils.h"
 
 namespace ui {
@@ -313,13 +314,14 @@ namespace ui {
         std::string savedTitle = state.value("title", "");
 
         std::unique_ptr<PlotPanel> panel;
-        if (type == "TimeSeries") panel = std::make_unique<TimeSeriesPanel>(savedTitle);
-        else if (type == "Scatter") panel = std::make_unique<ScatterPanel>(savedTitle, "", "");
-        else if (type == "Status") panel = std::make_unique<StatusPanel>(savedTitle);
+        if (type == "TimeSeriesPanel") panel = std::make_unique<TimeSeriesPanel>(savedTitle);
+        else if (type == "ScatterPanel") panel = std::make_unique<ScatterPanel>(savedTitle, "", "");
+        else if (type == "StatusPanel") panel = std::make_unique<StatusPanel>(savedTitle);
         else if (type == "VeAnalysisPanel") panel = std::make_unique<VeAnalysisPanel>(savedTitle);
         else if (type == "TableOverlayPanel") panel = std::make_unique<TableOverlayPanel>(savedTitle);
         else if (type == "DriveRegimePanel") panel = std::make_unique<DriveRegimePanel>();
         else if (type == "Curve2DPanel") panel = std::make_unique<Curve2DPanel>(savedTitle);
+        else if (type == "VirtualDynoPanel") panel = std::make_unique<VirtualDynoPanel>(savedTitle);
 
 #ifdef _DEBUG2
         std::cout << "Restoring panel: " << type << " state: " << state.dump() << std::endl;
@@ -670,6 +672,19 @@ namespace ui {
       ? "Curve2d " + std::to_string(getNextPanelIdForPrefix("Curve2d"))
       : explicitTitle;
     auto panel = std::make_unique<Curve2DPanel>(panelId);
+    panel->setOnDataChangedCallback([this] { markDirty(); });
+    panel->setSession(&session_);
+    panels_.push_back(std::move(panel));
+    return panels_.back().get();
+  }
+
+  PlotPanel *App::addVirtualDynoPanel(std::string explicitTitle)
+  {
+    markDirty();
+    std::string panelId = explicitTitle.empty()
+      ? "Virtual Dyno " + std::to_string(getNextPanelIdForPrefix("Virtual Dyno"))
+      : explicitTitle;
+    auto panel = std::make_unique<VirtualDynoPanel>(panelId);
     panel->setOnDataChangedCallback([this] { markDirty(); });
     panel->setSession(&session_);
     panels_.push_back(std::move(panel));
@@ -1195,6 +1210,9 @@ namespace ui {
         }
         if (ImGui::MenuItem("Add Curve2D Panel")) {
           addCurve2dPanel();
+        }
+        if (ImGui::MenuItem("Add Virtual Dyno Panel")) {
+          addVirtualDynoPanel();
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Drive Regime Summary")) {

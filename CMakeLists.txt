@@ -103,6 +103,8 @@ add_executable(logviewer
   src/engine/ve_analyzer.cpp
   src/engine/regime_analyzer.h
   src/engine/regime_analyzer.cpp
+  src/engine/virtualdyno.h
+  src/engine/virtualdyno.cpp
   src/io/logparser.h
   src/io/megasquirtcsvparser.h
   src/io/megasquirtcsvparser.cpp
@@ -132,6 +134,8 @@ add_executable(logviewer
   src/ui/driveregimepanel.cpp
   src/ui/curve2dpanel.h
   src/ui/curve2dpanel.cpp
+  src/ui/virtualdynopanel.h
+  src/ui/virtualdynopanel.cpp
   src/ui/ui_helpers.h
   src/core/formula_evaluator.h
   src/core/formula_evaluator.cpp

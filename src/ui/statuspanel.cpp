@@ -36,7 +36,9 @@ namespace ui {
 
   } // namespace
 
-  StatusPanel::StatusPanel(std::string title) : PlotPanel(std::move(title)) {}
+  StatusPanel::StatusPanel(std::string title) : PlotPanel(std::move(title))
+  {
+  }
 
   void StatusPanel::setSession(const core::LogSession *session)
   {
@@ -61,11 +63,13 @@ namespace ui {
 
   nlohmann::json StatusPanel::saveState() const
   {
-    auto overrides = PlotPanel::saveState();
+    auto j = PlotPanel::saveState();
+    nlohmann::json vis = nlohmann::json::object();
     for (const auto &[name, visible] : visibilityOverrides_) {
-      overrides[name] = visible;
+      vis[name] = visible;
     }
-    return nlohmann::json{ {"visibilityOverrides", overrides} };
+    j["visibilityOverrides"] = vis;
+    return j;
   }
 
   void StatusPanel::loadState(const nlohmann::json &state)
@@ -233,7 +237,7 @@ namespace ui {
 
   void StatusPanel::render(PlotCursor &cursor)
   {
-    std::string windowLabel = std::string{ ICON_FA_GAUGE } + " Status###" + title();
+    std::string windowLabel = std::string{ ICON_FA_GAUGE_SIMPLE } + " Status###" + title();
     ImGui::Begin(windowLabel.c_str(), &open_);
 
     renderChannelPickerPopup();

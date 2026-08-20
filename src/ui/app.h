@@ -86,6 +86,7 @@ namespace ui {
     PlotPanel *addVeAnalysisPanel(std::string explicitTitle = "");
     PlotPanel *addTableOverlayPanel(std::string explicitTitle = "");
     PlotPanel *addCurve2dPanel(std::string explicitTitle = "");
+    PlotPanel *addVirtualDynoPanel(std::string explicitTitle = "");
     DriveRegimePanel *getOrAddDriveRegimePanel();
 
     int getNextPanelIdForPrefix(const std::string &prefix) const;

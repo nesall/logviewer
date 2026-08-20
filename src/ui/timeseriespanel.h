@@ -21,7 +21,7 @@ namespace ui {
 
     void setSession(const core::LogSession *session) override;
 
-    std::string panelTypeId() const override { return "TimeSeries"; }
+    std::string panelTypeId() const override { return "TimeSeriesPanel"; }
     nlohmann::json saveState() const override;
     void loadState(const nlohmann::json &state) override;
 

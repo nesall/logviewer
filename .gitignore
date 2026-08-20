@@ -67,3 +67,5 @@ lcov.info
 # Benchmarks output
 benchmarks/results/
 *.prof
+
+combined_src.txt
