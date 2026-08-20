@@ -31,6 +31,11 @@ namespace ui {
     , yDecimalPlaces_(yDecimalPlaces)
   {}
 
+  void TableEditorPanel::triggerUpdated()
+  {
+    tableUniqueId_ = utils::str::generateUniqueId();
+  }
+
   std::string TableEditorPanel::formatValue(double value, int decimalPlaces)
   {
     if (decimalPlaces < 0) decimalPlaces = 0;
@@ -631,7 +636,7 @@ namespace ui {
           table_.setValue(r, c, newValues[r][c]);
         }
       }
-      tableUniqueId_ = utils::str::generateUniqueId();
+      triggerUpdated();
     } else {
       int startR = static_cast<int>(table_.rowCount()) - 1;
       int startC = 0;
@@ -699,7 +704,7 @@ namespace ui {
         table_.setValue(r, c, zVals[r * cols + c]);
       }
     }
-    tableUniqueId_ = utils::str::generateUniqueId();
+    triggerUpdated();
     notifyDataChanged();
     return true;
   }
@@ -780,7 +785,7 @@ namespace ui {
     if (ui::UI::Button("OK")) {
       ImGui::CloseCurrentPopup();
       accepted = true;
-      tableUniqueId_ = utils::str::generateUniqueId();
+      triggerUpdated();
       notifyDataChanged();
     }
     ImGui::SameLine();

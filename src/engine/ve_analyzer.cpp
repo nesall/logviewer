@@ -15,13 +15,29 @@ namespace engine {
     if (config_.enableCltFilter) {
       cltCh_ = session.findChannel(session.channelMapping().clt);
     }
+
+    // Collect and merge intervals from excluded regimes
+    if (!config_.excludedRegimeIds.empty()) {
+      for (const auto &reg : session.regimeSummaries()) {
+        if (config_.excludedRegimeIds.count(reg.def.id)) {
+          excludedIntervals_.insert(excludedIntervals_.end(), reg.intervals.begin(), reg.intervals.end());
+        }
+      }
+
+      // Sort intervals by start time for fast lookup
+      std::sort(excludedIntervals_.begin(), excludedIntervals_.end(),
+        [](const core::TimeInterval &a, const core::TimeInterval &b) {
+          return a.startSec < b.startSec;
+        });
+    }
   }
 
-  bool VeTransientFilter::shouldIgnoreSample(size_t rowIndex, double load) const
+  bool VeTransientFilter::shouldIgnoreSample(size_t rowIndex, double rpm, double mapVal, double timestampSec) const
   {
-    if (config_.enableOverrunFilter && load < config_.minLoadThreshold) {
-      return true;
-    }
+    if (rpm < config_.minRpm || rpm > config_.maxRpm) return true;
+    if (mapVal > config_.maxMap) return true;
+    if (config_.enableOverrunFilter && mapVal < config_.minMap) return true;
+
     if (tpsDotCh_ && rowIndex < tpsDotCh_->values().size()) {
       double tpsDot = tpsDotCh_->values()[rowIndex];
       if (!std::isnan(tpsDot) && std::abs(tpsDot) > config_.maxTpsDot) {
@@ -34,6 +50,21 @@ namespace engine {
         return true;
       }
     }
+
+    if (!excludedIntervals_.empty()) {
+      auto it = std::upper_bound(excludedIntervals_.begin(), excludedIntervals_.end(), timestampSec,
+        [](double t, const core::TimeInterval &iv) {
+          return t < iv.startSec;
+        });
+
+      if (it != excludedIntervals_.begin()) {
+        const auto &prevIv = *(it - 1);
+        if (timestampSec >= prevIv.startSec && timestampSec <= prevIv.endSec) {
+          return true; // Timestamp falls inside an excluded regime
+        }
+      }
+    }
+
     return false;
   }
 
@@ -48,8 +79,9 @@ namespace engine {
     const core::Channel *rpmCh = session.findChannel(session.channelMapping().rpm);
     const core::Channel *loadCh = session.findChannel(session.channelMapping().load);
     const core::Channel *afrCh = session.findChannel(session.channelMapping().afr);
+    const auto *timeSec = session.timeSec();
 
-    if (!rpmCh || !loadCh || !afrCh) {
+    if (!rpmCh || !loadCh || !afrCh || !timeSec) {
       return correctedVe;
     }
 
@@ -63,17 +95,16 @@ namespace engine {
 
     const size_t numSamples = session.rowCount();
 
-    // 1. Binning phase
     for (size_t i = 0; i < numSamples; ++i) {
-      
       if (!session.isRowInCropRange(i)) continue;
 
       double rpm = rpmCh->values()[i];
       double load = loadCh->values()[i];
       double afr = afrCh->values()[i];
+      double t = (*timeSec)[i];
 
       if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
-      if (filter.shouldIgnoreSample(i, load)) continue;
+      if (filter.shouldIgnoreSample(i, rpm, load, t)) continue;
 
       size_t bestR = 0, bestC = 0;
       double minDist = std::numeric_limits<double>::max();
@@ -96,28 +127,23 @@ namespace engine {
       countAfr[bestR][bestC]++;
     }
 
-    // 2. Correction phase
     for (size_t r = 0; r < rows; ++r) {
       for (size_t c = 0; c < cols; ++c) {
         if (countAfr[r][c] >= config.minSamplesPerBin) {
           double avgObservedAfr = sumAfr[r][c] / static_cast<double>(countAfr[r][c]);
-
           double rpmBp = baselineVe.xBreakpoints()[c];
           double loadBp = baselineVe.yBreakpoints()[r];
           double tgtAfr = targetAfr.sample(rpmBp, loadBp);
 
-          if (0 < tgtAfr) {
+          if (0.0 < tgtAfr) {
             double oldVe = baselineVe.value(r, c);
             double rawRatio = avgObservedAfr / tgtAfr;
-
             double weightedRatio = 1.0 + config.adjustmentGain * (rawRatio - 1.0);
-
             double minAllowedRatio = 1.0 - config.maxPercentChange;
             double maxAllowedRatio = 1.0 + config.maxPercentChange;
             double finalRatio = std::clamp(weightedRatio, minAllowedRatio, maxAllowedRatio);
 
-            double newVe = oldVe * finalRatio;
-            correctedVe.setValue(r, c, newVe);
+            correctedVe.setValue(r, c, oldVe * finalRatio);
           }
         }
       }
@@ -164,14 +190,15 @@ namespace engine {
           : static_cast<size_t>(std::distance(bp.begin(), it));
         };
 
+      const auto *timeSec = session.timeSec();
       for (size_t i = 0; i < numSamples; ++i) {
         if (!session.isRowInCropRange(i)) continue;
 
         double rpm = rpmCh->values()[i];
         double load = loadCh->values()[i];
-
+        double t = (timeSec && i < timeSec->size()) ? (*timeSec)[i] : 0.0;
         if (std::isnan(rpm) || std::isnan(load)) continue;
-        if (filter.shouldIgnoreSample(i, load)) continue;
+        if (filter.shouldIgnoreSample(i, rpm, load, t)) continue;
 
         size_t bestC = findNearestAxisIndex(xBp, rpm);
         size_t bestR = findNearestAxisIndex(yBp, load);

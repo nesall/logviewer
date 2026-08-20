@@ -165,7 +165,7 @@ namespace io {
     for (auto &ch : channels) {
       outSession.addChannel(std::move(ch));
     }
-
+    outSession.scanIntegrityAndBuildDiscontinuities();
     if (progress) progress->store(1.0f);
     return true;
   }

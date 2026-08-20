@@ -24,6 +24,8 @@ namespace ui {
     TableEditorPanel(std::string title, std::string panelTypeIdValue, std::string displayName,
       core::Table2D initialTable, int xDecimalPlaces = 0, int yDecimalPlaces = 2);
 
+    void triggerUpdated();
+
     void render(PlotCursor &cursor) override;
     bool wantsClose() const override { return !open_; }
 

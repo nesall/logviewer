@@ -2,6 +2,7 @@
 #include "3rdparty/nlohmann/json.hpp"
 
 #include <algorithm>
+#include <set>
 #include <utility>
 
 namespace core {
@@ -349,6 +350,7 @@ namespace core {
     rowCount_ = newTotalRows;
     sourcePath_ += " + " + incoming.sourcePath();
     resetCropRange();
+    scanIntegrityAndBuildDiscontinuities();
     ++revision_;
     return true;
   }
@@ -358,6 +360,83 @@ namespace core {
     if (index < annotations_.size()) {
       annotations_.erase(annotations_.begin() + index);
       ++revision_;
+    }
+  }
+
+  void LogSession::scanIntegrityAndBuildDiscontinuities()
+  {
+    discontinuities_.clear();
+    discontinuityRowIndices_.clear();
+    nominalSampleDeltaSec_ = 0.0;
+
+    const auto *tSec = timeSec();
+    if (!tSec || tSec->size() < 3) return;
+
+    const size_t n = tSec->size();
+
+    // Calculate nominal dt using sample median
+    std::vector<double> deltas;
+    deltas.reserve(std::min<size_t>(n - 1, 2000));
+    for (size_t i = 1; i < std::min<size_t>(n, 2001); ++i) {
+      double dt = (*tSec)[i] - (*tSec)[i - 1];
+      if (dt > 0.0) deltas.push_back(dt);
+    }
+
+    if (deltas.empty()) return;
+    std::nth_element(deltas.begin(), deltas.begin() + deltas.size() / 2, deltas.end());
+    nominalSampleDeltaSec_ = deltas[deltas.size() / 2];
+
+    // Identify Discontinuities across the full session
+    const double dropThreshold = std::max(0.05, nominalSampleDeltaSec_ * 2.5);
+
+    constexpr double kEpsilon = 1e-5;
+
+    // Set of timestamps representing stitch points for fast check
+    std::set<double> stitchSet(stitchPoints_.begin(), stitchPoints_.end());
+
+    for (size_t i = 1; i < n; ++i) {
+      double tPrev = (*tSec)[i - 1];
+      double tCurr = (*tSec)[i];
+      double dt = tCurr - tPrev;
+      double midpoint = (tPrev + tCurr) * 0.5;
+      // Check if this row is an intentional stitch point
+      auto it = stitchSet.lower_bound(tPrev - 1e-4);
+      if (it != stitchSet.end() && *it <= tCurr + 1e-4) {
+        DataDiscontinuity d;
+        d.cause = DataDiscontinuity::Cause::StitchPoint;
+        d.rowIndex = i;
+        d.timeSec = midpoint;
+        d.durationSec = dt;
+        d.label = "Stitch Seam";
+        discontinuities_.push_back(d);
+        discontinuityRowIndices_.insert(i);
+        continue;
+      }
+      
+      if (dt <= -kEpsilon) { // Time Inversion (non-monotonic)
+        DataDiscontinuity d;
+        d.cause = DataDiscontinuity::Cause::TimeInversion;
+        d.rowIndex = i;
+        d.timeSec = midpoint;
+        d.durationSec = dt;
+        d.label = "Time Inversion (dt <= 0)";
+        discontinuities_.push_back(d);
+        discontinuityRowIndices_.insert(i);
+      } else if (dt < kEpsilon) { // Duplicates
+        continue;
+      } else if (dt >= dropThreshold) { // Dropped Frames / Serial Dropouts
+        DataDiscontinuity d;
+        d.cause = DataDiscontinuity::Cause::DroppedFrames;
+        d.rowIndex = i;
+        d.timeSec = midpoint;
+        d.durationSec = dt;
+        int missedFrames = static_cast<int>(std::round(dt / nominalSampleDeltaSec_)) - 1;
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "Drop +%.0fms (~%d frames)", dt * 1000.0, std::max(1, missedFrames));
+        d.label = buf;
+        discontinuities_.push_back(d);
+        discontinuityRowIndices_.insert(i);
+      }
     }
   }
 

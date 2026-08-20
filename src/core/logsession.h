@@ -3,6 +3,8 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <unordered_set>
+#include <algorithm>
 
 #include "3rdparty/nlohmann/json_fwd.hpp"
 
@@ -63,6 +65,15 @@ namespace core {
     std::string incomingChannelName;
   };
 
+  struct DataDiscontinuity {
+    enum class Cause { StitchPoint, DroppedFrames, TimeInversion };
+    Cause cause;
+    size_t rowIndex = 0;
+    double timeSec = 0.0;
+    double durationSec = 0.0;
+    std::string label;
+  };
+
   class LogSession {
   public:
     void addChannel(Channel channel);
@@ -117,6 +128,10 @@ namespace core {
 
     uint64_t revision() const { return revision_; }
 
+    const std::vector<DataDiscontinuity> &discontinuities() const { return discontinuities_; }
+    bool isDiscontinuity(size_t rowIndex) const { return discontinuityRowIndices_.find(rowIndex) != discontinuityRowIndices_.end(); }
+    void scanIntegrityAndBuildDiscontinuities();
+
   private:
     std::vector<Channel> channels_;
     ChannelMapping channelMapping_;
@@ -133,6 +148,10 @@ namespace core {
     std::vector<double> stitchPoints_;
     std::vector<Annotation> annotations_;
     uint64_t revision_ = 0;
+
+    std::vector<DataDiscontinuity> discontinuities_;
+    std::unordered_set<size_t> discontinuityRowIndices_;
+    double nominalSampleDeltaSec_ = 0.0;
   };
 
 } // namespace core

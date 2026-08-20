@@ -1,5 +1,6 @@
 #include "ui/veanalysispanel.h"
 #include "ui/ui_helpers.h"
+#include "utils/utils.h"
 #include "3rdparty/nlohmann/json.hpp"
 #include "3rdparty/IconsFontAwesome7.h"
 
@@ -123,6 +124,7 @@ namespace ui {
     const size_t numSamples = session_->rowCount();
     engine::VeTransientFilter filter(*session_, config_);
 
+    const auto *timeSec = session_->timeSec();
     for (size_t i = 0; i < numSamples; ++i) {
       
       if (!session_->isRowInCropRange(i)) continue; // Respect active crop range
@@ -130,10 +132,11 @@ namespace ui {
       double rpm = rpmCh->values()[i];
       double load = loadCh->values()[i];
       double afr = afrCh->values()[i];
+      double t = (timeSec && i < timeSec->size()) ? (*timeSec)[i] : 0.0;
 
       if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
 
-      if (filter.shouldIgnoreSample(i, load)) continue;
+      if (filter.shouldIgnoreSample(i, rpm, load, t)) continue;
 
       size_t bestR = 0, bestC = 0;
       double minDist = std::numeric_limits<double>::max();
@@ -178,6 +181,7 @@ namespace ui {
         }
       }
     }
+    observedTableUniqueId_ = utils::str::generateUniqueId();
   }
 
   void VeAnalysisPanel::computeSuggestedVe()
@@ -338,15 +342,16 @@ namespace ui {
       const size_t numSamples = session_->rowCount();
       engine::VeTransientFilter filter(*session_, config_);
 
+      const auto *timeSec = session_->timeSec();
       for (size_t i = 0; i < numSamples; ++i) {
         if (!session_->isRowInCropRange(i)) continue;
 
         double rpm = rpmCh->values()[i];
         double load = loadCh->values()[i];
         double afr = afrCh->values()[i];
-
+        double t = (timeSec && i < timeSec->size()) ? (*timeSec)[i] : 0.0;
         if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
-        if (filter.shouldIgnoreSample(i, load)) continue;
+        if (filter.shouldIgnoreSample(i, rpm, load, t)) continue;
 
         size_t bestR = 0, bestC = 0;
         double minDist = std::numeric_limits<double>::max();
@@ -388,16 +393,36 @@ namespace ui {
 
     // --- Filter Configuration Collapsible Header ---
     if (ImGui::CollapsingHeader("Analysis & Transient Filters")) {
-      ImGui::PushItemWidth(120.0f);
-
       bool changed = false;
 
       if (ImGui::BeginTabBar("ObservedAfrSettingsTabBar")) {
 
-        if (ImGui::BeginTabItem("Filter Thresholds")) {
+        // --- Tab 1: Range & Environmental Limits ---
+        if (ImGui::BeginTabItem("Telemetry Filters")) {
           ImGui::Spacing();
           ImGui::PushItemWidth(120.0f);
 
+          // RPM Range
+          ImGui::Text("RPM Limits:");
+          ImGui::SameLine();
+          changed |= ImGui::InputDouble("Min RPM##min_rpm", &config_.minRpm, 100.0, 500.0, "%.0f");
+          ImGui::SameLine();
+          changed |= ImGui::InputDouble("Max RPM##max_rpm", &config_.maxRpm, 100.0, 500.0, "%.0f");
+
+          // MAP Range
+          ImGui::Text("MAP Limits:");
+          ImGui::SameLine();
+          changed |= ImGui::Checkbox("Filter Min MAP", &config_.enableOverrunFilter);
+          if (config_.enableOverrunFilter) {
+            ImGui::SameLine();
+            changed |= ImGui::InputDouble("Min MAP (kPa)##min_map", &config_.minMap, 1.0, 5.0, "%.1f");
+          }
+          ImGui::SameLine();
+          changed |= ImGui::InputDouble("Max MAP (kPa)##max_map", &config_.maxMap, 5.0, 10.0, "%.1f");
+
+          ImGui::Separator();
+
+          // Transients
           changed |= ImGui::Checkbox("Filter Acceleration Transients (TPSdot)", &config_.enableTpsDotFilter);
           if (config_.enableTpsDotFilter) {
             ImGui::SameLine();
@@ -407,13 +432,7 @@ namespace ui {
           changed |= ImGui::Checkbox("Filter Cold Warmup (CLT)", &config_.enableCltFilter);
           if (config_.enableCltFilter) {
             ImGui::SameLine();
-            changed |= ImGui::InputDouble("Min Coolant Temp##min_clt", &config_.minCoolantTemp, 5.0, 10.0, "%.0f");
-          }
-
-          changed |= ImGui::Checkbox("Filter Overrun Decel", &config_.enableOverrunFilter);
-          if (config_.enableOverrunFilter) {
-            ImGui::SameLine();
-            changed |= ImGui::InputDouble("Min Load Threshold##min_load", &config_.minLoadThreshold, 1.0, 5.0, "%.1f");
+            changed |= ImGui::InputDouble("Min CLT##min_clt", &config_.minCoolantTemp, 5.0, 10.0, "%.0f");
           }
 
           int minSamples = static_cast<int>(config_.minSamplesPerBin);
@@ -427,8 +446,72 @@ namespace ui {
           ImGui::EndTabItem();
         }
 
+        // --- Tab 2: Excluded Drive Regimes (Scrollable & Searchable) ---
+        if (ImGui::BeginTabItem("Regime Exclusions")) {
+          ImGui::Spacing();
+
+          if (session_ && !session_->regimeSummaries().empty()) {
+            const auto &summaries = session_->regimeSummaries();
+
+            // Search & Bulk Select Bar
+            ImGui::SetNextItemWidth(180.0f);
+            ImGui::InputTextWithHint("##RegimeSearch", "Filter regimes...", regimeFilterText_.data(), regimeFilterText_.capacity() + 1,
+              ImGuiInputTextFlags_CallbackResize,
+              [](ImGuiInputTextCallbackData *data) -> int {
+                auto *str = static_cast<std::string *>(data->UserData);
+                str->resize(static_cast<size_t>(data->BufTextLen));
+                data->Buf = str->data();
+                return 0;
+              }, &regimeFilterText_);
+
+            ImGui::SameLine();
+            if (ui::UI::Button("Exclude All")) {
+              for (const auto &reg : summaries) config_.excludedRegimeIds.insert(reg.def.id);
+              changed = true;
+            }
+
+            ImGui::SameLine();
+            if (ui::UI::Button("Clear Exclusions")) {
+              config_.excludedRegimeIds.clear();
+              changed = true;
+            }
+
+            ImGui::Spacing();
+
+            // Scrollable Regime Checkbox Area
+            ImGui::BeginChild("RegimeExclusionScroll", ImVec2(0, 130.0f), true);
+
+            std::string filterLower = utils::str::toLower(regimeFilterText_);
+
+            for (const auto &reg : summaries) {
+              if (!filterLower.empty() && utils::str::toLower(reg.def.displayName).find(filterLower) == std::string::npos) {
+                continue;
+              }
+
+              bool isExcluded = config_.excludedRegimeIds.count(reg.def.id) > 0;
+              std::string label = reg.def.displayName + " (" + std::to_string(reg.intervals.size()) + " events, " +
+                std::to_string(static_cast<int>(reg.percentageOfLog)) + "% of log)";
+
+              ImGui::PushID(reg.def.id.c_str());
+              if (ImGui::Checkbox(label.c_str(), &isExcluded)) {
+                if (isExcluded) config_.excludedRegimeIds.insert(reg.def.id);
+                else config_.excludedRegimeIds.erase(reg.def.id);
+                changed = true;
+              }
+              ImGui::PopID();
+            }
+
+            ImGui::EndChild();
+          } else {
+            ImGui::TextDisabled("No active drive regimes detected in this session.");
+          }
+
+          ImGui::EndTabItem();
+        }
+
         ImGui::EndTabBar();
       }
+
       if (changed) {
         computeObservedAfr();
         if (hasTargetAfr()) computeAfrDelta();
@@ -469,7 +552,8 @@ namespace ui {
     int nextHoveredRow = -1;
     int nextHoveredCol = -1;
 
-    if (ImGui::BeginTable("ObservedAfrGridCropped", static_cast<int>(visibleCols + 1), flags, ImVec2(0.0f, 400.0f))) {
+    std::string tableId = "ObservedAfrGridCropped###" + observedTableUniqueId_;
+    if (ImGui::BeginTable(tableId.c_str(), static_cast<int>(visibleCols + 1), flags, ImVec2(0.0f, 400.0f))) {
       ImGui::TableSetupScrollFreeze(1, 1);
       ImGui::TableSetupColumn("MAP \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
 
@@ -566,13 +650,14 @@ namespace ui {
     const size_t numSamples = session_->rowCount();
     engine::VeTransientFilter filter(*session_, config_);
 
+    const auto *timeSec = session_->timeSec();
     for (size_t i = 0; i < numSamples; ++i) {
       double rpm = rpmCh->values()[i];
       double load = loadCh->values()[i];
       double afr = afrCh->values()[i];
-
+      double t = (timeSec && i < timeSec->size()) ? (*timeSec)[i] : 0.0;
       if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
-      if (filter.shouldIgnoreSample(i, load)) continue;
+      if (filter.shouldIgnoreSample(i, rpm, load, t)) continue;
 
       size_t bestR = 0, bestC = 0;
       double minDist = std::numeric_limits<double>::max();
@@ -979,12 +1064,18 @@ namespace ui {
       {"enableCltFilter", config_.enableCltFilter},
       {"minCoolantTemp", config_.minCoolantTemp},
       {"enableOverrunFilter", config_.enableOverrunFilter},
-      {"minLoadThreshold", config_.minLoadThreshold}
+      {"minRpm", config_.minRpm},
+      {"maxRpm", config_.maxRpm},
+      {"minMap", config_.minMap},
+      {"maxMap", config_.maxMap},
     };
+
+    nlohmann::json excludedArr = nlohmann::json::array();
+    for (const auto &id : config_.excludedRegimeIds) excludedArr.push_back(id);
+    j["config"]["excludedRegimeIds"] = excludedArr;
 
     j["targetAfr"] = targetAfrPanel_.saveState();
     j["baselineVe"] = baselineVePanel_.saveState();
-
     return j;
   }
 
@@ -1006,7 +1097,17 @@ namespace ui {
       if (cfg.contains("enableCltFilter")) config_.enableCltFilter = cfg["enableCltFilter"].get<bool>();
       if (cfg.contains("minCoolantTemp")) config_.minCoolantTemp = cfg["minCoolantTemp"].get<double>();
       if (cfg.contains("enableOverrunFilter")) config_.enableOverrunFilter = cfg["enableOverrunFilter"].get<bool>();
-      if (cfg.contains("minLoadThreshold")) config_.minLoadThreshold = cfg["minLoadThreshold"].get<double>();
+      if (cfg.contains("minRpm")) config_.minRpm = cfg["minRpm"].get<double>();
+      if (cfg.contains("maxRpm")) config_.maxRpm = cfg["maxRpm"].get<double>();
+      if (cfg.contains("minMap")) config_.minMap = cfg["minMap"].get<double>();
+      else if (cfg.contains("minLoadThreshold")) config_.minMap = cfg["minLoadThreshold"].get<double>(); // Backwards compat
+      if (cfg.contains("maxMap")) config_.maxMap = cfg["maxMap"].get<double>();
+      if (cfg.contains("excludedRegimeIds") && cfg["excludedRegimeIds"].is_array()) {
+        config_.excludedRegimeIds.clear();
+        for (const auto &item : cfg["excludedRegimeIds"]) {
+          if (item.is_string()) config_.excludedRegimeIds.insert(item.get<std::string>());
+        }
+      }
     }
 
     if (state.contains("targetAfr")) {
@@ -1015,12 +1116,6 @@ namespace ui {
     if (state.contains("baselineVe")) {
       baselineVePanel_.loadState(state["baselineVe"]);
     }
-
-    //if (session_ != nullptr) {
-    //  computeObservedAfr();
-    //  computeAfrDelta();
-    //  computeSuggestedVe();
-    //}
   }
 
 } // namespace ui

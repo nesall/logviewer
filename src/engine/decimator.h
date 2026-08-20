@@ -30,7 +30,8 @@ namespace engine {
       const std::vector<double> &xData,
       const std::vector<double> &yData,
       double xMin, double xMax,
-      int targetPoints);
+      int targetPoints,
+      const std::vector<size_t> &discontinuityIndices);
 
   private:
     // LTTB over a single contiguous, NaN-free run [begin, end) of indices

@@ -246,9 +246,17 @@ namespace ui {
       return;
     }
 
+    discontinuedIndChache_.clear();
+    if (session_) {
+      for (const auto &d : session_->discontinuities()) {
+        discontinuedIndChache_.push_back(d.rowIndex);
+      }
+      std::sort(discontinuedIndChache_.begin(), discontinuedIndChache_.end());
+    }
+
     const int targetPoints = (std::max)(kMinDecimationTargetPoints, static_cast<int>(widthPx) * kPointsPerPixel);
 
-    engine::DecimatedSeries series = engine::Decimator::decimate(*cachedTimeSec_, rawVals, xMin, xMax, targetPoints);
+    engine::DecimatedSeries series = engine::Decimator::decimate(*cachedTimeSec_, rawVals, xMin, xMax, targetPoints, discontinuedIndChache_);
 
     // Normalize AFTER decimation -- touches only the small decimated
     // buffer per frame instead of the full multi-hour channel.
@@ -549,7 +557,7 @@ namespace ui {
       return tStart + frac * totalSpan;
       };
 
-    // 1. Shaded Out-of-Crop Regions
+    // Shaded Out-of-Crop Regions
     if (session_->cropRange().active) {
       float cMinX = timeToScreenX(session_->cropRange().startSec);
       float cMaxX = timeToScreenX(session_->cropRange().endSec);
@@ -561,7 +569,7 @@ namespace ui {
       }
     }
 
-    // 2. Regime Shaded Bands
+    // Regime Shaded Bands
     for (const auto &reg : session_->regimeSummaries()) {
       if (!reg.def.showShading) continue;
       ImU32 regCol = ImGui::ColorConvertFloat4ToU32(ImVec4(reg.def.color.x, reg.def.color.y, reg.def.color.z, 0.35f));
@@ -572,7 +580,7 @@ namespace ui {
       }
     }
 
-    // 3. Background Reference Waveform
+    // Background Reference Waveform
     if (!minimapX_.empty() && minimapX_.size() == minimapYNorm_.size()) {
       for (size_t i = 0; i + 1 < minimapX_.size(); ++i) {
         if (std::isnan(minimapYNorm_[i]) || std::isnan(minimapYNorm_[i + 1])) continue;
@@ -584,13 +592,20 @@ namespace ui {
       }
     }
 
-    // 4. Stitch Points
-    for (double stitchMid : session_->stitchPoints()) {
-      float sX = timeToScreenX(stitchMid);
-      drawList->AddLine(ImVec2(sX, pMin.y), ImVec2(sX, pMax.y), IM_COL32(180, 110, 240, 180), 1.5f);
+    // Stitch Points
+    //for (double stitchMid : session_->stitchPoints()) {
+    //  float sX = timeToScreenX(stitchMid);
+    //  drawList->AddLine(ImVec2(sX, pMin.y), ImVec2(sX, pMax.y), IM_COL32(180, 110, 240, 180), 1.5f);
+    //}
+
+    for (const auto &d : session_->discontinuities()) {
+      float x = timeToScreenX(d.timeSec);
+      ImU32 col = (d.cause == core::DataDiscontinuity::Cause::StitchPoint)
+        ? IM_COL32(180, 110, 240, 200)
+        : IM_COL32(255, 90, 70, 200);
+      drawList->AddLine(ImVec2(x, pMin.y), ImVec2(x, pMax.y), col, 1.0f);
     }
 
-    // 5. Annotations / Bookmarks
     for (const auto &a : session_->annotations()) {
       float aX = timeToScreenX(a.timeSec);
       ImU32 aCol = ImGui::ColorConvertFloat4ToU32(a.color);
@@ -598,7 +613,7 @@ namespace ui {
       drawList->AddTriangleFilled(ImVec2(aX - 3.5f, pMin.y), ImVec2(aX + 3.5f, pMin.y), ImVec2(aX, pMin.y + 5.0f), aCol);
     }
 
-    // 6. Viewport Window (Visible Range)
+    // Viewport Window (Visible Range)
     float winX1 = timeToScreenX(xAxisMin_);
     float winX2 = timeToScreenX(xAxisMax_);
     if (winX2 < winX1) std::swap(winX1, winX2);
@@ -735,7 +750,7 @@ namespace ui {
     double tMax = cachedTimeSec_->back();
     constexpr int kMinimapPoints = 600;
 
-    engine::DecimatedSeries decimated = engine::Decimator::decimate(*cachedTimeSec_, refCh->values(), tMin, tMax, kMinimapPoints);
+    engine::DecimatedSeries decimated = engine::Decimator::decimate(*cachedTimeSec_, refCh->values(), tMin, tMax, kMinimapPoints, discontinuedIndChache_);
 
     if (decimated.x.empty()) return;
 
@@ -879,25 +894,40 @@ namespace ui {
     ImGui::SameLine();
     renderCropControls(cursor);
 
-    if (session_ && !session_->stitchPoints().empty()) {
+    if (session_ && !session_->discontinuities().empty()) {
+      const auto &disconts = session_->discontinuities();
       ImGui::SameLine();
       ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
       ImGui::SameLine();
-      ImGui::SetNextItemWidth(160.0f);
-      if (ImGui::BeginCombo("##StitchSelector", ICON_FA_CODE_MERGE " Stitch Points")) {
-        const auto &points = session_->stitchPoints();
-        for (size_t i = 0; i < points.size(); ++i) {
-          double stitchTime = points[i];
-          std::string label = "Stitch #" + std::to_string(i + 1) + " (" + std::to_string(static_cast<int>(stitchTime)) + " s)";
-          if (ImGui::Selectable(label.c_str())) {
-            std::string tag = "Stitch #" + std::to_string(i + 1);
-            jumpCursorToIndex(getCursorIndex(stitchTime), cursor, tag);
-          }
-          if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Jump cursor and center view on stitch at %.3f s", stitchTime);
+      ImGui::SetNextItemWidth(240.0f);
+      std::string badgeText = std::string(ICON_FA_TRIANGLE_EXCLAMATION) + " " + std::to_string(disconts.size()) + " Gaps/Seams";
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.2f, 1.0f));
+      if (ImGui::BeginCombo("##GapsCombo", badgeText.c_str()/*, ImGuiComboFlags_NoArrowButton | ImGuiComboFlags_HeightLarge*/)) {
+        ImGui::PopStyleColor();
+        ImGui::TextDisabled("Telemetry Discontinuities");
+        ImGui::Separator();
+        for (size_t i = 0; i < disconts.size(); ++i) {
+          const auto &d = disconts[i];
+          const char *icon = (d.cause == core::DataDiscontinuity::Cause::StitchPoint)
+            ? ICON_FA_CODE_MERGE
+            : ICON_FA_TRIANGLE_EXCLAMATION;
+          char itemLabel[128];
+          std::snprintf(itemLabel, sizeof(itemLabel), "%s @ %.3fs : %s", icon, d.timeSec, d.label.c_str());
+          if (ImGui::Selectable(itemLabel)) {
+            double span = xAxisMax_ - xAxisMin_;
+            xAxisMin_ = d.timeSec - span * 0.5;
+            xAxisMax_ = d.timeSec + span * 0.5;
+            cursor.timeSec = d.timeSec;
+            cursor.active = true;
+            bPendingAfterLoad_ = true;
           }
         }
         ImGui::EndCombo();
+      } else {
+        ImGui::PopStyleColor();
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Click to inspect and jump directly to dropped frames or stitched file boundaries.");
       }
     }
 
@@ -1187,26 +1217,6 @@ namespace ui {
             artifactCursor_.active = false;
           }
 
-          if (session_) {
-            // Render shaded vertical bands for active regimes
-            for (const auto &reg : session_->regimeSummaries()) {
-              if (!reg.def.showShading) continue;
-
-              for (const auto &interval : reg.intervals) {
-                double xMin = interval.startSec;
-                double xMax = interval.endSec;
-
-                // Draw vertical shaded region spanning full Y plot height
-                ImPlot::PlotInfLines("##Shade", &xMin, 1); // Or draw using ImPlot::PlotRect / DrawList
-                ImVec2 pMin = ImPlot::PlotToPixels(ImPlotPoint(xMin, yAxisMax_));
-                ImVec2 pMax = ImPlot::PlotToPixels(ImPlotPoint(xMax, yAxisMin_));
-
-                ImDrawList *drawList = ImPlot::GetPlotDrawList();
-                drawList->AddRectFilled(pMin, pMax, ImGui::ColorConvertFloat4ToU32(reg.def.color));
-              }
-            }
-          }
-
           // Query current subplot geometry for overlays
           ImVec2 currentPlotPos = ImPlot::GetPlotPos();
           ImVec2 currentPlotSize = ImPlot::GetPlotSize();
@@ -1316,26 +1326,45 @@ namespace ui {
           renderStatsOverlay(plotIdx, subplotChannels, currentPlotPos, currentPlotSize);
 
           if (session_) {
-            const auto &stitchPoints = session_->stitchPoints();
             ImDrawList *drawList = ImPlot::GetPlotDrawList();
-            auto localLimits = ImPlot::GetPlotLimits(); // fresh, scoped to THIS subplot's current Y zoom/pan
+            auto localLimits = ImPlot::GetPlotLimits();
+            for (const auto &reg : session_->regimeSummaries()) {
+              if (!reg.def.showShading) continue;
+              for (const auto &interval : reg.intervals) {
+                double xMin = interval.startSec;
+                double xMax = interval.endSec;
+                ImPlot::PlotInfLines("##Shade", &xMin, 1); // Or draw using ImPlot::PlotRect / DrawList
+                ImVec2 pMin = ImPlot::PlotToPixels(ImPlotPoint(xMin, localLimits.Y.Max));
+                ImVec2 pMax = ImPlot::PlotToPixels(ImPlotPoint(xMax, localLimits.Y.Min));
+                drawList->AddRectFilled(pMin, pMax, ImGui::ColorConvertFloat4ToU32(reg.def.color));
+              }
+            }
+          }
 
-            for (size_t i = 0; i < stitchPoints.size(); ++i) {
-              double stitchMid = stitchPoints[i];
-              double xMin = stitchMid - 0.5; // 1.0s gap width
-              double xMax = stitchMid + 0.5;
-
-              // Shaded gap band across full subplot height
+          if (session_) {
+            const auto &disc = session_->discontinuities();
+            ImDrawList *drawList = ImPlot::GetPlotDrawList();
+            auto localLimits = ImPlot::GetPlotLimits();
+            for (size_t i = 0; i < disc.size(); ++i) {
+              const auto &d = disc[i];
+              double halfSpan = (std::max)(0.1, d.durationSec * 0.5);
+              double xMin = d.timeSec - halfSpan;
+              double xMax = d.timeSec + halfSpan;
+              if (xMax < localLimits.X.Min || xMin > localLimits.X.Max) continue;
               ImVec2 pMin = ImPlot::PlotToPixels(ImPlotPoint(xMin, localLimits.Y.Max));
               ImVec2 pMax = ImPlot::PlotToPixels(ImPlotPoint(xMax, localLimits.Y.Min));
-              drawList->AddRectFilled(pMin, pMax, IM_COL32(160, 90, 220, 55));
-
-              // Bounding seam edges
-              ImPlot::DragLineX(static_cast<int>(100 + i * 2), &xMin, ImVec4(0.65f, 0.35f, 0.85f, 0.40f), 1.0f, ImPlotDragToolFlags_NoInputs);
-              ImPlot::DragLineX(static_cast<int>(100 + i * 2 + 1), &xMax, ImVec4(0.65f, 0.35f, 0.85f, 0.40f), 1.0f, ImPlotDragToolFlags_NoInputs);
-
-              // Axis header tag at midpoint
-              ImPlot::TagX(stitchMid, ImVec4(0.65f, 0.35f, 0.85f, 0.85f), "Stitch #%d", static_cast<int>(i + 1));
+              bool bStitch = (d.cause == core::DataDiscontinuity::Cause::StitchPoint);
+              ImU32 fillClr = bStitch ? IM_COL32(160, 90, 220, 45) : IM_COL32(255, 140, 0, 45);
+              ImVec4 lineClr = bStitch ? ImVec4(0.70f, 0.45f, 0.95f, 0.70f) : ImVec4(1.0f, 0.55f, 0.15f, 0.70f);
+              drawList->AddRectFilled(pMin, pMax, fillClr);
+              ImPlot::DragLineX(static_cast<int>(8000 + i * 2), &xMin, lineClr, 1.0f, ImPlotDragToolFlags_NoInputs);
+              ImPlot::DragLineX(static_cast<int>(8000 + i * 2 + 1), &xMax, lineClr, 1.0f, ImPlotDragToolFlags_NoInputs);
+              //ImPlot::TagX(d.timeSec, lineClr, "%s", d.label.c_str());
+              double yTop = localLimits.Y.Max - (localLimits.Y.Max - localLimits.Y.Min) * 0.05;
+              double yBottom = localLimits.Y.Min + (localLimits.Y.Max - localLimits.Y.Min) * 0.05;
+              ImGui::PushStyleColor(ImGuiCol_Text, lineClr);
+              ImPlot::PlotText(d.label.c_str(), d.timeSec, yBottom, ImVec2(0, -10)); // Offset upward by 10px
+              ImGui::PopStyleColor();
             }
           }
 

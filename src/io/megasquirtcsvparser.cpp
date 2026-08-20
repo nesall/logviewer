@@ -34,7 +34,8 @@ namespace io {
 
   } // namespace
 
-  bool MegasquirtCsvParser::parse(const std::string &path, core::LogSession &outSession, std::string &errorOut, std::atomic<float> *progress) {
+  bool MegasquirtCsvParser::parse(const std::string &path, core::LogSession &outSession, std::string &errorOut, std::atomic<float> *progress)
+  {
     std::error_code ec;
     const uint64_t fileSize = std::filesystem::file_size(path, ec);
     if (ec || fileSize == 0) {
@@ -224,7 +225,7 @@ namespace io {
     if (timeChannelIndex >= 0) {
       outSession.setTimeChannelIndex(static_cast<size_t>(timeChannelIndex));
     }
-
+    outSession.scanIntegrityAndBuildDiscontinuities();
     return true;
   }
 

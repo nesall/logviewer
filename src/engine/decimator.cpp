@@ -90,72 +90,88 @@ namespace engine {
     outY.push_back(yData[end - 1]);
   }
 
-  // src/engine/decimator.cpp -- replace Decimator::decimate() with this
   DecimatedSeries Decimator::decimate(
     const std::vector<double> &xData,
     const std::vector<double> &yData,
-    double xMin, double xMax,
-    int targetPoints)
+    double xMin,
+    double xMax,
+    int targetPoints,
+    const std::vector<size_t> &discontinuityIndices)
   {
     DecimatedSeries result;
-    const size_t n = xData.size();
-    if (n == 0 || yData.size() != n || targetPoints <= 0) return result;
+    if (xData.empty() || yData.empty() || xData.size() != yData.size()) {
+      return result;
+    }
 
-    auto lowIt = std::lower_bound(xData.begin(), xData.end(), xMin);
-    auto highIt = std::upper_bound(xData.begin(), xData.end(), xMax);
+    // Find range [begin, end) within [xMin, xMax]
+    auto itBegin = std::lower_bound(xData.begin(), xData.end(), xMin);
+    auto itEnd = std::upper_bound(xData.begin(), xData.end(), xMax);
 
-    size_t begin = (lowIt != xData.begin())
-      ? static_cast<size_t>((lowIt - xData.begin()) - 1)
-      : 0;
-    size_t end = (highIt != xData.end())
-      ? static_cast<size_t>((highIt - xData.begin()) + 1)
-      : n;
-    end = std::min(end, n);
+    size_t begin = std::distance(xData.begin(), itBegin);
+    size_t end = std::distance(xData.begin(), itEnd);
+
     if (begin >= end) return result;
 
     const size_t visibleCount = end - begin;
-
     if (visibleCount <= static_cast<size_t>(targetPoints)) {
-      result.x.assign(xData.begin() + begin, xData.begin() + end);
-      result.y.assign(yData.begin() + begin, yData.begin() + end);
-    } else {
-      result.x.reserve(static_cast<size_t>(targetPoints) + 8);
-      result.y.reserve(static_cast<size_t>(targetPoints) + 8);
-
-      size_t runStart = begin;
-      while (runStart < end) {
-        if (std::isnan(yData[runStart])) {
-          if (!result.y.empty() && !std::isnan(result.y.back())) {
-            result.x.push_back(xData[runStart]);
-            result.y.push_back(std::numeric_limits<double>::quiet_NaN());
-          }
-          ++runStart;
-          continue;
+      // If small enough, copy directly while injecting NaNs at discontinuities
+      for (size_t i = begin; i < end; ++i) {
+        if (std::binary_search(discontinuityIndices.begin(), discontinuityIndices.end(), i)) {
+          result.x.push_back(xData[i]);
+          result.y.push_back(std::numeric_limits<double>::quiet_NaN());
         }
-
-        size_t runEnd = runStart;
-        while (runEnd < end && !std::isnan(yData[runEnd])) ++runEnd;
-
-        const size_t runLen = runEnd - runStart;
-        const int runBudget = std::max(3, static_cast<int>(
-          (static_cast<double>(runLen) / static_cast<double>(visibleCount)) * targetPoints));
-
-        lttbRun(xData, yData, runStart, runEnd, runBudget, result.x, result.y);
-
-        runStart = runEnd;
+        result.x.push_back(xData[i]);
+        result.y.push_back(yData[i]);
       }
+      return result;
     }
 
-    // Clamp the outer edges back to [xMin, xMax]. The ±1-sample padding
-    // above is only there to keep LTTB's bucket selection informed near
-    // the edges and to let the line visually reach the plot boundary --
-    // left unclamped it lets the rendered x-extent creep past the axis
-    // limits, which under ImPlot's Auto-Fit causes a feedback loop: Fit
-    // re-measures the rendered extent every frame and grows the axis to
-    // match, decimation re-pads from the new bounds, repeat forever.
-    if (!result.x.empty()) {
-      if (!std::isnan(result.y.front())) result.x.front() = std::max(result.x.front(), xMin);
-      if (!std::isnan(result.y.back()))  result.x.back() = std::min(result.x.back(), xMax);
+    size_t runStart = begin;
+    size_t lastValidIdx = std::numeric_limits<size_t>::max();
+
+    while (runStart < end) {
+      // Skip NaNs
+      if (std::isnan(yData[runStart])) {
+        if (!result.y.empty() && !std::isnan(result.y.back())) {
+          result.x.push_back(xData[runStart]);
+          result.y.push_back(std::numeric_limits<double>::quiet_NaN());
+        }
+        ++runStart;
+        continue;
+      }
+
+      // Find contiguous segment until NaN, big dt gap, OR a Stitch/Discontinuity index
+      size_t runEnd = runStart + 1;
+      while (runEnd < end && !std::isnan(yData[runEnd])) {
+        // Check if current row is a known stitch / discontinuity boundary
+        if (std::binary_search(discontinuityIndices.begin(), discontinuityIndices.end(), runEnd)) {
+          break;
+        }
+        // Check for large time gaps / rollbacks
+        double dt = xData[runEnd] - xData[runEnd - 1];
+        if (dt > 0.250 || dt < -1e-5) {
+          break;
+        }
+        ++runEnd;
+      }
+
+      const size_t runLen = runEnd - runStart;
+      const int runBudget = std::max(3, static_cast<int>(
+        (static_cast<double>(runLen) / static_cast<double>(visibleCount)) * targetPoints));
+
+      // Inject NaN boundary between split runs
+      if (lastValidIdx != std::numeric_limits<size_t>::max()) {
+        if (!result.y.empty() && !std::isnan(result.y.back())) {
+          result.x.push_back(xData[lastValidIdx]);
+          result.y.push_back(std::numeric_limits<double>::quiet_NaN());
+        }
+      }
+
+      // Downsample current segment with LTTB
+      lttbRun(xData, yData, runStart, runEnd, runBudget, result.x, result.y);
+
+      lastValidIdx = runEnd - 1;
+      runStart = runEnd;
     }
 
     return result;

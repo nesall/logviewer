@@ -145,7 +145,7 @@ namespace io {
     for (auto &channel : channels) {
       outSession.addChannel(std::move(channel));
     }
-
+    outSession.scanIntegrityAndBuildDiscontinuities();
     return true;
   }
 

@@ -165,6 +165,8 @@ namespace ui {
     double minimapDragInitialXMax_ = 0.0;
     float minimapDragStartMouseX_ = 0.0f;
 
+    std::vector<size_t> discontinuedIndChache_;
+
   private:
     void generatePlaceholderData();
   };

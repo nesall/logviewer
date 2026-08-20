@@ -14,6 +14,12 @@ namespace engine {
     double adjustmentGain = 0.50;  // Alpha (0.5 = apply 50% of correction)
     double maxPercentChange = 0.10; // Hard cap (+/- 10% max adjustment per pass)
 
+    // Dynamic Range Bounds
+    double minRpm = 0.0;
+    double maxRpm = 10000.0;
+    double minMap = 15.0;           // Renamed from minLoadThreshold
+    double maxMap = 300.0;          // Max MAP cap (kPa)
+
     // Transient & Environmental Filtering Rules
     bool enableTpsDotFilter = true;
     double maxTpsDot = 30.0; // Ignore rapid throttle movements (e.g., > 30 %/s)
@@ -21,24 +27,25 @@ namespace engine {
     bool enableCltFilter = true;
     double minCoolantTemp = 160.0; // Ignore cold start / warmup enrichment
 
-    bool enableOverrunFilter = true;
-    double minLoadThreshold = 15.0; // Ignore deep overrun / vacuum decel
+    bool enableOverrunFilter = true; // Governs minMap check
+
+    std::set<std::string> excludedRegimeIds = { "overrun_fuel_cut" };
   };
 
-  //void populateDefaultsForSession(VeAnalysisConfig &config, const core::LogSession &session);
-
-  // Reusable transient filter to share identical rules across different binning grids
   class VeTransientFilter {
   public:
     VeTransientFilter(const core::LogSession &session, const VeAnalysisConfig &config);
 
-    // Returns true if the sample at `rowIndex` should be ignored based on active filter rules
-    bool shouldIgnoreSample(size_t rowIndex, double load) const;
+    // Returns true if the sample at `rowIndex` should be rejected
+    bool shouldIgnoreSample(size_t rowIndex, double rpm, double mapVal, double timestampSec) const;
 
   private:
     const VeAnalysisConfig &config_;
     const core::Channel *tpsDotCh_ = nullptr;
     const core::Channel *cltCh_ = nullptr;
+
+    // Fast interval lookup for excluded regimes
+    std::vector<core::TimeInterval> excludedIntervals_;
   };
 
   class VeAnalyzer {

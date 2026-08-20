@@ -49,6 +49,7 @@ namespace ui {
     engine::VeAnalysisConfig config_;
 
     // Core tables
+    std::string observedTableUniqueId_;
     core::Table2D observedAfrTable_;
     TableEditorPanel targetAfrPanel_;
     TableEditorPanel baselineVePanel_;
@@ -75,6 +76,8 @@ namespace ui {
 
     int hoveredRow_ = -1;
     int hoveredCol_ = -1;
+
+    std::string regimeFilterText_;
   };
 
 } // namespace ui
