@@ -1,10 +1,17 @@
 #include "engine/ve_analyzer.h"
+#include "core/regime.h"
 #include <cmath>
 #include <limits>
 #include <algorithm>
 #include <cassert>
 
 namespace engine {
+
+  VeAnalysisConfig::VeAnalysisConfig()
+  {
+    excludedRegimeIds.insert(std::string(core::RegimeDef::Ids::overrun_fuel_cut));
+  }
+
 
   VeTransientFilter::VeTransientFilter(const core::LogSession &session, const VeAnalysisConfig &config)
     : config_(config)

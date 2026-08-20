@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <vector>
 #include <imgui.h>
 #include "3rdparty/nlohmann/json_fwd.hpp"
@@ -52,6 +53,11 @@ namespace core {
     double maxCltWarning = 220.0;
     double maxDutyWarning = 90.0;
     std::string customFormula;
+
+    struct Ids {
+      inline static constexpr std::string_view freeway_cruise{ "freeway_cruise" };
+      inline static constexpr std::string_view overrun_fuel_cut{ "overrun_fuel_cut" };
+    };
 
     nlohmann::json toJson() const;
     static RegimeDef fromJson(const nlohmann::json &j);

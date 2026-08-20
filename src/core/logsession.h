@@ -29,6 +29,9 @@ namespace core {
     std::string mat = "MAT";
     std::string duty1 = "Duty Cycle1";
     std::string duty2 = "Duty Cycle2";
+    std::string fan1duty = "Fan 1 control duty";
+    std::string fan2duty = "Fan 2 control duty";
+    std::string fualwarmcor = "Fuel: Warmup cor";
 
     static std::vector<std::string> allSlots();
     std::string &refSlot(const std::string &slotName);

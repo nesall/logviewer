@@ -69,6 +69,203 @@ namespace core {
 } // namespace core
 
 
+## File: src/core/curve1d.cpp
+
+#include "curve1d.h"
+#include "3rdparty/nlohmann/json.hpp"
+
+core::Curve1D::Curve1D(std::string name, std::string xName, std::string yName, std::string xUnit, std::string yUnit)
+    : name_(std::move(name)), xChannelName_(std::move(xName)), yChannelName_(std::move(yName)),
+    xUnit_(std::move(xUnit)), yUnit_(std::move(yUnit)) {}
+
+void core::Curve1D::setPoints(std::vector<CurvePoint> pts)
+{
+  points_ = std::move(pts);
+  sortPoints();
+}
+
+void core::Curve1D::addPoint(double x, double y)
+{
+  points_.push_back({ x, y });
+  sortPoints();
+}
+
+void core::Curve1D::removePoint(size_t index)
+{
+  if (index < points_.size()) {
+    points_.erase(points_.begin() + index);
+  }
+}
+
+void core::Curve1D::updatePoint(size_t index, double x, double y)
+{
+  if (index < points_.size()) {
+    points_[index] = { x, y };
+    sortPoints();
+  }
+}
+
+double core::Curve1D::evaluate(double x) const
+{
+  if (points_.empty()) return 0.0;
+  if (points_.size() == 1 || x <= points_.front().x) return points_.front().y;
+  if (x >= points_.back().x) return points_.back().y;
+
+  // Find segment
+  auto it = std::upper_bound(points_.begin(), points_.end(), CurvePoint{ x, 0.0 });
+  size_t i1 = std::distance(points_.begin(), it);
+  size_t i0 = i1 - 1;
+
+  double x0 = points_[i0].x;
+  double y0 = points_[i0].y;
+  double x1 = points_[i1].x;
+  double y1 = points_[i1].y;
+
+  if (std::abs(x1 - x0) < 1e-9) return y0;
+
+  double t = (x - x0) / (x1 - x0);
+
+  if (interpMode_ == CurveInterpMode::PiecewiseLinear || points_.size() < 4) {
+    return y0 + t * (y1 - y0);
+  }
+
+  // Catmull-Rom cubic interpolation for smooth splines
+  size_t i_prev = (i0 > 0) ? i0 - 1 : i0;
+  size_t i_next = (i1 + 1 < points_.size()) ? i1 + 1 : i1;
+
+  double y_prev = points_[i_prev].y;
+  double y_next = points_[i_next].y;
+
+  double m0 = 0.5 * (y1 - y_prev);
+  double m1 = 0.5 * (y_next - y0);
+
+  double t2 = t * t;
+  double t3 = t2 * t;
+
+  double h00 = 2 * t3 - 3 * t2 + 1;
+  double h10 = t3 - 2 * t2 + t;
+  double h01 = -2 * t3 + 3 * t2;
+  double h11 = t3 - t2;
+
+  return h00 * y0 + h10 * m0 + h01 * y1 + h11 * m1;
+}
+
+nlohmann::json core::Curve1D::toJson() const
+{
+  nlohmann::json j;
+  j["name"] = name_;
+  j["xChannel"] = xChannelName_;
+  j["yChannel"] = yChannelName_;
+  j["xUnit"] = xUnit_;
+  j["yUnit"] = yUnit_;
+  j["interpMode"] = static_cast<int>(interpMode_);
+
+  nlohmann::json ptsArr = nlohmann::json::array();
+  for (const auto &p : points_) {
+    ptsArr.push_back({ { "x", p.x },{ "y", p.y } });
+  }
+  j["points"] = ptsArr;
+  return j;
+}
+
+core::Curve1D core::Curve1D::fromJson(const nlohmann::json &j)
+{
+  Curve1D c;
+  if (j.contains("name")) c.name_ = j["name"].get<std::string>();
+  if (j.contains("xChannel")) c.xChannelName_ = j["xChannel"].get<std::string>();
+  if (j.contains("yChannel")) c.yChannelName_ = j["yChannel"].get<std::string>();
+  if (j.contains("xUnit")) c.xUnit_ = j["xUnit"].get<std::string>();
+  if (j.contains("yUnit")) c.yUnit_ = j["yUnit"].get<std::string>();
+  if (j.contains("interpMode")) c.interpMode_ = static_cast<CurveInterpMode>(j["interpMode"].get<int>());
+
+  if (j.contains("points") && j["points"].is_array()) {
+    for (const auto &p : j["points"]) {
+      c.points_.push_back({ p["x"].get<double>(), p["y"].get<double>() });
+    }
+    c.sortPoints();
+  }
+  return c;
+}
+
+
+
+## File: src/core/curve1d.h
+
+#pragma once
+
+#include <string>
+#include <vector>
+#include <algorithm>
+#include <cmath>
+#include "3rdparty/nlohmann/json_fwd.hpp"
+
+namespace core {
+
+  enum class CurveInterpMode {
+    PiecewiseLinear,
+    SmoothSpline
+  };
+
+  struct CurvePoint {
+    double x = 0.0;
+    double y = 0.0;
+    bool operator<(const CurvePoint &other) const { return x < other.x; }
+  };
+
+  class Curve1D {
+  public:
+    Curve1D() = default;
+    Curve1D(std::string name, std::string xName, std::string yName, std::string xUnit = "", std::string yUnit = "");
+
+    const std::string &name() const { return name_; }
+    void setName(const std::string &n) { name_ = n; }
+
+    const std::string &xChannelName() const { return xChannelName_; }
+    void setXChannelName(const std::string &x) { xChannelName_ = x; }
+
+    const std::string &yChannelName() const { return yChannelName_; }
+    void setYChannelName(const std::string &y) { yChannelName_ = y; }
+
+    const std::string &xUnit() const { return xUnit_; }
+    const std::string &yUnit() const { return yUnit_; }
+    void setXUnit(std::string u) { xUnit_ = std::move(u); }
+    void setYUnit(std::string u) { yUnit_ = std::move(u); }
+
+    CurveInterpMode interpMode() const { return interpMode_; }
+    void setInterpMode(CurveInterpMode m) { interpMode_ = m; }
+
+    const std::vector<CurvePoint> &points() const { return points_; }
+
+    void setPoints(std::vector<CurvePoint> pts);
+
+    void addPoint(double x, double y);
+
+    void removePoint(size_t index);
+
+    void updatePoint(size_t index, double x, double y);
+
+    // Evaluates y = f(x)
+    double evaluate(double x) const;
+
+    nlohmann::json toJson() const;
+
+    static Curve1D fromJson(const nlohmann::json &j);
+
+  private:
+    void sortPoints() { std::stable_sort(points_.begin(), points_.end()); }
+
+    std::string name_;
+    std::string xChannelName_;
+    std::string yChannelName_;
+    std::string xUnit_;
+    std::string yUnit_;
+    CurveInterpMode interpMode_ = CurveInterpMode::PiecewiseLinear;
+    std::vector<CurvePoint> points_;
+  };
+
+} // namespace core
+
+
 ## File: src/core/formula_evaluator.cpp
 
 #include "core/formula_evaluator.h"
@@ -266,6 +463,7 @@ namespace core {
 #include "3rdparty/nlohmann/json.hpp"
 
 #include <algorithm>
+#include <set>
 #include <utility>
 
 namespace core {
@@ -283,6 +481,9 @@ namespace core {
   const std::string slotMAT = "Manifold Air Temperature";
   const std::string slotDuty1 = "Duty Cycle1";
   const std::string slotDuty2 = "Duty Cycle2";
+  const std::string slotFanDuty1 = "Fan 1 Control Duty";
+  const std::string slotFanDuty2 = "Fan 2 Control Duty";
+  const std::string slotFuelWarmCor = "Fuel Warmup Correction";
 
   std::vector<std::string> ChannelMapping::allSlots()
   {
@@ -299,7 +500,10 @@ namespace core {
       slotTiming,
       slotMAT,
       slotDuty1,
-      slotDuty2 
+      slotDuty2,
+      slotFanDuty1,
+      slotFanDuty2,
+      slotFuelWarmCor
     };
   }
   
@@ -318,6 +522,9 @@ namespace core {
     if (slotName == slotMAT) return mat;
     if (slotName == slotDuty1) return duty1;
     if (slotName == slotDuty2) return duty2;
+    if (slotName == slotFanDuty1) return fan1duty;
+    if (slotName == slotFanDuty2) return fan2duty;
+    if (slotName == slotFuelWarmCor) return fualwarmcor;
     throw std::invalid_argument("Invalid slot name");
   }
 
@@ -405,6 +612,17 @@ namespace core {
     duty2 = findFirstMatch({
       "Duty Cycle2", // Megasqurt
       "Duty2"
+      });
+
+    fan1duty = findFirstMatch({
+      "Fan 1 control duty"
+      });
+    fan2duty = findFirstMatch({
+      "Fan 2 control duty"
+      });
+
+    fualwarmcor = findFirstMatch({
+      "Fuel: Warmup cor"
       });
   }
 
@@ -613,6 +831,7 @@ namespace core {
     rowCount_ = newTotalRows;
     sourcePath_ += " + " + incoming.sourcePath();
     resetCropRange();
+    scanIntegrityAndBuildDiscontinuities();
     ++revision_;
     return true;
   }
@@ -622,6 +841,83 @@ namespace core {
     if (index < annotations_.size()) {
       annotations_.erase(annotations_.begin() + index);
       ++revision_;
+    }
+  }
+
+  void LogSession::scanIntegrityAndBuildDiscontinuities()
+  {
+    discontinuities_.clear();
+    discontinuityRowIndices_.clear();
+    nominalSampleDeltaSec_ = 0.0;
+
+    const auto *tSec = timeSec();
+    if (!tSec || tSec->size() < 3) return;
+
+    const size_t n = tSec->size();
+
+    // Calculate nominal dt using sample median
+    std::vector<double> deltas;
+    deltas.reserve(std::min<size_t>(n - 1, 2000));
+    for (size_t i = 1; i < std::min<size_t>(n, 2001); ++i) {
+      double dt = (*tSec)[i] - (*tSec)[i - 1];
+      if (dt > 0.0) deltas.push_back(dt);
+    }
+
+    if (deltas.empty()) return;
+    std::nth_element(deltas.begin(), deltas.begin() + deltas.size() / 2, deltas.end());
+    nominalSampleDeltaSec_ = deltas[deltas.size() / 2];
+
+    // Identify Discontinuities across the full session
+    const double dropThreshold = std::max(0.05, nominalSampleDeltaSec_ * 2.5);
+
+    constexpr double kEpsilon = 1e-5;
+
+    // Set of timestamps representing stitch points for fast check
+    std::set<double> stitchSet(stitchPoints_.begin(), stitchPoints_.end());
+
+    for (size_t i = 1; i < n; ++i) {
+      double tPrev = (*tSec)[i - 1];
+      double tCurr = (*tSec)[i];
+      double dt = tCurr - tPrev;
+      double midpoint = (tPrev + tCurr) * 0.5;
+      // Check if this row is an intentional stitch point
+      auto it = stitchSet.lower_bound(tPrev - 1e-4);
+      if (it != stitchSet.end() && *it <= tCurr + 1e-4) {
+        DataDiscontinuity d;
+        d.cause = DataDiscontinuity::Cause::StitchPoint;
+        d.rowIndex = i;
+        d.timeSec = midpoint;
+        d.durationSec = dt;
+        d.label = "Stitch Seam";
+        discontinuities_.push_back(d);
+        discontinuityRowIndices_.insert(i);
+        continue;
+      }
+      
+      if (dt <= -kEpsilon) { // Time Inversion (non-monotonic)
+        DataDiscontinuity d;
+        d.cause = DataDiscontinuity::Cause::TimeInversion;
+        d.rowIndex = i;
+        d.timeSec = midpoint;
+        d.durationSec = dt;
+        d.label = "Time Inversion (dt <= 0)";
+        discontinuities_.push_back(d);
+        discontinuityRowIndices_.insert(i);
+      } else if (dt < kEpsilon) { // Duplicates
+        continue;
+      } else if (dt >= dropThreshold) { // Dropped Frames / Serial Dropouts
+        DataDiscontinuity d;
+        d.cause = DataDiscontinuity::Cause::DroppedFrames;
+        d.rowIndex = i;
+        d.timeSec = midpoint;
+        d.durationSec = dt;
+        int missedFrames = static_cast<int>(std::round(dt / nominalSampleDeltaSec_)) - 1;
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "Drop +%.0fms (~%d frames)", dt * 1000.0, std::max(1, missedFrames));
+        d.label = buf;
+        discontinuities_.push_back(d);
+        discontinuityRowIndices_.insert(i);
+      }
     }
   }
 
@@ -637,6 +933,8 @@ namespace core {
 #include <optional>
 #include <string>
 #include <vector>
+#include <unordered_set>
+#include <algorithm>
 
 #include "3rdparty/nlohmann/json_fwd.hpp"
 
@@ -661,6 +959,9 @@ namespace core {
     std::string mat = "MAT";
     std::string duty1 = "Duty Cycle1";
     std::string duty2 = "Duty Cycle2";
+    std::string fan1duty = "Fan 1 control duty";
+    std::string fan2duty = "Fan 2 control duty";
+    std::string fualwarmcor = "Fuel: Warmup cor";
 
     static std::vector<std::string> allSlots();
     std::string &refSlot(const std::string &slotName);
@@ -695,6 +996,15 @@ namespace core {
     // Name of channel in the incoming session to bind to.
     // Empty or "<NaN>" means fill with NaNs.
     std::string incomingChannelName;
+  };
+
+  struct DataDiscontinuity {
+    enum class Cause { StitchPoint, DroppedFrames, TimeInversion };
+    Cause cause;
+    size_t rowIndex = 0;
+    double timeSec = 0.0;
+    double durationSec = 0.0;
+    std::string label;
   };
 
   class LogSession {
@@ -751,6 +1061,10 @@ namespace core {
 
     uint64_t revision() const { return revision_; }
 
+    const std::vector<DataDiscontinuity> &discontinuities() const { return discontinuities_; }
+    bool isDiscontinuity(size_t rowIndex) const { return discontinuityRowIndices_.find(rowIndex) != discontinuityRowIndices_.end(); }
+    void scanIntegrityAndBuildDiscontinuities();
+
   private:
     std::vector<Channel> channels_;
     ChannelMapping channelMapping_;
@@ -767,6 +1081,10 @@ namespace core {
     std::vector<double> stitchPoints_;
     std::vector<Annotation> annotations_;
     uint64_t revision_ = 0;
+
+    std::vector<DataDiscontinuity> discontinuities_;
+    std::unordered_set<size_t> discontinuityRowIndices_;
+    double nominalSampleDeltaSec_ = 0.0;
   };
 
 } // namespace core
@@ -890,6 +1208,7 @@ namespace core {
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <vector>
 #include <imgui.h>
 #include "3rdparty/nlohmann/json_fwd.hpp"
@@ -941,6 +1260,11 @@ namespace core {
     double maxCltWarning = 220.0;
     double maxDutyWarning = 90.0;
     std::string customFormula;
+
+    struct Ids {
+      inline static constexpr std::string_view freeway_cruise{ "freeway_cruise" };
+      inline static constexpr std::string_view overrun_fuel_cut{ "overrun_fuel_cut" };
+    };
 
     nlohmann::json toJson() const;
     static RegimeDef fromJson(const nlohmann::json &j);
@@ -1331,72 +1655,88 @@ namespace engine {
     outY.push_back(yData[end - 1]);
   }
 
-  // src/engine/decimator.cpp -- replace Decimator::decimate() with this
   DecimatedSeries Decimator::decimate(
     const std::vector<double> &xData,
     const std::vector<double> &yData,
-    double xMin, double xMax,
-    int targetPoints)
+    double xMin,
+    double xMax,
+    int targetPoints,
+    const std::vector<size_t> &discontinuityIndices)
   {
     DecimatedSeries result;
-    const size_t n = xData.size();
-    if (n == 0 || yData.size() != n || targetPoints <= 0) return result;
+    if (xData.empty() || yData.empty() || xData.size() != yData.size()) {
+      return result;
+    }
 
-    auto lowIt = std::lower_bound(xData.begin(), xData.end(), xMin);
-    auto highIt = std::upper_bound(xData.begin(), xData.end(), xMax);
+    // Find range [begin, end) within [xMin, xMax]
+    auto itBegin = std::lower_bound(xData.begin(), xData.end(), xMin);
+    auto itEnd = std::upper_bound(xData.begin(), xData.end(), xMax);
 
-    size_t begin = (lowIt != xData.begin())
-      ? static_cast<size_t>((lowIt - xData.begin()) - 1)
-      : 0;
-    size_t end = (highIt != xData.end())
-      ? static_cast<size_t>((highIt - xData.begin()) + 1)
-      : n;
-    end = std::min(end, n);
+    size_t begin = std::distance(xData.begin(), itBegin);
+    size_t end = std::distance(xData.begin(), itEnd);
+
     if (begin >= end) return result;
 
     const size_t visibleCount = end - begin;
-
     if (visibleCount <= static_cast<size_t>(targetPoints)) {
-      result.x.assign(xData.begin() + begin, xData.begin() + end);
-      result.y.assign(yData.begin() + begin, yData.begin() + end);
-    } else {
-      result.x.reserve(static_cast<size_t>(targetPoints) + 8);
-      result.y.reserve(static_cast<size_t>(targetPoints) + 8);
-
-      size_t runStart = begin;
-      while (runStart < end) {
-        if (std::isnan(yData[runStart])) {
-          if (!result.y.empty() && !std::isnan(result.y.back())) {
-            result.x.push_back(xData[runStart]);
-            result.y.push_back(std::numeric_limits<double>::quiet_NaN());
-          }
-          ++runStart;
-          continue;
+      // If small enough, copy directly while injecting NaNs at discontinuities
+      for (size_t i = begin; i < end; ++i) {
+        if (std::binary_search(discontinuityIndices.begin(), discontinuityIndices.end(), i)) {
+          result.x.push_back(xData[i]);
+          result.y.push_back(std::numeric_limits<double>::quiet_NaN());
         }
-
-        size_t runEnd = runStart;
-        while (runEnd < end && !std::isnan(yData[runEnd])) ++runEnd;
-
-        const size_t runLen = runEnd - runStart;
-        const int runBudget = std::max(3, static_cast<int>(
-          (static_cast<double>(runLen) / static_cast<double>(visibleCount)) * targetPoints));
-
-        lttbRun(xData, yData, runStart, runEnd, runBudget, result.x, result.y);
-
-        runStart = runEnd;
+        result.x.push_back(xData[i]);
+        result.y.push_back(yData[i]);
       }
+      return result;
     }
 
-    // Clamp the outer edges back to [xMin, xMax]. The ±1-sample padding
-    // above is only there to keep LTTB's bucket selection informed near
-    // the edges and to let the line visually reach the plot boundary --
-    // left unclamped it lets the rendered x-extent creep past the axis
-    // limits, which under ImPlot's Auto-Fit causes a feedback loop: Fit
-    // re-measures the rendered extent every frame and grows the axis to
-    // match, decimation re-pads from the new bounds, repeat forever.
-    if (!result.x.empty()) {
-      if (!std::isnan(result.y.front())) result.x.front() = std::max(result.x.front(), xMin);
-      if (!std::isnan(result.y.back()))  result.x.back() = std::min(result.x.back(), xMax);
+    size_t runStart = begin;
+    size_t lastValidIdx = std::numeric_limits<size_t>::max();
+
+    while (runStart < end) {
+      // Skip NaNs
+      if (std::isnan(yData[runStart])) {
+        if (!result.y.empty() && !std::isnan(result.y.back())) {
+          result.x.push_back(xData[runStart]);
+          result.y.push_back(std::numeric_limits<double>::quiet_NaN());
+        }
+        ++runStart;
+        continue;
+      }
+
+      // Find contiguous segment until NaN, big dt gap, OR a Stitch/Discontinuity index
+      size_t runEnd = runStart + 1;
+      while (runEnd < end && !std::isnan(yData[runEnd])) {
+        // Check if current row is a known stitch / discontinuity boundary
+        if (std::binary_search(discontinuityIndices.begin(), discontinuityIndices.end(), runEnd)) {
+          break;
+        }
+        // Check for large time gaps / rollbacks
+        double dt = xData[runEnd] - xData[runEnd - 1];
+        if (dt > 0.250 || dt < -1e-5) {
+          break;
+        }
+        ++runEnd;
+      }
+
+      const size_t runLen = runEnd - runStart;
+      const int runBudget = std::max(3, static_cast<int>(
+        (static_cast<double>(runLen) / static_cast<double>(visibleCount)) * targetPoints));
+
+      // Inject NaN boundary between split runs
+      if (lastValidIdx != std::numeric_limits<size_t>::max()) {
+        if (!result.y.empty() && !std::isnan(result.y.back())) {
+          result.x.push_back(xData[lastValidIdx]);
+          result.y.push_back(std::numeric_limits<double>::quiet_NaN());
+        }
+      }
+
+      // Downsample current segment with LTTB
+      lttbRun(xData, yData, runStart, runEnd, runBudget, result.x, result.y);
+
+      lastValidIdx = runEnd - 1;
+      runStart = runEnd;
     }
 
     return result;
@@ -1439,7 +1779,8 @@ namespace engine {
       const std::vector<double> &xData,
       const std::vector<double> &yData,
       double xMin, double xMax,
-      int targetPoints);
+      int targetPoints,
+      const std::vector<size_t> &discontinuityIndices);
 
   private:
     // LTTB over a single contiguous, NaN-free run [begin, end) of indices
@@ -1585,7 +1926,7 @@ namespace engine {
     std::vector<core::RegimeDef> defaults;
     // 1. Freeway Cruise
     core::RegimeDef cruise;
-    cruise.id = "freeway_cruise";
+    cruise.id = core::RegimeDef::Ids::freeway_cruise;
     cruise.displayName = "Freeway Cruise";
     cruise.color = ImVec4(0.2f, 0.7f, 1.0f, 0.25f);
     cruise.isBuiltIn = true;
@@ -1604,7 +1945,7 @@ namespace engine {
 
     // 2. Overrun Fuel Cut (DFCO)
     core::RegimeDef dfco;
-    dfco.id = "overrun_fuel_cut";
+    dfco.id = core::RegimeDef::Ids::overrun_fuel_cut;
     dfco.displayName = "Overrun Fuel Cut (DFCO)";
     dfco.color = ImVec4(0.8f, 0.3f, 0.3f, 0.25f);
     dfco.isBuiltIn = true;
@@ -1789,12 +2130,19 @@ namespace engine {
 ## File: src/engine/ve_analyzer.cpp
 
 #include "engine/ve_analyzer.h"
+#include "core/regime.h"
 #include <cmath>
 #include <limits>
 #include <algorithm>
 #include <cassert>
 
 namespace engine {
+
+  VeAnalysisConfig::VeAnalysisConfig()
+  {
+    excludedRegimeIds.insert(std::string(core::RegimeDef::Ids::overrun_fuel_cut));
+  }
+
 
   VeTransientFilter::VeTransientFilter(const core::LogSession &session, const VeAnalysisConfig &config)
     : config_(config)
@@ -1805,13 +2153,29 @@ namespace engine {
     if (config_.enableCltFilter) {
       cltCh_ = session.findChannel(session.channelMapping().clt);
     }
+
+    // Collect and merge intervals from excluded regimes
+    if (!config_.excludedRegimeIds.empty()) {
+      for (const auto &reg : session.regimeSummaries()) {
+        if (config_.excludedRegimeIds.count(reg.def.id)) {
+          excludedIntervals_.insert(excludedIntervals_.end(), reg.intervals.begin(), reg.intervals.end());
+        }
+      }
+
+      // Sort intervals by start time for fast lookup
+      std::sort(excludedIntervals_.begin(), excludedIntervals_.end(),
+        [](const core::TimeInterval &a, const core::TimeInterval &b) {
+          return a.startSec < b.startSec;
+        });
+    }
   }
 
-  bool VeTransientFilter::shouldIgnoreSample(size_t rowIndex, double load) const
+  bool VeTransientFilter::shouldIgnoreSample(size_t rowIndex, double rpm, double mapVal, double timestampSec) const
   {
-    if (config_.enableOverrunFilter && load < config_.minLoadThreshold) {
-      return true;
-    }
+    if (rpm < config_.minRpm || rpm > config_.maxRpm) return true;
+    if (mapVal > config_.maxMap) return true;
+    if (config_.enableOverrunFilter && mapVal < config_.minMap) return true;
+
     if (tpsDotCh_ && rowIndex < tpsDotCh_->values().size()) {
       double tpsDot = tpsDotCh_->values()[rowIndex];
       if (!std::isnan(tpsDot) && std::abs(tpsDot) > config_.maxTpsDot) {
@@ -1824,6 +2188,21 @@ namespace engine {
         return true;
       }
     }
+
+    if (!excludedIntervals_.empty()) {
+      auto it = std::upper_bound(excludedIntervals_.begin(), excludedIntervals_.end(), timestampSec,
+        [](double t, const core::TimeInterval &iv) {
+          return t < iv.startSec;
+        });
+
+      if (it != excludedIntervals_.begin()) {
+        const auto &prevIv = *(it - 1);
+        if (timestampSec >= prevIv.startSec && timestampSec <= prevIv.endSec) {
+          return true; // Timestamp falls inside an excluded regime
+        }
+      }
+    }
+
     return false;
   }
 
@@ -1838,8 +2217,9 @@ namespace engine {
     const core::Channel *rpmCh = session.findChannel(session.channelMapping().rpm);
     const core::Channel *loadCh = session.findChannel(session.channelMapping().load);
     const core::Channel *afrCh = session.findChannel(session.channelMapping().afr);
+    const auto *timeSec = session.timeSec();
 
-    if (!rpmCh || !loadCh || !afrCh) {
+    if (!rpmCh || !loadCh || !afrCh || !timeSec) {
       return correctedVe;
     }
 
@@ -1853,17 +2233,16 @@ namespace engine {
 
     const size_t numSamples = session.rowCount();
 
-    // 1. Binning phase
     for (size_t i = 0; i < numSamples; ++i) {
-      
       if (!session.isRowInCropRange(i)) continue;
 
       double rpm = rpmCh->values()[i];
       double load = loadCh->values()[i];
       double afr = afrCh->values()[i];
+      double t = (*timeSec)[i];
 
       if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
-      if (filter.shouldIgnoreSample(i, load)) continue;
+      if (filter.shouldIgnoreSample(i, rpm, load, t)) continue;
 
       size_t bestR = 0, bestC = 0;
       double minDist = std::numeric_limits<double>::max();
@@ -1886,28 +2265,23 @@ namespace engine {
       countAfr[bestR][bestC]++;
     }
 
-    // 2. Correction phase
     for (size_t r = 0; r < rows; ++r) {
       for (size_t c = 0; c < cols; ++c) {
         if (countAfr[r][c] >= config.minSamplesPerBin) {
           double avgObservedAfr = sumAfr[r][c] / static_cast<double>(countAfr[r][c]);
-
           double rpmBp = baselineVe.xBreakpoints()[c];
           double loadBp = baselineVe.yBreakpoints()[r];
           double tgtAfr = targetAfr.sample(rpmBp, loadBp);
 
-          if (0 < tgtAfr) {
+          if (0.0 < tgtAfr) {
             double oldVe = baselineVe.value(r, c);
             double rawRatio = avgObservedAfr / tgtAfr;
-
             double weightedRatio = 1.0 + config.adjustmentGain * (rawRatio - 1.0);
-
             double minAllowedRatio = 1.0 - config.maxPercentChange;
             double maxAllowedRatio = 1.0 + config.maxPercentChange;
             double finalRatio = std::clamp(weightedRatio, minAllowedRatio, maxAllowedRatio);
 
-            double newVe = oldVe * finalRatio;
-            correctedVe.setValue(r, c, newVe);
+            correctedVe.setValue(r, c, oldVe * finalRatio);
           }
         }
       }
@@ -1954,14 +2328,15 @@ namespace engine {
           : static_cast<size_t>(std::distance(bp.begin(), it));
         };
 
+      const auto *timeSec = session.timeSec();
       for (size_t i = 0; i < numSamples; ++i) {
         if (!session.isRowInCropRange(i)) continue;
 
         double rpm = rpmCh->values()[i];
         double load = loadCh->values()[i];
-
+        double t = (timeSec && i < timeSec->size()) ? (*timeSec)[i] : 0.0;
         if (std::isnan(rpm) || std::isnan(load)) continue;
-        if (filter.shouldIgnoreSample(i, load)) continue;
+        if (filter.shouldIgnoreSample(i, rpm, load, t)) continue;
 
         size_t bestC = findNearestAxisIndex(xBp, rpm);
         size_t bestR = findNearestAxisIndex(yBp, load);
@@ -2048,10 +2423,18 @@ namespace engine {
 namespace engine {
 
   struct VeAnalysisConfig {
+    VeAnalysisConfig();
+
     size_t minSamplesPerBin = 10;
 
     double adjustmentGain = 0.50;  // Alpha (0.5 = apply 50% of correction)
     double maxPercentChange = 0.10; // Hard cap (+/- 10% max adjustment per pass)
+
+    // Dynamic Range Bounds
+    double minRpm = 0.0;
+    double maxRpm = 10000.0;
+    double minMap = 15.0;           // Renamed from minLoadThreshold
+    double maxMap = 300.0;          // Max MAP cap (kPa)
 
     // Transient & Environmental Filtering Rules
     bool enableTpsDotFilter = true;
@@ -2060,24 +2443,25 @@ namespace engine {
     bool enableCltFilter = true;
     double minCoolantTemp = 160.0; // Ignore cold start / warmup enrichment
 
-    bool enableOverrunFilter = true;
-    double minLoadThreshold = 15.0; // Ignore deep overrun / vacuum decel
+    bool enableOverrunFilter = true; // Governs minMap check
+
+    std::set<std::string> excludedRegimeIds;
   };
 
-  //void populateDefaultsForSession(VeAnalysisConfig &config, const core::LogSession &session);
-
-  // Reusable transient filter to share identical rules across different binning grids
   class VeTransientFilter {
   public:
     VeTransientFilter(const core::LogSession &session, const VeAnalysisConfig &config);
 
-    // Returns true if the sample at `rowIndex` should be ignored based on active filter rules
-    bool shouldIgnoreSample(size_t rowIndex, double load) const;
+    // Returns true if the sample at `rowIndex` should be rejected
+    bool shouldIgnoreSample(size_t rowIndex, double rpm, double mapVal, double timestampSec) const;
 
   private:
     const VeAnalysisConfig &config_;
     const core::Channel *tpsDotCh_ = nullptr;
     const core::Channel *cltCh_ = nullptr;
+
+    // Fast interval lookup for excluded regimes
+    std::vector<core::TimeInterval> excludedIntervals_;
   };
 
   class VeAnalyzer {
@@ -2399,7 +2783,7 @@ namespace io {
     for (auto &channel : channels) {
       outSession.addChannel(std::move(channel));
     }
-
+    outSession.scanIntegrityAndBuildDiscontinuities();
     return true;
   }
 
@@ -2491,7 +2875,8 @@ namespace io {
 
   } // namespace
 
-  bool MegasquirtCsvParser::parse(const std::string &path, core::LogSession &outSession, std::string &errorOut, std::atomic<float> *progress) {
+  bool MegasquirtCsvParser::parse(const std::string &path, core::LogSession &outSession, std::string &errorOut, std::atomic<float> *progress)
+  {
     std::error_code ec;
     const uint64_t fileSize = std::filesystem::file_size(path, ec);
     if (ec || fileSize == 0) {
@@ -2681,7 +3066,7 @@ namespace io {
     if (timeChannelIndex >= 0) {
       outSession.setTimeChannelIndex(static_cast<size_t>(timeChannelIndex));
     }
-
+    outSession.scanIntegrityAndBuildDiscontinuities();
     return true;
   }
 
@@ -2879,7 +3264,7 @@ namespace io {
     for (auto &ch : channels) {
       outSession.addChannel(std::move(ch));
     }
-
+    outSession.scanIntegrityAndBuildDiscontinuities();
     if (progress) progress->store(1.0f);
     return true;
   }
@@ -3170,6 +3555,7 @@ int main() {
 #include "ui/veanalysispanel.h"
 #include "ui/tableoverlaypanel.h"
 #include "ui/driveregimepanel.h"
+#include "ui/curve2dpanel.h"
 #include "utils/utils.h"
 
 namespace ui {
@@ -3457,6 +3843,7 @@ namespace ui {
         else if (type == "VeAnalysisPanel") panel = std::make_unique<VeAnalysisPanel>(savedTitle);
         else if (type == "TableOverlayPanel") panel = std::make_unique<TableOverlayPanel>(savedTitle);
         else if (type == "DriveRegimePanel") panel = std::make_unique<DriveRegimePanel>();
+        else if (type == "Curve2DPanel") panel = std::make_unique<Curve2DPanel>(savedTitle);
 
 #ifdef _DEBUG2
         std::cout << "Restoring panel: " << type << " state: " << state.dump() << std::endl;
@@ -3726,12 +4113,14 @@ namespace ui {
       core::ChannelMapping mapping;
       mapping.autoDetect(res.session);
       res.session.setChannelMapping(mapping);
+      updateWindowTitle();
       return res;
       });
   }
 
   PlotPanel *App::addTimeSeriesPanel(const std::vector<std::string> &initialChannelNames, std::string explicitTitle)
   {
+    markDirty();
     std::string panelId = explicitTitle.empty()
       ? "Time Series " + std::to_string(getNextPanelIdForPrefix("Time Series"))
       : explicitTitle;
@@ -3747,6 +4136,7 @@ namespace ui {
     const std::string &initialYChannel,
     std::string explicitTitle)
   {
+    markDirty();
     std::string panelId = explicitTitle.empty()
       ? "Scatter " + std::to_string(getNextPanelIdForPrefix("Scatter"))
       : explicitTitle;
@@ -3760,6 +4150,7 @@ namespace ui {
 
   PlotPanel *App::addStatusPanel(std::string explicitTitle)
   {
+    markDirty();
     std::string panelId = explicitTitle.empty()
       ? "Status " + std::to_string(getNextPanelIdForPrefix("Status"))
       : explicitTitle;
@@ -3772,6 +4163,7 @@ namespace ui {
 
   PlotPanel *App::addVeAnalysisPanel(std::string explicitTitle)
   {
+    markDirty();
     std::string panelId = explicitTitle.empty()
       ? "VE Analyzer " + std::to_string(getNextPanelIdForPrefix("VE Analyzer"))
       : explicitTitle;
@@ -3784,6 +4176,7 @@ namespace ui {
 
   PlotPanel *App::addTableOverlayPanel(std::string explicitTitle)
   {
+    markDirty();
     std::string panelId = explicitTitle.empty()
       ? "Table Overlay " + std::to_string(getNextPanelIdForPrefix("Table Overlay"))
       : explicitTitle;
@@ -3794,8 +4187,22 @@ namespace ui {
     return panels_.back().get();
   }
 
+  PlotPanel *App::addCurve2dPanel(std::string explicitTitle)
+  {
+    markDirty();
+    std::string panelId = explicitTitle.empty()
+      ? "Curve2d " + std::to_string(getNextPanelIdForPrefix("Curve2d"))
+      : explicitTitle;
+    auto panel = std::make_unique<Curve2DPanel>(panelId);
+    panel->setOnDataChangedCallback([this] { markDirty(); });
+    panel->setSession(&session_);
+    panels_.push_back(std::move(panel));
+    return panels_.back().get();
+  }
+
   DriveRegimePanel *App::getOrAddDriveRegimePanel()
   {
+    markDirty();
     for (const auto &panel : panels_) {
       if (panel->panelTypeId() == "DriveRegimePanel") {
         return static_cast<DriveRegimePanel *>(panel.get());
@@ -3836,38 +4243,6 @@ namespace ui {
       updateWindowTitle();
     }
   }
-
-  //void App::renderExitConfirmModal()
-  //{
-  //  if (showExitConfirmModal_) {
-  //    ImGui::OpenPopup("Save Workspace?###ExitConfirmModal");
-  //    showExitConfirmModal_ = false;
-  //  }
-  //  if (ImGui::BeginPopupModal("Save Workspace?###ExitConfirmModal", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-  //    ImGui::Text("You have unsaved changes in your workspace.\nDo you want to save before exiting?");
-  //    ImGui::Spacing();
-  //    if (ui::UI::ButtonPrimary("Save & Exit", ImVec2(110, 0))) {
-  //      ImGui::CloseCurrentPopup();
-  //      if (currentWorkspacePath_.empty()) {
-  //        pendingSaveBeforeExit_ = true;
-  //        beginSaveWorkspaceDialog();
-  //      } else {
-  //        saveWorkspaceFile(currentWorkspacePath_);
-  //        readyToExit_ = true;
-  //      }
-  //    }
-  //    ImGui::SameLine();
-  //    if (ui::UI::ButtonDanger("Don't Save", ImVec2(100, 0))) {
-  //      ImGui::CloseCurrentPopup();
-  //      readyToExit_ = true;
-  //    }
-  //    ImGui::SameLine();
-  //    if (ui::UI::Button("Cancel", {}, ImVec2(90, 0))) {
-  //      ImGui::CloseCurrentPopup();
-  //    }
-  //    ImGui::EndPopup();
-  //  }
-  //}
 
   void App::renderSavePromptModal()
   {
@@ -4341,6 +4716,9 @@ namespace ui {
         }
         if (ImGui::MenuItem("Add Table Overlay Panel")) {
           addTableOverlayPanel();
+        }
+        if (ImGui::MenuItem("Add Curve2D Panel")) {
+          addCurve2dPanel();
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Drive Regime Summary")) {
@@ -4957,6 +5335,7 @@ namespace ui {
     PlotPanel *addStatusPanel(std::string explicitTitle = "");
     PlotPanel *addVeAnalysisPanel(std::string explicitTitle = "");
     PlotPanel *addTableOverlayPanel(std::string explicitTitle = "");
+    PlotPanel *addCurve2dPanel(std::string explicitTitle = "");
     DriveRegimePanel *getOrAddDriveRegimePanel();
 
     int getNextPanelIdForPrefix(const std::string &prefix) const;
@@ -5053,6 +5432,448 @@ namespace ui {
     std::vector<core::ChannelMergeResolution> concatResolutions_;
 
     std::unique_ptr<pfd::save_file> pendingExportLogDialog_;
+  };
+
+} // namespace ui
+
+
+## File: src/ui/curve2dpanel.cpp
+
+#include "ui/curve2dpanel.h"
+#include "implot.h"
+#include "3rdparty/IconsFontAwesome7.h"
+#include "3rdparty/nlohmann/json.hpp"
+#include "core/logsession.h"
+#include "ui/ui_helpers.h"
+#include <imgui.h>
+#include <cassert>
+
+namespace {
+
+  ImPlotSpec specFromParams(ImPlotMarker marker, float markerSize, const ImVec4 &markerFill, float lineWeight, const ImVec4 &markerOutline = {}) {
+    ImPlotSpec spec;
+    spec.Marker = marker;
+    spec.MarkerSize = markerSize;
+    spec.MarkerFillColor = markerFill;
+    spec.LineWeight = lineWeight;
+    spec.MarkerLineColor = markerOutline;
+    return spec;
+  }
+
+
+} // anonymous namespace
+
+namespace ui {
+
+  Curve2DPanel::Curve2DPanel(const std::string &title) : PlotPanel(title)
+  {
+  }
+
+  void Curve2DPanel::loadBuiltInPresets()
+  {
+    assert(session_);
+
+    const auto &mp = session_->channelMapping();
+
+    curves_.clear();
+
+    // Preset 1: PWM Fan Control vs CLT
+    core::Curve1D fanCurve("PWM Fan Duty vs CLT", mp.clt, mp.fan1duty, "°F", "%");
+    fanCurve.addPoint(160.0, 0.0);
+    fanCurve.addPoint(175.0, 0.0);
+    fanCurve.addPoint(182.0, 15.0);
+    fanCurve.addPoint(205.0, 100.0);
+    fanCurve.addPoint(220.0, 100.0);
+    fanCurve.setInterpMode(core::CurveInterpMode::PiecewiseLinear);
+    curves_.push_back(fanCurve);
+
+    // Preset 2: Warmup Enrichment (WUE)
+    core::Curve1D wueCurve("Warmup Enrichment (WUE)", mp.clt, "WUE", "°F", "%");
+    wueCurve.addPoint(-20.0, 180.0);
+    wueCurve.addPoint(20.0, 155.0);
+    wueCurve.addPoint(60.0, 135.0);
+    wueCurve.addPoint(100.0, 120.0);
+    wueCurve.addPoint(130.0, 110.0);
+    wueCurve.addPoint(160.0, 100.0);
+    wueCurve.setInterpMode(core::CurveInterpMode::SmoothSpline);
+    curves_.push_back(wueCurve);
+
+    // Preset 3: IAT Timing Retard
+    core::Curve1D iatCurve("IAT Timing Retard", mp.mat, "Advance", "°F", "deg");
+    iatCurve.addPoint(50.0, 0.0);
+    iatCurve.addPoint(100.0, 0.0);
+    iatCurve.addPoint(120.0, -1.0);
+    iatCurve.addPoint(140.0, -3.0);
+    iatCurve.addPoint(160.0, -6.0);
+    iatCurve.setInterpMode(core::CurveInterpMode::PiecewiseLinear);
+    curves_.push_back(iatCurve);
+  }
+
+  void Curve2DPanel::render(PlotCursor &cursor)
+  {
+    std::string windowLabel = std::string(ICON_FA_CHART_LINE) + " 2D Calibration Curves###" + title();
+    if (!ImGui::Begin(windowLabel.c_str(), &open_)) {
+      ImGui::End();
+      return;
+    }
+
+    // Left Sidebar: Curve list & point table
+    ImGui::BeginChild("CurveSidebar", ImVec2(280.0f, 0.0f), true);
+    renderSidebar();
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+
+    // Right Area: ImPlot Curve + Live Scatter
+    ImGui::BeginChild("CurvePlotArea", ImVec2(0.0f, 0.0f), false);
+    renderCurvePlot(cursor);
+    ImGui::EndChild();
+
+    ImGui::End();
+  }
+
+  void Curve2DPanel::setSession(const core::LogSession *session)
+  {
+    session_ = session;
+    if (session && curves_.empty()) {
+      loadBuiltInPresets();
+    }
+  }
+
+  void Curve2DPanel::renderSidebar()
+  {
+    ImGui::TextDisabled("CURVE SELECTION");
+
+    // Selection Combo + Action Buttons (New / Duplicate / Delete)
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 84.0f);
+    const char *previewName = (selectedCurveIdx_ >= 0 && selectedCurveIdx_ < static_cast<int>(curves_.size()))
+      ? curves_[selectedCurveIdx_].name().c_str()
+      : "No Curves Available";
+
+    if (ImGui::BeginCombo("##CurveSelect", previewName)) {
+      for (int i = 0; i < static_cast<int>(curves_.size()); ++i) {
+        if (ImGui::Selectable(curves_[i].name().c_str(), selectedCurveIdx_ == i)) {
+          selectedCurveIdx_ = i;
+        }
+      }
+      ImGui::EndCombo();
+    }
+
+    // Action Buttons
+    ImGui::SameLine();
+    if (ImGui::Button(ICON_FA_PLUS "##NewCurve")) {
+      core::Curve1D newCurve("New Custom Curve", "RPM", "Target", "RPM", "%");
+      newCurve.addPoint(0.0, 0.0);
+      newCurve.addPoint(5000.0, 50.0);
+      newCurve.addPoint(8000.0, 100.0);
+      newCurve.setInterpMode(core::CurveInterpMode::PiecewiseLinear);
+      curves_.push_back(newCurve);
+      selectedCurveIdx_ = static_cast<int>(curves_.size()) - 1;
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Create a new blank curve");
+
+    ImGui::SameLine();
+    if (ImGui::Button(ICON_FA_CLONE "##DupCurve") && !curves_.empty()) {
+      core::Curve1D dup = curves_[selectedCurveIdx_];
+      dup.setName(dup.name() + " (Copy)");
+      curves_.push_back(dup);
+      selectedCurveIdx_ = static_cast<int>(curves_.size()) - 1;
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Duplicate selected curve");
+
+    ImGui::SameLine();
+    if (ImGui::Button(ICON_FA_TRASH "##DelCurve") && curves_.size() > 1) {
+      curves_.erase(curves_.begin() + selectedCurveIdx_);
+      if (selectedCurveIdx_ >= static_cast<int>(curves_.size())) {
+        selectedCurveIdx_ = static_cast<int>(curves_.size()) - 1;
+      }
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Delete selected curve");
+
+    // Curve Settings and Node Editor
+    if (selectedCurveIdx_ >= 0 && selectedCurveIdx_ < static_cast<int>(curves_.size())) {
+      auto &c = curves_[selectedCurveIdx_];
+
+      ImGui::Spacing();
+      ImGui::TextDisabled("CHANNELS & AXES");
+      char nameBuf[64];
+      std::snprintf(nameBuf, sizeof(nameBuf), "%s", c.name().c_str());
+      if (ImGui::InputText("Curve Name", nameBuf, sizeof(nameBuf))) {
+        c.setName(nameBuf);
+      }
+      auto renderChannelCombo = [&](const char *label, const char *comboId, const std::string &currentVal, auto &&onSelect) {
+        const char *preview = currentVal.empty() ? "(None)" : currentVal.c_str();
+        if (ImGui::BeginCombo(comboId, preview)) {
+          if (session_) {
+            for (const auto &ch : session_->channels()) {
+              bool isSelected = (currentVal == ch.name());
+              char itemLabel[64];
+              if (!ch.unit().empty()) {
+                std::snprintf(itemLabel, sizeof(itemLabel), "%s [%s]", ch.name().c_str(), ch.unit().c_str());
+              } else {
+                std::snprintf(itemLabel, sizeof(itemLabel), "%s", ch.name().c_str());
+              }
+              if (ImGui::Selectable(itemLabel, isSelected)) {
+                onSelect(ch.name(), ch.unit());
+              }
+              if (isSelected) ImGui::SetItemDefaultFocus();
+            }
+          } else {
+            ImGui::TextDisabled("No Log Loaded");
+          }
+          ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        ImGui::Text("%s", label);
+        };
+      renderChannelCombo("X (Input)", "##XChannelSelect", c.xChannelName(), [&](const std::string &name, const std::string &unit) {
+        c.setXChannelName(name);
+        if (!unit.empty()) c.setXUnit(unit);
+        });
+      renderChannelCombo("Y (Output)", "##YChannelSelect", c.yChannelName(), [&](const std::string &name, const std::string &unit) {
+        c.setYChannelName(name);
+        if (!unit.empty()) c.setYUnit(unit);
+        });
+      int mode = static_cast<int>(c.interpMode());
+      const char *modes[] = { "Piecewise Linear", "Smooth Spline" };
+      if (ImGui::Combo("Interpolation", &mode, modes, 2)) {
+        c.setInterpMode(static_cast<core::CurveInterpMode>(mode));
+      }
+
+      ImGui::Separator();
+      ImGui::Checkbox("Overlay Log Scatter", &showScatter_);
+      ImGui::Checkbox("Track Log Cursor", &followPlotCursor_);
+
+      ImGui::Separator();
+      renderPointEditor();
+    }
+  }
+
+  void Curve2DPanel::renderPointEditor()
+  {
+    auto &c = curves_[selectedCurveIdx_];
+    ImGui::TextDisabled("BREAKPOINTS (%zu)", c.points().size());
+
+    if (ui::UI::Button(ICON_FA_PLUS " Add Node")) {
+      double nextX = c.points().empty() ? 0.0 : c.points().back().x + 10.0;
+      double nextY = c.points().empty() ? 0.0 : c.points().back().y;
+      c.addPoint(nextX, nextY);
+    }
+
+    ImGui::BeginChild("PointsList", ImVec2(0, 180.0f), true);
+    if (ImGui::BeginTable("PointTable", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+      ImGui::TableSetupColumn("X", ImGuiTableColumnFlags_WidthStretch);
+      ImGui::TableSetupColumn("Y", ImGuiTableColumnFlags_WidthStretch);
+      ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 30.0f);
+      ImGui::TableHeadersRow();
+
+      for (size_t i = 0; i < c.points().size(); ++i) {
+        ImGui::TableNextRow();
+        ImGui::PushID(static_cast<int>(i));
+
+        double px = c.points()[i].x;
+        double py = c.points()[i].y;
+
+        ImGui::TableSetColumnIndex(0);
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::InputDouble("##px", &px, 0, 0, "%.1f")) {
+          c.updatePoint(i, px, py);
+        }
+
+        ImGui::TableSetColumnIndex(1);
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::InputDouble("##py", &py, 0, 0, "%.1f")) {
+          c.updatePoint(i, px, py);
+        }
+
+        ImGui::TableSetColumnIndex(2);
+        if (ImGui::Button(ICON_FA_TRASH)) {
+          c.removePoint(i);
+          ImGui::PopID();
+          break;
+        }
+
+        ImGui::PopID();
+      }
+      ImGui::EndTable();
+    }
+    ImGui::EndChild();
+  }
+
+  void Curve2DPanel::renderCurvePlot(PlotCursor &cursor)
+  {
+    if (selectedCurveIdx_ < 0 || selectedCurveIdx_ >= static_cast<int>(curves_.size())) return;
+
+    auto &c = curves_[selectedCurveIdx_];
+    std::string plotTitle = c.name() + " (" + c.yChannelName() + " vs " + c.xChannelName() + ")";
+
+    if (ImPlot::BeginPlot(plotTitle.c_str(), ImVec2(-1, -1), ImPlotFlags_Crosshairs)) {
+      ImPlot::SetupAxes(c.xChannelName().c_str(), c.yChannelName().c_str(), ImPlotAxisFlags_None, ImPlotAxisFlags_None);
+
+      // 1. Overlay Log Scatter points (if session loaded)
+      if (showScatter_ && session_) {
+        const auto *xCh = session_->findChannel(c.xChannelName());
+        const auto *yCh = session_->findChannel(c.yChannelName());
+
+        if (xCh && yCh && !xCh->values().empty()) {
+          const auto &xVals = xCh->values();
+          const auto &yVals = yCh->values();
+          size_t total = std::min(xVals.size(), yVals.size());
+          size_t step = std::max<size_t>(1, total / maxScatterPoints_);
+
+          std::vector<double> sx, sy;
+          sx.reserve(total / step);
+          sy.reserve(total / step);
+
+          for (size_t i = 0; i < total; i += step) {
+            if (!session_->isRowInCropRange(i)) continue;
+            if (std::isnan(xVals[i]) || std::isnan(yVals[i])) continue;
+            sx.push_back(xVals[i]);
+            sy.push_back(yVals[i]);
+          }
+
+          if (!sx.empty()) {
+            auto spec = specFromParams(ImPlotMarker_Circle, 2.5f, ImVec4(0.3f, 0.7f, 1.0f, 0.35f), 0.0f);
+            ImPlot::PlotScatter("Log Telemetry", sx.data(), sy.data(), static_cast<int>(sx.size()), spec);
+          }
+        }
+      }
+
+      // 2. High-resolution smooth curve rendering
+      if (c.points().size() >= 2) {
+        constexpr int kCurveDensity = 250;
+        std::vector<double> curveX(kCurveDensity);
+        std::vector<double> curveY(kCurveDensity);
+
+        double minX = c.points().front().x;
+        double maxX = c.points().back().x;
+        double dx = (maxX - minX) / (kCurveDensity - 1);
+
+        for (int i = 0; i < kCurveDensity; ++i) {
+          double curX = minX + i * dx;
+          curveX[i] = curX;
+          curveY[i] = c.evaluate(curX);
+        }
+
+        ImPlotSpec spec;
+        spec.MarkerLineColor = ImVec4(1.0f, 0.8f, 0.2f, 1.0f);
+        spec.LineWeight = 2.5f;
+        ImPlot::PlotLine("Calibration Function", curveX.data(), curveY.data(), kCurveDensity, spec);
+      }
+
+      // 3. Interactive Draggable Breakpoint Nodes
+      for (size_t i = 0; i < c.points().size(); ++i) {
+        double px = c.points()[i].x;
+        double py = c.points()[i].y;
+
+        if (ImPlot::DragPoint(static_cast<int>(1000 + i), &px, &py, ImVec4(1.0f, 0.4f, 0.2f, 1.0f), 5.0f)) {
+          c.updatePoint(i, px, py);
+        }
+      }
+
+      // 4. Live Cursor Ball Tracking
+      if (followPlotCursor_ && cursor.active && session_) {
+        const auto *xCh = session_->findChannel(c.xChannelName());
+        const auto *timeSec = session_->timeSec();
+
+        if (xCh && timeSec && !timeSec->empty()) {
+          // Find row closest to cursor.timeSec
+          auto it = std::lower_bound(timeSec->begin(), timeSec->end(), cursor.timeSec);
+          size_t idx = std::distance(timeSec->begin(), it);
+          if (idx < xCh->values().size()) {
+            double liveX = xCh->values()[idx];
+            if (!std::isnan(liveX)) {
+              double liveY = c.evaluate(liveX);
+
+              auto spec = specFromParams(ImPlotMarker_Diamond, 8.0f, ImVec4(0.2f, 1.0f, 0.4f, 1.0f), 2.0f, ImVec4(0, 0, 0, 1));
+              ImPlot::PlotScatter("Cursor Point", &liveX, &liveY, 1, spec);
+
+              char tip[64];
+              std::snprintf(tip, sizeof(tip), "%.1f %s -> %.1f %s", liveX, c.xUnit().c_str(), liveY, c.yUnit().c_str());
+              ImPlot::PlotText(tip, liveX, liveY, ImVec2(0, -15));
+            }
+          }
+        }
+      }
+
+      ImPlot::EndPlot();
+    }
+  }
+
+  nlohmann::json Curve2DPanel::saveState() const
+  {
+    nlohmann::json j = PlotPanel::saveState();
+    j["selectedCurveIdx"] = selectedCurveIdx_;
+    j["showScatter"] = showScatter_;
+    j["followPlotCursor"] = followPlotCursor_;
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto &c : curves_) {
+      arr.push_back(c.toJson());
+    }
+    j["curves"] = arr;
+    return j;
+  }
+
+  void Curve2DPanel::loadState(const nlohmann::json &state)
+  {
+    PlotPanel::loadState(state);
+    if (state.contains("selectedCurveIdx")) selectedCurveIdx_ = state["selectedCurveIdx"].get<int>();
+    if (state.contains("showScatter")) showScatter_ = state["showScatter"].get<bool>();
+    if (state.contains("followPlotCursor")) followPlotCursor_ = state["followPlotCursor"].get<bool>();
+    if (state.contains("curves") && state["curves"].is_array() && !state["curves"].empty()) {
+      curves_.clear();
+      for (const auto &cj : state["curves"]) {
+        curves_.push_back(core::Curve1D::fromJson(cj));
+      }
+    }
+  }
+
+} // namespace ui
+
+
+## File: src/ui/curve2dpanel.h
+
+#pragma once
+
+#include <vector>
+#include <string>
+#include "ui/plotpanel.h"
+#include "core/curve1d.h"
+#include "3rdparty/nlohmann/json_fwd.hpp"
+
+namespace core {
+  class LogSession;
+}
+
+namespace ui {
+
+  class Curve2DPanel : public PlotPanel {
+  public:
+    explicit Curve2DPanel(const std::string &title);
+
+    void render(PlotCursor &cursor) override;
+
+    void setSession(const core::LogSession *session) override;
+    std::string panelTypeId() const override { return "Curve2DPanel"; }
+
+    nlohmann::json saveState() const override;
+    void loadState(const nlohmann::json &state) override;
+
+  private:
+    void renderSidebar();
+    void renderCurvePlot(PlotCursor &cursor);
+    void renderPointEditor();
+    void loadBuiltInPresets();
+
+  private:
+    const core::LogSession *session_ = nullptr;
+    bool open_ = true;
+    std::vector<core::Curve1D> curves_;
+    int selectedCurveIdx_ = 0;
+
+    bool showScatter_ = true;
+    int maxScatterPoints_ = 1200;
+    bool followPlotCursor_ = true;
   };
 
 } // namespace ui
@@ -6750,6 +7571,11 @@ namespace ui {
     , yDecimalPlaces_(yDecimalPlaces)
   {}
 
+  void TableEditorPanel::triggerUpdated()
+  {
+    tableUniqueId_ = utils::str::generateUniqueId();
+  }
+
   std::string TableEditorPanel::formatValue(double value, int decimalPlaces)
   {
     if (decimalPlaces < 0) decimalPlaces = 0;
@@ -7350,7 +8176,7 @@ namespace ui {
           table_.setValue(r, c, newValues[r][c]);
         }
       }
-      tableUniqueId_ = utils::str::generateUniqueId();
+      triggerUpdated();
     } else {
       int startR = static_cast<int>(table_.rowCount()) - 1;
       int startC = 0;
@@ -7418,7 +8244,7 @@ namespace ui {
         table_.setValue(r, c, zVals[r * cols + c]);
       }
     }
-    tableUniqueId_ = utils::str::generateUniqueId();
+    triggerUpdated();
     notifyDataChanged();
     return true;
   }
@@ -7499,7 +8325,7 @@ namespace ui {
     if (ui::UI::Button("OK")) {
       ImGui::CloseCurrentPopup();
       accepted = true;
-      tableUniqueId_ = utils::str::generateUniqueId();
+      triggerUpdated();
       notifyDataChanged();
     }
     ImGui::SameLine();
@@ -8191,6 +9017,8 @@ namespace ui {
   public:
     TableEditorPanel(std::string title, std::string panelTypeIdValue, std::string displayName,
       core::Table2D initialTable, int xDecimalPlaces = 0, int yDecimalPlaces = 2);
+
+    void triggerUpdated();
 
     void render(PlotCursor &cursor) override;
     bool wantsClose() const override { return !open_; }
@@ -8998,9 +9826,17 @@ namespace ui {
       return;
     }
 
+    discontinuedIndChache_.clear();
+    if (session_) {
+      for (const auto &d : session_->discontinuities()) {
+        discontinuedIndChache_.push_back(d.rowIndex);
+      }
+      std::sort(discontinuedIndChache_.begin(), discontinuedIndChache_.end());
+    }
+
     const int targetPoints = (std::max)(kMinDecimationTargetPoints, static_cast<int>(widthPx) * kPointsPerPixel);
 
-    engine::DecimatedSeries series = engine::Decimator::decimate(*cachedTimeSec_, rawVals, xMin, xMax, targetPoints);
+    engine::DecimatedSeries series = engine::Decimator::decimate(*cachedTimeSec_, rawVals, xMin, xMax, targetPoints, discontinuedIndChache_);
 
     // Normalize AFTER decimation -- touches only the small decimated
     // buffer per frame instead of the full multi-hour channel.
@@ -9301,7 +10137,7 @@ namespace ui {
       return tStart + frac * totalSpan;
       };
 
-    // 1. Shaded Out-of-Crop Regions
+    // Shaded Out-of-Crop Regions
     if (session_->cropRange().active) {
       float cMinX = timeToScreenX(session_->cropRange().startSec);
       float cMaxX = timeToScreenX(session_->cropRange().endSec);
@@ -9313,7 +10149,7 @@ namespace ui {
       }
     }
 
-    // 2. Regime Shaded Bands
+    // Regime Shaded Bands
     for (const auto &reg : session_->regimeSummaries()) {
       if (!reg.def.showShading) continue;
       ImU32 regCol = ImGui::ColorConvertFloat4ToU32(ImVec4(reg.def.color.x, reg.def.color.y, reg.def.color.z, 0.35f));
@@ -9324,7 +10160,7 @@ namespace ui {
       }
     }
 
-    // 3. Background Reference Waveform
+    // Background Reference Waveform
     if (!minimapX_.empty() && minimapX_.size() == minimapYNorm_.size()) {
       for (size_t i = 0; i + 1 < minimapX_.size(); ++i) {
         if (std::isnan(minimapYNorm_[i]) || std::isnan(minimapYNorm_[i + 1])) continue;
@@ -9336,13 +10172,20 @@ namespace ui {
       }
     }
 
-    // 4. Stitch Points
-    for (double stitchMid : session_->stitchPoints()) {
-      float sX = timeToScreenX(stitchMid);
-      drawList->AddLine(ImVec2(sX, pMin.y), ImVec2(sX, pMax.y), IM_COL32(180, 110, 240, 180), 1.5f);
+    // Stitch Points
+    //for (double stitchMid : session_->stitchPoints()) {
+    //  float sX = timeToScreenX(stitchMid);
+    //  drawList->AddLine(ImVec2(sX, pMin.y), ImVec2(sX, pMax.y), IM_COL32(180, 110, 240, 180), 1.5f);
+    //}
+
+    for (const auto &d : session_->discontinuities()) {
+      float x = timeToScreenX(d.timeSec);
+      ImU32 col = (d.cause == core::DataDiscontinuity::Cause::StitchPoint)
+        ? IM_COL32(180, 110, 240, 200)
+        : IM_COL32(255, 90, 70, 200);
+      drawList->AddLine(ImVec2(x, pMin.y), ImVec2(x, pMax.y), col, 1.0f);
     }
 
-    // 5. Annotations / Bookmarks
     for (const auto &a : session_->annotations()) {
       float aX = timeToScreenX(a.timeSec);
       ImU32 aCol = ImGui::ColorConvertFloat4ToU32(a.color);
@@ -9350,7 +10193,7 @@ namespace ui {
       drawList->AddTriangleFilled(ImVec2(aX - 3.5f, pMin.y), ImVec2(aX + 3.5f, pMin.y), ImVec2(aX, pMin.y + 5.0f), aCol);
     }
 
-    // 6. Viewport Window (Visible Range)
+    // Viewport Window (Visible Range)
     float winX1 = timeToScreenX(xAxisMin_);
     float winX2 = timeToScreenX(xAxisMax_);
     if (winX2 < winX1) std::swap(winX1, winX2);
@@ -9487,7 +10330,7 @@ namespace ui {
     double tMax = cachedTimeSec_->back();
     constexpr int kMinimapPoints = 600;
 
-    engine::DecimatedSeries decimated = engine::Decimator::decimate(*cachedTimeSec_, refCh->values(), tMin, tMax, kMinimapPoints);
+    engine::DecimatedSeries decimated = engine::Decimator::decimate(*cachedTimeSec_, refCh->values(), tMin, tMax, kMinimapPoints, discontinuedIndChache_);
 
     if (decimated.x.empty()) return;
 
@@ -9631,25 +10474,40 @@ namespace ui {
     ImGui::SameLine();
     renderCropControls(cursor);
 
-    if (session_ && !session_->stitchPoints().empty()) {
+    if (session_ && !session_->discontinuities().empty()) {
+      const auto &disconts = session_->discontinuities();
       ImGui::SameLine();
       ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
       ImGui::SameLine();
-      ImGui::SetNextItemWidth(160.0f);
-      if (ImGui::BeginCombo("##StitchSelector", ICON_FA_CODE_MERGE " Stitch Points")) {
-        const auto &points = session_->stitchPoints();
-        for (size_t i = 0; i < points.size(); ++i) {
-          double stitchTime = points[i];
-          std::string label = "Stitch #" + std::to_string(i + 1) + " (" + std::to_string(static_cast<int>(stitchTime)) + " s)";
-          if (ImGui::Selectable(label.c_str())) {
-            std::string tag = "Stitch #" + std::to_string(i + 1);
-            jumpCursorToIndex(getCursorIndex(stitchTime), cursor, tag);
-          }
-          if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Jump cursor and center view on stitch at %.3f s", stitchTime);
+      ImGui::SetNextItemWidth(240.0f);
+      std::string badgeText = std::string(ICON_FA_TRIANGLE_EXCLAMATION) + " " + std::to_string(disconts.size()) + " Gaps/Seams";
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.2f, 1.0f));
+      if (ImGui::BeginCombo("##GapsCombo", badgeText.c_str()/*, ImGuiComboFlags_NoArrowButton | ImGuiComboFlags_HeightLarge*/)) {
+        ImGui::PopStyleColor();
+        ImGui::TextDisabled("Telemetry Discontinuities");
+        ImGui::Separator();
+        for (size_t i = 0; i < disconts.size(); ++i) {
+          const auto &d = disconts[i];
+          const char *icon = (d.cause == core::DataDiscontinuity::Cause::StitchPoint)
+            ? ICON_FA_CODE_MERGE
+            : ICON_FA_TRIANGLE_EXCLAMATION;
+          char itemLabel[128];
+          std::snprintf(itemLabel, sizeof(itemLabel), "%s @ %.3fs : %s", icon, d.timeSec, d.label.c_str());
+          if (ImGui::Selectable(itemLabel)) {
+            double span = xAxisMax_ - xAxisMin_;
+            xAxisMin_ = d.timeSec - span * 0.5;
+            xAxisMax_ = d.timeSec + span * 0.5;
+            cursor.timeSec = d.timeSec;
+            cursor.active = true;
+            bPendingAfterLoad_ = true;
           }
         }
         ImGui::EndCombo();
+      } else {
+        ImGui::PopStyleColor();
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Click to inspect and jump directly to dropped frames or stitched file boundaries.");
       }
     }
 
@@ -9939,26 +10797,6 @@ namespace ui {
             artifactCursor_.active = false;
           }
 
-          if (session_) {
-            // Render shaded vertical bands for active regimes
-            for (const auto &reg : session_->regimeSummaries()) {
-              if (!reg.def.showShading) continue;
-
-              for (const auto &interval : reg.intervals) {
-                double xMin = interval.startSec;
-                double xMax = interval.endSec;
-
-                // Draw vertical shaded region spanning full Y plot height
-                ImPlot::PlotInfLines("##Shade", &xMin, 1); // Or draw using ImPlot::PlotRect / DrawList
-                ImVec2 pMin = ImPlot::PlotToPixels(ImPlotPoint(xMin, yAxisMax_));
-                ImVec2 pMax = ImPlot::PlotToPixels(ImPlotPoint(xMax, yAxisMin_));
-
-                ImDrawList *drawList = ImPlot::GetPlotDrawList();
-                drawList->AddRectFilled(pMin, pMax, ImGui::ColorConvertFloat4ToU32(reg.def.color));
-              }
-            }
-          }
-
           // Query current subplot geometry for overlays
           ImVec2 currentPlotPos = ImPlot::GetPlotPos();
           ImVec2 currentPlotSize = ImPlot::GetPlotSize();
@@ -10068,26 +10906,44 @@ namespace ui {
           renderStatsOverlay(plotIdx, subplotChannels, currentPlotPos, currentPlotSize);
 
           if (session_) {
-            const auto &stitchPoints = session_->stitchPoints();
             ImDrawList *drawList = ImPlot::GetPlotDrawList();
-            auto localLimits = ImPlot::GetPlotLimits(); // fresh, scoped to THIS subplot's current Y zoom/pan
+            auto localLimits = ImPlot::GetPlotLimits();
+            for (const auto &reg : session_->regimeSummaries()) {
+              if (!reg.def.showShading) continue;
+              for (const auto &interval : reg.intervals) {
+                double xMin = interval.startSec;
+                double xMax = interval.endSec;
+                ImPlot::PlotInfLines("##Shade", &xMin, 1); // Or draw using ImPlot::PlotRect / DrawList
+                ImVec2 pMin = ImPlot::PlotToPixels(ImPlotPoint(xMin, localLimits.Y.Max));
+                ImVec2 pMax = ImPlot::PlotToPixels(ImPlotPoint(xMax, localLimits.Y.Min));
+                drawList->AddRectFilled(pMin, pMax, ImGui::ColorConvertFloat4ToU32(reg.def.color));
+              }
+            }
+          }
 
-            for (size_t i = 0; i < stitchPoints.size(); ++i) {
-              double stitchMid = stitchPoints[i];
-              double xMin = stitchMid - 0.5; // 1.0s gap width
-              double xMax = stitchMid + 0.5;
-
-              // Shaded gap band across full subplot height
+          if (session_) {
+            const auto &disc = session_->discontinuities();
+            ImDrawList *drawList = ImPlot::GetPlotDrawList();
+            auto localLimits = ImPlot::GetPlotLimits();
+            for (size_t i = 0; i < disc.size(); ++i) {
+              const auto &d = disc[i];
+              double halfSpan = (std::max)(0.1, d.durationSec * 0.5);
+              double xMin = d.timeSec - halfSpan;
+              double xMax = d.timeSec + halfSpan;
+              if (xMax < localLimits.X.Min || xMin > localLimits.X.Max) continue;
               ImVec2 pMin = ImPlot::PlotToPixels(ImPlotPoint(xMin, localLimits.Y.Max));
               ImVec2 pMax = ImPlot::PlotToPixels(ImPlotPoint(xMax, localLimits.Y.Min));
-              drawList->AddRectFilled(pMin, pMax, IM_COL32(160, 90, 220, 55));
-
-              // Bounding seam edges
-              ImPlot::DragLineX(static_cast<int>(100 + i * 2), &xMin, ImVec4(0.65f, 0.35f, 0.85f, 0.40f), 1.0f, ImPlotDragToolFlags_NoInputs);
-              ImPlot::DragLineX(static_cast<int>(100 + i * 2 + 1), &xMax, ImVec4(0.65f, 0.35f, 0.85f, 0.40f), 1.0f, ImPlotDragToolFlags_NoInputs);
-
-              // Axis header tag at midpoint
-              ImPlot::TagX(stitchMid, ImVec4(0.65f, 0.35f, 0.85f, 0.85f), "Stitch #%d", static_cast<int>(i + 1));
+              bool bStitch = (d.cause == core::DataDiscontinuity::Cause::StitchPoint);
+              ImU32 fillClr = bStitch ? IM_COL32(160, 90, 220, 45) : IM_COL32(255, 140, 0, 45);
+              ImVec4 lineClr = bStitch ? ImVec4(0.70f, 0.45f, 0.95f, 0.70f) : ImVec4(1.0f, 0.55f, 0.15f, 0.70f);
+              drawList->AddRectFilled(pMin, pMax, fillClr);
+              ImPlot::DragLineX(static_cast<int>(8000 + i * 2), &xMin, lineClr, 1.0f, ImPlotDragToolFlags_NoInputs);
+              ImPlot::DragLineX(static_cast<int>(8000 + i * 2 + 1), &xMax, lineClr, 1.0f, ImPlotDragToolFlags_NoInputs);
+              double yTop = localLimits.Y.Max - (localLimits.Y.Max - localLimits.Y.Min) * 0.05;
+              double yBottom = localLimits.Y.Min + (localLimits.Y.Max - localLimits.Y.Min) * 0.05;
+              ImGui::PushStyleColor(ImGuiCol_Text, lineClr);
+              ImPlot::PlotText(d.label.c_str(), d.timeSec, yBottom, ImVec2(0, -10)); // Offset upward by 10px
+              ImGui::PopStyleColor();
             }
           }
 
@@ -10286,7 +11142,7 @@ namespace ui {
 
   void TimeSeriesPanel::render(PlotCursor &cursor)
   {
-    std::string windowLabel = std::string{ ICON_FA_CHART_LINE } + " Time Series###" + title();
+    std::string windowLabel = std::string{ ICON_FA_CHART_GANTT} + " Time Series###" + title();
     ImGui::Begin(windowLabel.c_str(), &open_);
 
     renderHeaderControls(cursor);
@@ -10520,6 +11376,8 @@ namespace ui {
     double minimapDragInitialXMax_ = 0.0;
     float minimapDragStartMouseX_ = 0.0f;
 
+    std::vector<size_t> discontinuedIndChache_;
+
   private:
     void generatePlaceholderData();
   };
@@ -10650,6 +11508,7 @@ namespace ui {
 
 #include "ui/veanalysispanel.h"
 #include "ui/ui_helpers.h"
+#include "utils/utils.h"
 #include "3rdparty/nlohmann/json.hpp"
 #include "3rdparty/IconsFontAwesome7.h"
 
@@ -10773,6 +11632,7 @@ namespace ui {
     const size_t numSamples = session_->rowCount();
     engine::VeTransientFilter filter(*session_, config_);
 
+    const auto *timeSec = session_->timeSec();
     for (size_t i = 0; i < numSamples; ++i) {
       
       if (!session_->isRowInCropRange(i)) continue; // Respect active crop range
@@ -10780,10 +11640,11 @@ namespace ui {
       double rpm = rpmCh->values()[i];
       double load = loadCh->values()[i];
       double afr = afrCh->values()[i];
+      double t = (timeSec && i < timeSec->size()) ? (*timeSec)[i] : 0.0;
 
       if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
 
-      if (filter.shouldIgnoreSample(i, load)) continue;
+      if (filter.shouldIgnoreSample(i, rpm, load, t)) continue;
 
       size_t bestR = 0, bestC = 0;
       double minDist = std::numeric_limits<double>::max();
@@ -10828,6 +11689,7 @@ namespace ui {
         }
       }
     }
+    observedTableUniqueId_ = utils::str::generateUniqueId();
   }
 
   void VeAnalysisPanel::computeSuggestedVe()
@@ -10988,15 +11850,16 @@ namespace ui {
       const size_t numSamples = session_->rowCount();
       engine::VeTransientFilter filter(*session_, config_);
 
+      const auto *timeSec = session_->timeSec();
       for (size_t i = 0; i < numSamples; ++i) {
         if (!session_->isRowInCropRange(i)) continue;
 
         double rpm = rpmCh->values()[i];
         double load = loadCh->values()[i];
         double afr = afrCh->values()[i];
-
+        double t = (timeSec && i < timeSec->size()) ? (*timeSec)[i] : 0.0;
         if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
-        if (filter.shouldIgnoreSample(i, load)) continue;
+        if (filter.shouldIgnoreSample(i, rpm, load, t)) continue;
 
         size_t bestR = 0, bestC = 0;
         double minDist = std::numeric_limits<double>::max();
@@ -11038,16 +11901,36 @@ namespace ui {
 
     // --- Filter Configuration Collapsible Header ---
     if (ImGui::CollapsingHeader("Analysis & Transient Filters")) {
-      ImGui::PushItemWidth(120.0f);
-
       bool changed = false;
 
       if (ImGui::BeginTabBar("ObservedAfrSettingsTabBar")) {
 
-        if (ImGui::BeginTabItem("Filter Thresholds")) {
+        // --- Tab 1: Range & Environmental Limits ---
+        if (ImGui::BeginTabItem("Telemetry Filters")) {
           ImGui::Spacing();
           ImGui::PushItemWidth(120.0f);
 
+          // RPM Range
+          ImGui::Text("RPM Limits:");
+          ImGui::SameLine();
+          changed |= ImGui::InputDouble("Min RPM##min_rpm", &config_.minRpm, 100.0, 500.0, "%.0f");
+          ImGui::SameLine();
+          changed |= ImGui::InputDouble("Max RPM##max_rpm", &config_.maxRpm, 100.0, 500.0, "%.0f");
+
+          // MAP Range
+          ImGui::Text("MAP Limits:");
+          ImGui::SameLine();
+          changed |= ImGui::Checkbox("Filter Min MAP", &config_.enableOverrunFilter);
+          if (config_.enableOverrunFilter) {
+            ImGui::SameLine();
+            changed |= ImGui::InputDouble("Min MAP (kPa)##min_map", &config_.minMap, 1.0, 5.0, "%.1f");
+          }
+          ImGui::SameLine();
+          changed |= ImGui::InputDouble("Max MAP (kPa)##max_map", &config_.maxMap, 5.0, 10.0, "%.1f");
+
+          ImGui::Separator();
+
+          // Transients
           changed |= ImGui::Checkbox("Filter Acceleration Transients (TPSdot)", &config_.enableTpsDotFilter);
           if (config_.enableTpsDotFilter) {
             ImGui::SameLine();
@@ -11057,13 +11940,7 @@ namespace ui {
           changed |= ImGui::Checkbox("Filter Cold Warmup (CLT)", &config_.enableCltFilter);
           if (config_.enableCltFilter) {
             ImGui::SameLine();
-            changed |= ImGui::InputDouble("Min Coolant Temp##min_clt", &config_.minCoolantTemp, 5.0, 10.0, "%.0f");
-          }
-
-          changed |= ImGui::Checkbox("Filter Overrun Decel", &config_.enableOverrunFilter);
-          if (config_.enableOverrunFilter) {
-            ImGui::SameLine();
-            changed |= ImGui::InputDouble("Min Load Threshold##min_load", &config_.minLoadThreshold, 1.0, 5.0, "%.1f");
+            changed |= ImGui::InputDouble("Min CLT##min_clt", &config_.minCoolantTemp, 5.0, 10.0, "%.0f");
           }
 
           int minSamples = static_cast<int>(config_.minSamplesPerBin);
@@ -11077,8 +11954,72 @@ namespace ui {
           ImGui::EndTabItem();
         }
 
+        // --- Tab 2: Excluded Drive Regimes (Scrollable & Searchable) ---
+        if (ImGui::BeginTabItem("Regime Exclusions")) {
+          ImGui::Spacing();
+
+          if (session_ && !session_->regimeSummaries().empty()) {
+            const auto &summaries = session_->regimeSummaries();
+
+            // Search & Bulk Select Bar
+            ImGui::SetNextItemWidth(180.0f);
+            ImGui::InputTextWithHint("##RegimeSearch", "Filter regimes...", regimeFilterText_.data(), regimeFilterText_.capacity() + 1,
+              ImGuiInputTextFlags_CallbackResize,
+              [](ImGuiInputTextCallbackData *data) -> int {
+                auto *str = static_cast<std::string *>(data->UserData);
+                str->resize(static_cast<size_t>(data->BufTextLen));
+                data->Buf = str->data();
+                return 0;
+              }, &regimeFilterText_);
+
+            ImGui::SameLine();
+            if (ui::UI::Button("Exclude All")) {
+              for (const auto &reg : summaries) config_.excludedRegimeIds.insert(reg.def.id);
+              changed = true;
+            }
+
+            ImGui::SameLine();
+            if (ui::UI::Button("Clear Exclusions")) {
+              config_.excludedRegimeIds.clear();
+              changed = true;
+            }
+
+            ImGui::Spacing();
+
+            // Scrollable Regime Checkbox Area
+            ImGui::BeginChild("RegimeExclusionScroll", ImVec2(0, 130.0f), true);
+
+            std::string filterLower = utils::str::toLower(regimeFilterText_);
+
+            for (const auto &reg : summaries) {
+              if (!filterLower.empty() && utils::str::toLower(reg.def.displayName).find(filterLower) == std::string::npos) {
+                continue;
+              }
+
+              bool isExcluded = config_.excludedRegimeIds.count(reg.def.id) > 0;
+              std::string label = reg.def.displayName + " (" + std::to_string(reg.intervals.size()) + " events, " +
+                std::to_string(static_cast<int>(reg.percentageOfLog)) + "% of log)";
+
+              ImGui::PushID(reg.def.id.c_str());
+              if (ImGui::Checkbox(label.c_str(), &isExcluded)) {
+                if (isExcluded) config_.excludedRegimeIds.insert(reg.def.id);
+                else config_.excludedRegimeIds.erase(reg.def.id);
+                changed = true;
+              }
+              ImGui::PopID();
+            }
+
+            ImGui::EndChild();
+          } else {
+            ImGui::TextDisabled("No active drive regimes detected in this session.");
+          }
+
+          ImGui::EndTabItem();
+        }
+
         ImGui::EndTabBar();
       }
+
       if (changed) {
         computeObservedAfr();
         if (hasTargetAfr()) computeAfrDelta();
@@ -11119,7 +12060,8 @@ namespace ui {
     int nextHoveredRow = -1;
     int nextHoveredCol = -1;
 
-    if (ImGui::BeginTable("ObservedAfrGridCropped", static_cast<int>(visibleCols + 1), flags, ImVec2(0.0f, 400.0f))) {
+    std::string tableId = "ObservedAfrGridCropped###" + observedTableUniqueId_;
+    if (ImGui::BeginTable(tableId.c_str(), static_cast<int>(visibleCols + 1), flags, ImVec2(0.0f, 400.0f))) {
       ImGui::TableSetupScrollFreeze(1, 1);
       ImGui::TableSetupColumn("MAP \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
 
@@ -11216,13 +12158,14 @@ namespace ui {
     const size_t numSamples = session_->rowCount();
     engine::VeTransientFilter filter(*session_, config_);
 
+    const auto *timeSec = session_->timeSec();
     for (size_t i = 0; i < numSamples; ++i) {
       double rpm = rpmCh->values()[i];
       double load = loadCh->values()[i];
       double afr = afrCh->values()[i];
-
+      double t = (timeSec && i < timeSec->size()) ? (*timeSec)[i] : 0.0;
       if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
-      if (filter.shouldIgnoreSample(i, load)) continue;
+      if (filter.shouldIgnoreSample(i, rpm, load, t)) continue;
 
       size_t bestR = 0, bestC = 0;
       double minDist = std::numeric_limits<double>::max();
@@ -11629,12 +12572,18 @@ namespace ui {
       {"enableCltFilter", config_.enableCltFilter},
       {"minCoolantTemp", config_.minCoolantTemp},
       {"enableOverrunFilter", config_.enableOverrunFilter},
-      {"minLoadThreshold", config_.minLoadThreshold}
+      {"minRpm", config_.minRpm},
+      {"maxRpm", config_.maxRpm},
+      {"minMap", config_.minMap},
+      {"maxMap", config_.maxMap},
     };
+
+    nlohmann::json excludedArr = nlohmann::json::array();
+    for (const auto &id : config_.excludedRegimeIds) excludedArr.push_back(id);
+    j["config"]["excludedRegimeIds"] = excludedArr;
 
     j["targetAfr"] = targetAfrPanel_.saveState();
     j["baselineVe"] = baselineVePanel_.saveState();
-
     return j;
   }
 
@@ -11656,7 +12605,17 @@ namespace ui {
       if (cfg.contains("enableCltFilter")) config_.enableCltFilter = cfg["enableCltFilter"].get<bool>();
       if (cfg.contains("minCoolantTemp")) config_.minCoolantTemp = cfg["minCoolantTemp"].get<double>();
       if (cfg.contains("enableOverrunFilter")) config_.enableOverrunFilter = cfg["enableOverrunFilter"].get<bool>();
-      if (cfg.contains("minLoadThreshold")) config_.minLoadThreshold = cfg["minLoadThreshold"].get<double>();
+      if (cfg.contains("minRpm")) config_.minRpm = cfg["minRpm"].get<double>();
+      if (cfg.contains("maxRpm")) config_.maxRpm = cfg["maxRpm"].get<double>();
+      if (cfg.contains("minMap")) config_.minMap = cfg["minMap"].get<double>();
+      else if (cfg.contains("minLoadThreshold")) config_.minMap = cfg["minLoadThreshold"].get<double>(); // Backwards compat
+      if (cfg.contains("maxMap")) config_.maxMap = cfg["maxMap"].get<double>();
+      if (cfg.contains("excludedRegimeIds") && cfg["excludedRegimeIds"].is_array()) {
+        config_.excludedRegimeIds.clear();
+        for (const auto &item : cfg["excludedRegimeIds"]) {
+          if (item.is_string()) config_.excludedRegimeIds.insert(item.get<std::string>());
+        }
+      }
     }
 
     if (state.contains("targetAfr")) {
@@ -11665,12 +12624,6 @@ namespace ui {
     if (state.contains("baselineVe")) {
       baselineVePanel_.loadState(state["baselineVe"]);
     }
-
-    //if (session_ != nullptr) {
-    //  computeObservedAfr();
-    //  computeAfrDelta();
-    //  computeSuggestedVe();
-    //}
   }
 
 } // namespace ui
@@ -11729,6 +12682,7 @@ namespace ui {
     engine::VeAnalysisConfig config_;
 
     // Core tables
+    std::string observedTableUniqueId_;
     core::Table2D observedAfrTable_;
     TableEditorPanel targetAfrPanel_;
     TableEditorPanel baselineVePanel_;
@@ -11755,6 +12709,8 @@ namespace ui {
 
     int hoveredRow_ = -1;
     int hoveredCol_ = -1;
+
+    std::string regimeFilterText_;
   };
 
 } // namespace ui

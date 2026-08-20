@@ -1359,7 +1359,6 @@ namespace ui {
               drawList->AddRectFilled(pMin, pMax, fillClr);
               ImPlot::DragLineX(static_cast<int>(8000 + i * 2), &xMin, lineClr, 1.0f, ImPlotDragToolFlags_NoInputs);
               ImPlot::DragLineX(static_cast<int>(8000 + i * 2 + 1), &xMax, lineClr, 1.0f, ImPlotDragToolFlags_NoInputs);
-              //ImPlot::TagX(d.timeSec, lineClr, "%s", d.label.c_str());
               double yTop = localLimits.Y.Max - (localLimits.Y.Max - localLimits.Y.Min) * 0.05;
               double yBottom = localLimits.Y.Min + (localLimits.Y.Max - localLimits.Y.Min) * 0.05;
               ImGui::PushStyleColor(ImGuiCol_Text, lineClr);
@@ -1563,7 +1562,7 @@ namespace ui {
 
   void TimeSeriesPanel::render(PlotCursor &cursor)
   {
-    std::string windowLabel = std::string{ ICON_FA_CHART_LINE } + " Time Series###" + title();
+    std::string windowLabel = std::string{ ICON_FA_CHART_GANTT} + " Time Series###" + title();
     ImGui::Begin(windowLabel.c_str(), &open_);
 
     renderHeaderControls(cursor);

@@ -123,7 +123,7 @@ namespace engine {
     std::vector<core::RegimeDef> defaults;
     // 1. Freeway Cruise
     core::RegimeDef cruise;
-    cruise.id = "freeway_cruise";
+    cruise.id = core::RegimeDef::Ids::freeway_cruise;
     cruise.displayName = "Freeway Cruise";
     cruise.color = ImVec4(0.2f, 0.7f, 1.0f, 0.25f);
     cruise.isBuiltIn = true;
@@ -142,7 +142,7 @@ namespace engine {
 
     // 2. Overrun Fuel Cut (DFCO)
     core::RegimeDef dfco;
-    dfco.id = "overrun_fuel_cut";
+    dfco.id = core::RegimeDef::Ids::overrun_fuel_cut;
     dfco.displayName = "Overrun Fuel Cut (DFCO)";
     dfco.color = ImVec4(0.8f, 0.3f, 0.3f, 0.25f);
     dfco.isBuiltIn = true;

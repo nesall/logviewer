@@ -20,6 +20,9 @@ namespace core {
   const std::string slotMAT = "Manifold Air Temperature";
   const std::string slotDuty1 = "Duty Cycle1";
   const std::string slotDuty2 = "Duty Cycle2";
+  const std::string slotFanDuty1 = "Fan 1 Control Duty";
+  const std::string slotFanDuty2 = "Fan 2 Control Duty";
+  const std::string slotFuelWarmCor = "Fuel Warmup Correction";
 
   std::vector<std::string> ChannelMapping::allSlots()
   {
@@ -36,7 +39,10 @@ namespace core {
       slotTiming,
       slotMAT,
       slotDuty1,
-      slotDuty2 
+      slotDuty2,
+      slotFanDuty1,
+      slotFanDuty2,
+      slotFuelWarmCor
     };
   }
   
@@ -55,6 +61,9 @@ namespace core {
     if (slotName == slotMAT) return mat;
     if (slotName == slotDuty1) return duty1;
     if (slotName == slotDuty2) return duty2;
+    if (slotName == slotFanDuty1) return fan1duty;
+    if (slotName == slotFanDuty2) return fan2duty;
+    if (slotName == slotFuelWarmCor) return fualwarmcor;
     throw std::invalid_argument("Invalid slot name");
   }
 
@@ -142,6 +151,17 @@ namespace core {
     duty2 = findFirstMatch({
       "Duty Cycle2", // Megasqurt
       "Duty2"
+      });
+
+    fan1duty = findFirstMatch({
+      "Fan 1 control duty"
+      });
+    fan2duty = findFirstMatch({
+      "Fan 2 control duty"
+      });
+
+    fualwarmcor = findFirstMatch({
+      "Fuel: Warmup cor"
       });
   }
 

@@ -9,6 +9,8 @@
 namespace engine {
 
   struct VeAnalysisConfig {
+    VeAnalysisConfig();
+
     size_t minSamplesPerBin = 10;
 
     double adjustmentGain = 0.50;  // Alpha (0.5 = apply 50% of correction)
@@ -29,7 +31,7 @@ namespace engine {
 
     bool enableOverrunFilter = true; // Governs minMap check
 
-    std::set<std::string> excludedRegimeIds = { "overrun_fuel_cut" };
+    std::set<std::string> excludedRegimeIds;
   };
 
   class VeTransientFilter {

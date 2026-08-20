@@ -95,6 +95,8 @@ add_executable(logviewer
   src/core/table2d.cpp
   src/core/regime.h
   src/core/regime.cpp
+  src/core/curve1d.h
+  src/core/curve1d.cpp
   src/engine/decimator.h
   src/engine/decimator.cpp
   src/engine/ve_analyzer.h
@@ -128,6 +130,8 @@ add_executable(logviewer
   src/ui/tableoverlaypanel.cpp
   src/ui/driveregimepanel.h
   src/ui/driveregimepanel.cpp
+  src/ui/curve2dpanel.h
+  src/ui/curve2dpanel.cpp
   src/ui/ui_helpers.h
   src/core/formula_evaluator.h
   src/core/formula_evaluator.cpp

@@ -31,6 +31,7 @@
 #include "ui/veanalysispanel.h"
 #include "ui/tableoverlaypanel.h"
 #include "ui/driveregimepanel.h"
+#include "ui/curve2dpanel.h"
 #include "utils/utils.h"
 
 namespace ui {
@@ -318,6 +319,7 @@ namespace ui {
         else if (type == "VeAnalysisPanel") panel = std::make_unique<VeAnalysisPanel>(savedTitle);
         else if (type == "TableOverlayPanel") panel = std::make_unique<TableOverlayPanel>(savedTitle);
         else if (type == "DriveRegimePanel") panel = std::make_unique<DriveRegimePanel>();
+        else if (type == "Curve2DPanel") panel = std::make_unique<Curve2DPanel>(savedTitle);
 
 #ifdef _DEBUG2
         std::cout << "Restoring panel: " << type << " state: " << state.dump() << std::endl;
@@ -587,12 +589,14 @@ namespace ui {
       core::ChannelMapping mapping;
       mapping.autoDetect(res.session);
       res.session.setChannelMapping(mapping);
+      updateWindowTitle();
       return res;
       });
   }
 
   PlotPanel *App::addTimeSeriesPanel(const std::vector<std::string> &initialChannelNames, std::string explicitTitle)
   {
+    markDirty();
     std::string panelId = explicitTitle.empty()
       ? "Time Series " + std::to_string(getNextPanelIdForPrefix("Time Series"))
       : explicitTitle;
@@ -608,6 +612,7 @@ namespace ui {
     const std::string &initialYChannel,
     std::string explicitTitle)
   {
+    markDirty();
     std::string panelId = explicitTitle.empty()
       ? "Scatter " + std::to_string(getNextPanelIdForPrefix("Scatter"))
       : explicitTitle;
@@ -621,6 +626,7 @@ namespace ui {
 
   PlotPanel *App::addStatusPanel(std::string explicitTitle)
   {
+    markDirty();
     std::string panelId = explicitTitle.empty()
       ? "Status " + std::to_string(getNextPanelIdForPrefix("Status"))
       : explicitTitle;
@@ -633,6 +639,7 @@ namespace ui {
 
   PlotPanel *App::addVeAnalysisPanel(std::string explicitTitle)
   {
+    markDirty();
     std::string panelId = explicitTitle.empty()
       ? "VE Analyzer " + std::to_string(getNextPanelIdForPrefix("VE Analyzer"))
       : explicitTitle;
@@ -645,6 +652,7 @@ namespace ui {
 
   PlotPanel *App::addTableOverlayPanel(std::string explicitTitle)
   {
+    markDirty();
     std::string panelId = explicitTitle.empty()
       ? "Table Overlay " + std::to_string(getNextPanelIdForPrefix("Table Overlay"))
       : explicitTitle;
@@ -655,8 +663,22 @@ namespace ui {
     return panels_.back().get();
   }
 
+  PlotPanel *App::addCurve2dPanel(std::string explicitTitle)
+  {
+    markDirty();
+    std::string panelId = explicitTitle.empty()
+      ? "Curve2d " + std::to_string(getNextPanelIdForPrefix("Curve2d"))
+      : explicitTitle;
+    auto panel = std::make_unique<Curve2DPanel>(panelId);
+    panel->setOnDataChangedCallback([this] { markDirty(); });
+    panel->setSession(&session_);
+    panels_.push_back(std::move(panel));
+    return panels_.back().get();
+  }
+
   DriveRegimePanel *App::getOrAddDriveRegimePanel()
   {
+    markDirty();
     for (const auto &panel : panels_) {
       if (panel->panelTypeId() == "DriveRegimePanel") {
         return static_cast<DriveRegimePanel *>(panel.get());
@@ -697,38 +719,6 @@ namespace ui {
       updateWindowTitle();
     }
   }
-
-  //void App::renderExitConfirmModal()
-  //{
-  //  if (showExitConfirmModal_) {
-  //    ImGui::OpenPopup("Save Workspace?###ExitConfirmModal");
-  //    showExitConfirmModal_ = false;
-  //  }
-  //  if (ImGui::BeginPopupModal("Save Workspace?###ExitConfirmModal", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-  //    ImGui::Text("You have unsaved changes in your workspace.\nDo you want to save before exiting?");
-  //    ImGui::Spacing();
-  //    if (ui::UI::ButtonPrimary("Save & Exit", ImVec2(110, 0))) {
-  //      ImGui::CloseCurrentPopup();
-  //      if (currentWorkspacePath_.empty()) {
-  //        pendingSaveBeforeExit_ = true;
-  //        beginSaveWorkspaceDialog();
-  //      } else {
-  //        saveWorkspaceFile(currentWorkspacePath_);
-  //        readyToExit_ = true;
-  //      }
-  //    }
-  //    ImGui::SameLine();
-  //    if (ui::UI::ButtonDanger("Don't Save", ImVec2(100, 0))) {
-  //      ImGui::CloseCurrentPopup();
-  //      readyToExit_ = true;
-  //    }
-  //    ImGui::SameLine();
-  //    if (ui::UI::Button("Cancel", {}, ImVec2(90, 0))) {
-  //      ImGui::CloseCurrentPopup();
-  //    }
-  //    ImGui::EndPopup();
-  //  }
-  //}
 
   void App::renderSavePromptModal()
   {
@@ -1202,6 +1192,9 @@ namespace ui {
         }
         if (ImGui::MenuItem("Add Table Overlay Panel")) {
           addTableOverlayPanel();
+        }
+        if (ImGui::MenuItem("Add Curve2D Panel")) {
+          addCurve2dPanel();
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Drive Regime Summary")) {
