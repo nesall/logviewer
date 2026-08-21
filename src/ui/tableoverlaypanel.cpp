@@ -174,14 +174,14 @@ namespace ui {
         return IM_COL32(30, 30, 35, 255);
       }
 
-      // 1. Unvisited Cell Polish: Keep unvisited cells dark gray
+      // Unvisited Cell Polish: Keep unvisited cells dark gray
       if (binnedSampleCounts_[row][col] == 0) {
         return IM_COL32(20, 22, 28, 255);
       }
 
       double overlayVal = binnedOverlayData_[row][col];
 
-      // 2. Range Filter Check: If value is outside [Min, Max], keep background dark
+      // Range Filter Check: If value is outside [Min, Max], keep background dark
       if (enableOverlayFilter_) {
         if (overlayVal < overlayFilterMin_ || overlayVal > overlayFilterMax_) {
           return IM_COL32(25, 28, 35, 255);
@@ -192,7 +192,7 @@ namespace ui {
       float t = static_cast<float>((overlayVal - overlayMin_) / (overlayMax_ - overlayMin_));
       t = std::clamp(t, 0.0f, 1.0f);
 
-      // 3. Viridis Background with 0.45 Alpha (so text is sharp)
+      // Viridis Background with 0.45 Alpha (so text is sharp)
       ImVec4 color = ImPlot::SampleColormap(t, ImPlotColormap_Viridis);
       color.w = 0.45f;
 
@@ -225,9 +225,9 @@ namespace ui {
 
   void TableOverlayPanel::render(PlotCursor &cursor)
   {
-    std::string windowLabel = std::string{ ICON_FA_LAYER_GROUP } + " Table Overlay###" + title();
-    ImGui::Begin(windowLabel.c_str(), &open_);
-
+    std::string windowLabel = makeWindowLabel(ICON_FA_LAYER_GROUP);
+    ImGui::Begin(windowLabel.c_str(), &open_, getAppearanceFlags());
+    renderCommonOps();
     if (session_ == nullptr) {
       ImGui::TextDisabled("No log session loaded.");
       ImGui::End();
@@ -237,7 +237,7 @@ namespace ui {
     // --- TOP TOOLBAR ---
     ImGui::PushItemWidth(130.0f);
 
-    // 1. X Axis Channel Picker
+    // X Axis Channel Picker
     if (ImGui::BeginCombo("##XCh", ("X: " + xAxisChannel_).c_str())) {
       for (const auto &ch : session_->channels()) {
         if (ImGui::Selectable(ch.name().c_str(), ch.name() == xAxisChannel_)) {
@@ -250,7 +250,7 @@ namespace ui {
 
     ImGui::SameLine();
 
-    // 2. Y Axis Channel Picker
+    // Y Axis Channel Picker
     if (ImGui::BeginCombo("##YCh", ("Y: " + yAxisChannel_).c_str())) {
       for (const auto &ch : session_->channels()) {
         if (ImGui::Selectable(ch.name().c_str(), ch.name() == yAxisChannel_)) {
@@ -265,7 +265,7 @@ namespace ui {
     ImGui::Text("|");
     ImGui::SameLine();
 
-    // 3. Overlay Channel Picker
+    // Overlay Channel Picker
     if (ImGui::BeginCombo("##OvCh", ("Overlay: " + overlayChannel_).c_str())) {
       for (const auto &ch : session_->channels()) {
         if (ImGui::Selectable(ch.name().c_str(), ch.name() == overlayChannel_)) {
@@ -278,7 +278,7 @@ namespace ui {
 
     ImGui::SameLine();
 
-    // 4. Overlay Aggregation Picker
+    // Overlay Aggregation Picker
     const char *aggNames[] = { "Max", "Average", "Min", "Hit Count" };
     int currentAgg = static_cast<int>(aggregation_);
     if (ImGui::Combo("##Agg", &currentAgg, aggNames, IM_ARRAYSIZE(aggNames))) {
@@ -328,8 +328,6 @@ namespace ui {
     if (state.contains("enableOverlayFilter")) enableOverlayFilter_ = state["enableOverlayFilter"].get<bool>();
     if (state.contains("overlayFilterMin")) overlayFilterMin_ = state["overlayFilterMin"].get<float>();
     if (state.contains("overlayFilterMax")) overlayFilterMax_ = state["overlayFilterMax"].get<float>();
-    //rebindChannels();
-    //computeOverlayMatrix();
   }
 
 } // namespace ui

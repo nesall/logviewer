@@ -126,6 +126,8 @@ namespace ui {
 
     PlotCursor cursor_;
     std::vector<std::unique_ptr<PlotPanel>> panels_;
+    bool firstWorkspaceLoadDone_ = false;
+    std::string pendingSelfReloadPath_;
 
     io::MegasquirtCsvParser mslParser_;
     io::HaltechDlParser haltechParser_;

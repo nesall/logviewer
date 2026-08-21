@@ -4264,17 +4264,16 @@ namespace ui {
 
         std::string type = panelJson["type"].get<std::string>();
         nlohmann::json state = panelJson.contains("state") ? panelJson["state"] : nlohmann::json::object();
-        std::string savedTitle = state.value("title", "");
 
         std::unique_ptr<PlotPanel> panel;
-        if (type == "TimeSeriesPanel") panel = std::make_unique<TimeSeriesPanel>(savedTitle);
-        else if (type == "ScatterPanel") panel = std::make_unique<ScatterPanel>(savedTitle, "", "");
-        else if (type == "StatusPanel") panel = std::make_unique<StatusPanel>(savedTitle);
-        else if (type == "VeAnalysisPanel") panel = std::make_unique<VeAnalysisPanel>(savedTitle);
-        else if (type == "TableOverlayPanel") panel = std::make_unique<TableOverlayPanel>(savedTitle);
+        if (type == "TimeSeriesPanel") panel = std::make_unique<TimeSeriesPanel>();
+        else if (type == "ScatterPanel") panel = std::make_unique<ScatterPanel>();
+        else if (type == "StatusPanel") panel = std::make_unique<StatusPanel>();
+        else if (type == "VeAnalysisPanel") panel = std::make_unique<VeAnalysisPanel>();
+        else if (type == "TableOverlayPanel") panel = std::make_unique<TableOverlayPanel>();
         else if (type == "DriveRegimePanel") panel = std::make_unique<DriveRegimePanel>();
-        else if (type == "Curve2DPanel") panel = std::make_unique<Curve2DPanel>(savedTitle);
-        else if (type == "VirtualDynoPanel") panel = std::make_unique<VirtualDynoPanel>(savedTitle);
+        else if (type == "Curve2DPanel") panel = std::make_unique<Curve2DPanel>();
+        else if (type == "VirtualDynoPanel") panel = std::make_unique<VirtualDynoPanel>();
 
 #ifdef _DEBUG2
         std::cout << "Restoring panel: " << type << " state: " << state.dump() << std::endl;
@@ -4512,6 +4511,7 @@ namespace ui {
             session_ = std::move(res.session);
             addRecentLog(session_.sourcePath());
             refreshPanelsFromSession();
+            updateWindowTitle();
             if (pendingOnCompleteCallback_) {
               auto cb = std::move(pendingOnCompleteCallback_);
               pendingOnCompleteCallback_ = nullptr;
@@ -4544,7 +4544,6 @@ namespace ui {
       core::ChannelMapping mapping;
       mapping.autoDetect(res.session);
       res.session.setChannelMapping(mapping);
-      updateWindowTitle();
       return res;
       });
   }
@@ -5959,12 +5958,12 @@ namespace ui {
 
   void Curve2DPanel::render(PlotCursor &cursor)
   {
-    std::string windowLabel = std::string(ICON_FA_CHART_LINE) + " 2D Calibration Curves###" + title();
+    std::string windowLabel = makeWindowLabel(ICON_FA_CHART_LINE);
     if (!ImGui::Begin(windowLabel.c_str(), &open_)) {
       ImGui::End();
       return;
     }
-
+    renderContextMenu();
     // Left Sidebar: Curve list & point table
     ImGui::BeginChild("CurveSidebar", ImVec2(280.0f, 0.0f), true);
     renderSidebar();
@@ -6297,7 +6296,7 @@ namespace ui {
 
   class Curve2DPanel : public PlotPanel {
   public:
-    explicit Curve2DPanel(const std::string &title);
+    explicit Curve2DPanel(const std::string &title = "2D Calibration Curves");
 
     void render(PlotCursor &cursor) override;
 
@@ -6657,7 +6656,7 @@ namespace ui {
 
   void DriveRegimePanel::render(PlotCursor &cursor)
   {
-    std::string windowLabel = std::string{ ICON_FA_FLAG } + " " + title() + "###" + panelTypeId();
+    std::string windowLabel = makeWindowLabel(ICON_FA_FLAG);
     ImGui::Begin(windowLabel.c_str(), &open_);
 
     if (!session_) {
@@ -6894,27 +6893,86 @@ namespace ui {
 ## File: src/ui/plotpanel.cpp
 
 #include "ui/plotpanel.h"
-
-#include <utility>
-
+#include "utils/utils.h"
 #include "3rdparty/nlohmann/json.hpp"
+#include "3rdparty/IconsFontAwesome7.h"
+#include "imgui.h"
+#include <utility>
 
 namespace ui {
 
   PlotPanel::PlotPanel(std::string title)
-    : title_(std::move(title))
+    : title_(std::move(title)), panelInstanceId_(utils::str::generateUniqueId())
   {
   }
 
   nlohmann::json PlotPanel::saveState() const
   {
-    return nlohmann::json{ {"title", title_} };
+    return nlohmann::json{
+      {"title", title_},
+      {"instanceId", panelInstanceId_}
+    };
   }
 
   void PlotPanel::loadState(const nlohmann::json & state)
   {
     if (state.contains("title") && state["title"].is_string()) {
       title_ = state["title"].get<std::string>();
+    }
+    if (state.contains("instanceId") && state["instanceId"].is_string()) {
+      panelInstanceId_ = state["instanceId"].get<std::string>();
+    }
+  }
+
+  std::string PlotPanel::makeWindowLabel(const char *icon) const
+  {
+    return std::string(icon) + " " + title_ + "###" + panelInstanceId_;
+  }
+
+  void PlotPanel::renderContextMenu()
+  {
+    static char renameBuf[256]{ 0 };
+    if (ImGui::BeginPopupContextItem("##PanelContextMenu")) {
+      if (ImGui::MenuItem(ICON_FA_PEN " Rename Panel...")) {
+        showRenameModal_ = true;
+        memset(renameBuf, 0, sizeof(renameBuf));
+        std::snprintf(renameBuf, sizeof(renameBuf), "%s", title_.c_str());
+      }
+      ImGui::EndPopup();
+    }
+
+    if (showRenameModal_) {
+      ImGui::OpenPopup("Rename Panel###RenamePanelModal");
+      showRenameModal_ = false;
+    }
+
+    if (ImGui::BeginPopupModal("Rename Panel###RenamePanelModal", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::Text("Enter new title for this panel:");
+      ImGui::SetNextItemWidth(260.0f);
+
+      // Auto-focus on appear
+      if (ImGui::IsWindowAppearing()) {
+        ImGui::SetKeyboardFocusHere();
+      }
+
+      bool confirmed = ImGui::InputText("##NewTitle", renameBuf, sizeof(renameBuf),
+        ImGuiInputTextFlags_EnterReturnsTrue);
+
+      ImGui::Spacing();
+      if (ImGui::Button("OK", ImVec2(90, 0)) || confirmed) {
+        if (renameBuf[0] != '\0') {
+          title_ = renameBuf;
+          notifyDataChanged();
+        }
+        ImGui::CloseCurrentPopup();
+      }
+
+      ImGui::SameLine();
+      if (ImGui::Button("Cancel", ImVec2(90, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        ImGui::CloseCurrentPopup();
+      }
+
+      ImGui::EndPopup();
     }
   }
 
@@ -6932,7 +6990,7 @@ namespace ui {
 
 namespace core {
   class LogSession;
-} // namespace core
+}
 
 namespace ui {
 
@@ -6974,11 +7032,17 @@ namespace ui {
     const std::string &title() const { return title_; }
 
   protected:
+    std::string panelInstanceId() const { return panelInstanceId_; }
     virtual void notifyDataChanged() { if (onDataChanged_) onDataChanged_(); }
+    std::string makeWindowLabel(const char *icon) const;
+    void renderContextMenu();
 
   private:
+    std::string panelInstanceId_;
     std::string title_;
     std::function<void()> onDataChanged_;
+    //bool isEditingTitle_ = false;
+    bool showRenameModal_ = false;
   };
 
 } // namespace ui
@@ -7332,7 +7396,7 @@ namespace ui {
     if (!selectedColorChannel_.empty()) {
       legendLabel += " vs " + selectedColorChannel_;
     }
-    std::string windowLabel = legendLabel + "###" + title();
+    std::string windowLabel = legendLabel + "###" + panelInstanceId();
     ImGui::Begin(windowLabel.c_str(), &open_);
 
     const bool haveSession = (session_ != nullptr && !session_->channels().empty());
@@ -7615,7 +7679,7 @@ namespace ui {
   // at that moment in the log.
   class ScatterPanel : public PlotPanel {
   public:
-    ScatterPanel(std::string title, std::string initialXChannel, std::string initialYChannel);
+    ScatterPanel(std::string title = {}, std::string initialXChannel = {}, std::string initialYChannel = {});
 
     void render(PlotCursor &cursor) override;
     bool wantsClose() const override { return !open_; }
@@ -7923,9 +7987,9 @@ namespace ui {
 
   void StatusPanel::render(PlotCursor &cursor)
   {
-    std::string windowLabel = std::string{ ICON_FA_GAUGE_SIMPLE } + " Status###" + title();
+    std::string windowLabel = makeWindowLabel(ICON_FA_GAUGE_SIMPLE);
     ImGui::Begin(windowLabel.c_str(), &open_);
-
+    renderContextMenu();
     renderChannelPickerPopup();
     ImGui::Separator();
     renderCellGrid(cursor);
@@ -7959,7 +8023,7 @@ namespace ui {
   // reloads (a channel missing from a newly loaded log just doesn't render).
   class StatusPanel : public PlotPanel {
   public:
-    explicit StatusPanel(std::string title);
+    explicit StatusPanel(std::string title = "Status");
 
     void render(PlotCursor &cursor) override;
     bool wantsClose() const override { return !open_; }
@@ -9797,14 +9861,14 @@ namespace ui {
         return IM_COL32(30, 30, 35, 255);
       }
 
-      // 1. Unvisited Cell Polish: Keep unvisited cells dark gray
+      // Unvisited Cell Polish: Keep unvisited cells dark gray
       if (binnedSampleCounts_[row][col] == 0) {
         return IM_COL32(20, 22, 28, 255);
       }
 
       double overlayVal = binnedOverlayData_[row][col];
 
-      // 2. Range Filter Check: If value is outside [Min, Max], keep background dark
+      // Range Filter Check: If value is outside [Min, Max], keep background dark
       if (enableOverlayFilter_) {
         if (overlayVal < overlayFilterMin_ || overlayVal > overlayFilterMax_) {
           return IM_COL32(25, 28, 35, 255);
@@ -9815,7 +9879,7 @@ namespace ui {
       float t = static_cast<float>((overlayVal - overlayMin_) / (overlayMax_ - overlayMin_));
       t = std::clamp(t, 0.0f, 1.0f);
 
-      // 3. Viridis Background with 0.45 Alpha (so text is sharp)
+      // Viridis Background with 0.45 Alpha (so text is sharp)
       ImVec4 color = ImPlot::SampleColormap(t, ImPlotColormap_Viridis);
       color.w = 0.45f;
 
@@ -9848,9 +9912,9 @@ namespace ui {
 
   void TableOverlayPanel::render(PlotCursor &cursor)
   {
-    std::string windowLabel = std::string{ ICON_FA_LAYER_GROUP } + " Table Overlay###" + title();
-    ImGui::Begin(windowLabel.c_str(), &open_);
-
+    std::string windowLabel = makeWindowLabel(ICON_FA_LAYER_GROUP);
+    ImGui::Begin(windowLabel.c_str(), &open_);    
+    renderContextMenu();
     if (session_ == nullptr) {
       ImGui::TextDisabled("No log session loaded.");
       ImGui::End();
@@ -9860,7 +9924,7 @@ namespace ui {
     // --- TOP TOOLBAR ---
     ImGui::PushItemWidth(130.0f);
 
-    // 1. X Axis Channel Picker
+    // X Axis Channel Picker
     if (ImGui::BeginCombo("##XCh", ("X: " + xAxisChannel_).c_str())) {
       for (const auto &ch : session_->channels()) {
         if (ImGui::Selectable(ch.name().c_str(), ch.name() == xAxisChannel_)) {
@@ -9873,7 +9937,7 @@ namespace ui {
 
     ImGui::SameLine();
 
-    // 2. Y Axis Channel Picker
+    // Y Axis Channel Picker
     if (ImGui::BeginCombo("##YCh", ("Y: " + yAxisChannel_).c_str())) {
       for (const auto &ch : session_->channels()) {
         if (ImGui::Selectable(ch.name().c_str(), ch.name() == yAxisChannel_)) {
@@ -9888,7 +9952,7 @@ namespace ui {
     ImGui::Text("|");
     ImGui::SameLine();
 
-    // 3. Overlay Channel Picker
+    // Overlay Channel Picker
     if (ImGui::BeginCombo("##OvCh", ("Overlay: " + overlayChannel_).c_str())) {
       for (const auto &ch : session_->channels()) {
         if (ImGui::Selectable(ch.name().c_str(), ch.name() == overlayChannel_)) {
@@ -9901,7 +9965,7 @@ namespace ui {
 
     ImGui::SameLine();
 
-    // 4. Overlay Aggregation Picker
+    // Overlay Aggregation Picker
     const char *aggNames[] = { "Max", "Average", "Min", "Hit Count" };
     int currentAgg = static_cast<int>(aggregation_);
     if (ImGui::Combo("##Agg", &currentAgg, aggNames, IM_ARRAYSIZE(aggNames))) {
@@ -9951,8 +10015,6 @@ namespace ui {
     if (state.contains("enableOverlayFilter")) enableOverlayFilter_ = state["enableOverlayFilter"].get<bool>();
     if (state.contains("overlayFilterMin")) overlayFilterMin_ = state["overlayFilterMin"].get<float>();
     if (state.contains("overlayFilterMax")) overlayFilterMax_ = state["overlayFilterMax"].get<float>();
-    //rebindChannels();
-    //computeOverlayMatrix();
   }
 
 } // namespace ui
@@ -9987,7 +10049,7 @@ namespace ui {
 
   class TableOverlayPanel : public PlotPanel {
   public:
-    explicit TableOverlayPanel(std::string title);
+    explicit TableOverlayPanel(std::string title = "Table Overlay");
 
     void render(PlotCursor &cursor) override;
     bool wantsClose() const override { return !open_; }
@@ -11598,9 +11660,9 @@ namespace ui {
 
   void TimeSeriesPanel::render(PlotCursor &cursor)
   {
-    std::string windowLabel = std::string{ ICON_FA_CHART_GANTT} + " Time Series###" + title();
+    std::string windowLabel = makeWindowLabel(ICON_FA_CHART_GANTT);
     ImGui::Begin(windowLabel.c_str(), &open_);
-
+    renderContextMenu();
     renderHeaderControls(cursor);
     renderTimelineActionPopup(cursor);
     renderExportCsvModal();
@@ -11681,7 +11743,7 @@ namespace ui {
 
   class TimeSeriesPanel : public PlotPanel {
   public:
-    TimeSeriesPanel(std::string title, std::vector<std::string> initialChannelNames = {});
+    TimeSeriesPanel(std::string title = "Time Series", std::vector<std::string> initialChannelNames = {});
 
     void render(PlotCursor &cursor) override;
     bool wantsClose() const override { return !open_; }
@@ -12966,9 +13028,9 @@ namespace ui {
 
   void VeAnalysisPanel::render(PlotCursor &cursor)
   {
-    std::string windowLabel = std::string{ ICON_FA_SLIDERS } + " VE Analyzer###" + title();
+    std::string windowLabel = makeWindowLabel(ICON_FA_SLIDERS);
     ImGui::Begin(windowLabel.c_str(), &open_);
-
+    renderContextMenu();
     if (ImGui::BeginTabBar("VeAnalyzerTabBar")) {
 
       ImGui::PushStyleColor(ImGuiCol_Tab, ImVec4(0.50f, 0.20f, 0.70f, 1.0f));
@@ -13101,7 +13163,7 @@ namespace ui {
 
   class VeAnalysisPanel : public PlotPanel {
   public:
-    explicit VeAnalysisPanel(std::string title);
+    explicit VeAnalysisPanel(std::string title = "VE Analyzer");
 
     void render(PlotCursor &cursor) override;
     bool wantsClose() const override { return !open_; }
@@ -13243,12 +13305,12 @@ namespace ui {
 
   void VirtualDynoPanel::render(PlotCursor &cursor)
   {
-    std::string windowLabel = std::string(ICON_FA_GAUGE_HIGH) + " Virtual Dyno###" + title();
+    std::string windowLabel = makeWindowLabel(ICON_FA_GAUGE_HIGH);
     if (!ImGui::Begin(windowLabel.c_str(), &open_)) {
       ImGui::End();
       return;
     }
-
+    renderContextMenu();
     // Left Configuration Panel
     ImGui::BeginChild("DynoSidebar", ImVec2(320.0f, 0.0f), true);
     renderSidebar();
@@ -13452,7 +13514,7 @@ namespace ui {
 
   class VirtualDynoPanel : public PlotPanel {
   public:
-    explicit VirtualDynoPanel(const std::string &title);
+    explicit VirtualDynoPanel(const std::string &title = "Virtual Dyno");
 
     std::string panelTypeId() const override { return "VirtualDynoPanel"; }
 

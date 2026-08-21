@@ -9,7 +9,7 @@ namespace ui {
 
   class VirtualDynoPanel : public PlotPanel {
   public:
-    explicit VirtualDynoPanel(const std::string &title);
+    explicit VirtualDynoPanel(const std::string &title = "Virtual Dyno");
 
     std::string panelTypeId() const override { return "VirtualDynoPanel"; }
 

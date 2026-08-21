@@ -237,9 +237,9 @@ namespace ui {
 
   void StatusPanel::render(PlotCursor &cursor)
   {
-    std::string windowLabel = std::string{ ICON_FA_GAUGE_SIMPLE } + " Status###" + title();
-    ImGui::Begin(windowLabel.c_str(), &open_);
-
+    std::string windowLabel = makeWindowLabel(ICON_FA_GAUGE_SIMPLE);
+    ImGui::Begin(windowLabel.c_str(), &open_, getAppearanceFlags());
+    renderCommonOps();
     renderChannelPickerPopup();
     ImGui::Separator();
     renderCellGrid(cursor);

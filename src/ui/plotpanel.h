@@ -1,13 +1,13 @@
 #pragma once
 
+#include "3rdparty/nlohmann/json_fwd.hpp"
 #include <string>
 #include <functional>
-
-#include "3rdparty/nlohmann/json_fwd.hpp"
+#include "imgui.h"
 
 namespace core {
   class LogSession;
-} // namespace core
+}
 
 namespace ui {
 
@@ -47,13 +47,31 @@ namespace ui {
     void setOnDataChangedCallback(std::function<void()> callback) { onDataChanged_ = std::move(callback); }
 
     const std::string &title() const { return title_; }
+    std::string panelInstanceId() const { return panelInstanceId_; }
+    std::string lastWindowLabel() const { return lastWindowLabel_; }
+    void setLoadedFromWorkspace() { justLoaded_ = true; }
+    void setActivateOnLoad() { activateOnLoad_ = true; }
 
   protected:
     virtual void notifyDataChanged() { if (onDataChanged_) onDataChanged_(); }
+    std::string makeWindowLabel(const char *icon) const;
+    void renderContextMenu();
+    void renderCommonOps();
+    ImGuiWindowFlags getAppearanceFlags() {
+      ImGuiWindowFlags flags = justLoaded_ ? ImGuiWindowFlags_NoFocusOnAppearing : 0;
+      justLoaded_ = false; // Consume the flag so it only applies to the first frame
+      return flags;
+    }
+    virtual bool allowTitleEdit() const { return true; }
 
   private:
+    std::string panelInstanceId_;
     std::string title_;
+    std::string lastWindowLabel_;
     std::function<void()> onDataChanged_;
+    bool showRenameModal_ = false;
+    bool justLoaded_ = false;    
+    bool activateOnLoad_ = false;
   };
 
 } // namespace ui

@@ -54,6 +54,20 @@ namespace ui {
     // (%AppData% / ~/.config) if this ever ships beyond your own machine.
     const char *kSettingsFilePath = "logviewer_settings.json";
 
+    const char *kDockSpaceHost = "DockSpaceHost";
+    const char *kMainDockSpace = "MainDockSpace";
+
+    ImGuiID getDockspaceId() {
+      ImGuiID hostId = ImHashStr(kDockSpaceHost);
+      return ImHashStr(kMainDockSpace, 0, hostId);
+    }
+
+    bool isActiveTabPanel(const std::string &windowLabel) {
+      ImGuiWindow *w = ImGui::FindWindowByName(windowLabel.c_str());
+      if (!w || !w->DockNode || !w->DockNode->TabBar) return false;
+      return w->DockNode->TabBar->SelectedTabId == w->TabId;
+    }
+
   } // namespace
 
   App::App(GLFWwindow *window) : window_(window)
@@ -214,7 +228,12 @@ namespace ui {
 
     nlohmann::json panelsJson = nlohmann::json::array();
     for (const auto &panel : panels_) {
-      panelsJson.push_back({ {"type", panel->panelTypeId()}, {"state", panel->saveState()} });
+      bool isActive = isActiveTabPanel(panel->lastWindowLabel());
+      panelsJson.push_back({
+        {"type", panel->panelTypeId()},
+        {"state", panel->saveState()},
+        {"active", isActive}
+        });
 #ifdef _DEBUG2
       std::cout << "Saving panel: " << panel->panelTypeId() << " state: " << panel->saveState().dump() << std::endl;
 #endif
@@ -297,8 +316,7 @@ namespace ui {
     if (root.contains("imguiLayout") && root["imguiLayout"].is_string()) {
       std::string iniData = root["imguiLayout"].get<std::string>();
       ImGui::LoadIniSettingsFromMemory(iniData.c_str(), iniData.size());
-      ImGuiID hostId = ImHashStr("DockSpaceHost");
-      ImGuiID dockspaceId = ImHashStr("MainDockSpace", 0, hostId);
+      ImGuiID dockspaceId = getDockspaceId();
       if (ImGuiDockNode *node = ImGui::DockBuilderGetNode(dockspaceId)) {
         ImGui::DockBuilderSetNodePos(dockspaceId, ImGui::GetMainViewport()->WorkPos);
         ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->WorkSize);
@@ -311,17 +329,16 @@ namespace ui {
 
         std::string type = panelJson["type"].get<std::string>();
         nlohmann::json state = panelJson.contains("state") ? panelJson["state"] : nlohmann::json::object();
-        std::string savedTitle = state.value("title", "");
 
         std::unique_ptr<PlotPanel> panel;
-        if (type == "TimeSeriesPanel") panel = std::make_unique<TimeSeriesPanel>(savedTitle);
-        else if (type == "ScatterPanel") panel = std::make_unique<ScatterPanel>(savedTitle, "", "");
-        else if (type == "StatusPanel") panel = std::make_unique<StatusPanel>(savedTitle);
-        else if (type == "VeAnalysisPanel") panel = std::make_unique<VeAnalysisPanel>(savedTitle);
-        else if (type == "TableOverlayPanel") panel = std::make_unique<TableOverlayPanel>(savedTitle);
+        if (type == "TimeSeriesPanel") panel = std::make_unique<TimeSeriesPanel>();
+        else if (type == "ScatterPanel") panel = std::make_unique<ScatterPanel>();
+        else if (type == "StatusPanel") panel = std::make_unique<StatusPanel>();
+        else if (type == "VeAnalysisPanel") panel = std::make_unique<VeAnalysisPanel>();
+        else if (type == "TableOverlayPanel") panel = std::make_unique<TableOverlayPanel>();
         else if (type == "DriveRegimePanel") panel = std::make_unique<DriveRegimePanel>();
-        else if (type == "Curve2DPanel") panel = std::make_unique<Curve2DPanel>(savedTitle);
-        else if (type == "VirtualDynoPanel") panel = std::make_unique<VirtualDynoPanel>(savedTitle);
+        else if (type == "Curve2DPanel") panel = std::make_unique<Curve2DPanel>();
+        else if (type == "VirtualDynoPanel") panel = std::make_unique<VirtualDynoPanel>();
 
 #ifdef _DEBUG2
         std::cout << "Restoring panel: " << type << " state: " << state.dump() << std::endl;
@@ -329,6 +346,10 @@ namespace ui {
 
         if (panel) {
           panel->loadState(state);
+          panel->setLoadedFromWorkspace();
+          if (panelJson.value("active", false)) {
+            panel->setActivateOnLoad();
+          }
           if (panel->panelTypeId() == "DriveRegimePanel") {
             auto regimePanel = static_cast<DriveRegimePanel *>(panel.get());
             regimePanel->setOnDataChangedCallback([this] { notifyRegimesUpdated(); });
@@ -343,6 +364,7 @@ namespace ui {
       if (panel->panelTypeId() != "DriveRegimePanel") {
         panel->setOnDataChangedCallback([this, p = panel.get()]() { markDirty(); });
         panel->setSession(&session_);
+        break;
       }
     }
 
@@ -351,6 +373,11 @@ namespace ui {
       cursor_.timeSec = cursorJson.value("timeSec", 0.0);
       cursor_.active = cursorJson.value("active", false);
     }
+
+    //if (!firstWorkspaceLoadDone_) {
+    //  firstWorkspaceLoadDone_ = true;
+    //  pendingSelfReloadPath_ = path; // force a silent automatic reload next frame
+    //}
 
     isDirty_ = false;
   }
@@ -559,6 +586,7 @@ namespace ui {
             session_ = std::move(res.session);
             addRecentLog(session_.sourcePath());
             refreshPanelsFromSession();
+            updateWindowTitle();
             if (pendingOnCompleteCallback_) {
               auto cb = std::move(pendingOnCompleteCallback_);
               pendingOnCompleteCallback_ = nullptr;
@@ -591,7 +619,6 @@ namespace ui {
       core::ChannelMapping mapping;
       mapping.autoDetect(res.session);
       res.session.setChannelMapping(mapping);
-      updateWindowTitle();
       return res;
       });
   }
@@ -1043,6 +1070,7 @@ namespace ui {
       currentWorkspacePath_.clear();
       isDirty_ = false;
       welcomeFadeTimer_ = 0.0f;
+      ImGui::DockBuilderRemoveNode(getDockspaceId());
       updateWindowTitle();
       break;
 
@@ -1260,12 +1288,12 @@ namespace ui {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
 
-    ImGui::Begin("DockSpaceHost", nullptr, hostFlags);
+    ImGui::Begin(kDockSpaceHost, nullptr, hostFlags);
     ImGui::PopStyleVar(3);
 
     renderMenuBar();
 
-    ImGuiID dockspaceId = ImGui::GetID("MainDockSpace");
+    ImGuiID dockspaceId = ImGui::GetID(kMainDockSpace);
     ImGui::DockSpace(dockspaceId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
 
     if (session_.rowCount() == 0 && panels_.empty()) {

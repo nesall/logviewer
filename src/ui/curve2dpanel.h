@@ -14,7 +14,7 @@ namespace ui {
 
   class Curve2DPanel : public PlotPanel {
   public:
-    explicit Curve2DPanel(const std::string &title);
+    explicit Curve2DPanel(const std::string &title = "2D Calibration Curves");
 
     void render(PlotCursor &cursor) override;
 

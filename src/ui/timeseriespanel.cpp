@@ -1562,9 +1562,9 @@ namespace ui {
 
   void TimeSeriesPanel::render(PlotCursor &cursor)
   {
-    std::string windowLabel = std::string{ ICON_FA_CHART_GANTT} + " Time Series###" + title();
-    ImGui::Begin(windowLabel.c_str(), &open_);
-
+    std::string windowLabel = makeWindowLabel(ICON_FA_CHART_GANTT);
+    ImGui::Begin(windowLabel.c_str(), &open_, getAppearanceFlags());
+    renderCommonOps();
     renderHeaderControls(cursor);
     renderTimelineActionPopup(cursor);
     renderExportCsvModal();

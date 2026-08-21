@@ -344,8 +344,8 @@ namespace ui {
     if (!selectedColorChannel_.empty()) {
       legendLabel += " vs " + selectedColorChannel_;
     }
-    std::string windowLabel = legendLabel + "###" + title();
-    ImGui::Begin(windowLabel.c_str(), &open_);
+    std::string windowLabel = legendLabel + "###" + panelInstanceId();
+    ImGui::Begin(windowLabel.c_str(), &open_, getAppearanceFlags());
 
     const bool haveSession = (session_ != nullptr && !session_->channels().empty());
 

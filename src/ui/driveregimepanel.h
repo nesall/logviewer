@@ -24,6 +24,9 @@ namespace ui {
     const std::vector<core::RegimeSummary> &regimes() const;
     std::vector<core::RegimeSummary> &regimes();
 
+  protected:
+    bool allowTitleEdit() const override { return false; }
+
   private:
     void reanalyze();
     void renderConfigModal();

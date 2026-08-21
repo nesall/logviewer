@@ -67,12 +67,12 @@ namespace ui {
 
   void VirtualDynoPanel::render(PlotCursor &cursor)
   {
-    std::string windowLabel = std::string(ICON_FA_GAUGE_HIGH) + " Virtual Dyno###" + title();
-    if (!ImGui::Begin(windowLabel.c_str(), &open_)) {
+    std::string windowLabel = makeWindowLabel(ICON_FA_GAUGE_HIGH);
+    if (!ImGui::Begin(windowLabel.c_str(), &open_, getAppearanceFlags())) {
       ImGui::End();
       return;
     }
-
+    renderCommonOps();
     // Left Configuration Panel
     ImGui::BeginChild("DynoSidebar", ImVec2(320.0f, 0.0f), true);
     renderSidebar();

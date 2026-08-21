@@ -19,7 +19,7 @@ namespace ui {
   // reloads (a channel missing from a newly loaded log just doesn't render).
   class StatusPanel : public PlotPanel {
   public:
-    explicit StatusPanel(std::string title);
+    explicit StatusPanel(std::string title = "Status");
 
     void render(PlotCursor &cursor) override;
     bool wantsClose() const override { return !open_; }

@@ -70,12 +70,12 @@ namespace ui {
 
   void Curve2DPanel::render(PlotCursor &cursor)
   {
-    std::string windowLabel = std::string(ICON_FA_CHART_LINE) + " 2D Calibration Curves###" + title();
-    if (!ImGui::Begin(windowLabel.c_str(), &open_)) {
+    std::string windowLabel = makeWindowLabel(ICON_FA_CHART_LINE);
+    if (!ImGui::Begin(windowLabel.c_str(), &open_, getAppearanceFlags())) {
       ImGui::End();
       return;
     }
-
+    renderCommonOps();
     // Left Sidebar: Curve list & point table
     ImGui::BeginChild("CurveSidebar", ImVec2(280.0f, 0.0f), true);
     renderSidebar();

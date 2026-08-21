@@ -14,7 +14,7 @@ namespace ui {
 
   class TimeSeriesPanel : public PlotPanel {
   public:
-    TimeSeriesPanel(std::string title, std::vector<std::string> initialChannelNames = {});
+    TimeSeriesPanel(std::string title = "Time Series", std::vector<std::string> initialChannelNames = {});
 
     void render(PlotCursor &cursor) override;
     bool wantsClose() const override { return !open_; }

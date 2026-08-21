@@ -12,7 +12,7 @@ namespace ui {
 
   class VeAnalysisPanel : public PlotPanel {
   public:
-    explicit VeAnalysisPanel(std::string title);
+    explicit VeAnalysisPanel(std::string title = "VE Analyzer");
 
     void render(PlotCursor &cursor) override;
     bool wantsClose() const override { return !open_; }

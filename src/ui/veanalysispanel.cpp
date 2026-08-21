@@ -1002,9 +1002,9 @@ namespace ui {
 
   void VeAnalysisPanel::render(PlotCursor &cursor)
   {
-    std::string windowLabel = std::string{ ICON_FA_SLIDERS } + " VE Analyzer###" + title();
-    ImGui::Begin(windowLabel.c_str(), &open_);
-
+    std::string windowLabel = makeWindowLabel(ICON_FA_SLIDERS);
+    ImGui::Begin(windowLabel.c_str(), &open_, getAppearanceFlags());
+    renderCommonOps();
     if (ImGui::BeginTabBar("VeAnalyzerTabBar")) {
 
       ImGui::PushStyleColor(ImGuiCol_Tab, ImVec4(0.50f, 0.20f, 0.70f, 1.0f));

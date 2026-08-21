@@ -326,8 +326,8 @@ namespace ui {
 
   void DriveRegimePanel::render(PlotCursor &cursor)
   {
-    std::string windowLabel = std::string{ ICON_FA_FLAG } + " " + title() + "###" + panelTypeId();
-    ImGui::Begin(windowLabel.c_str(), &open_);
+    std::string windowLabel = makeWindowLabel(ICON_FA_FLAG);
+    ImGui::Begin(windowLabel.c_str(), &open_, getAppearanceFlags());
 
     if (!session_) {
       ImGui::TextDisabled("No log session loaded.");

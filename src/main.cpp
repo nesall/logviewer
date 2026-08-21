@@ -50,9 +50,12 @@ int main() {
   ImGui::CreateContext();
   ImPlot::CreateContext();
 
+
   ImGuiIO &io = ImGui::GetIO();
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+
+  io.IniFilename = nullptr; // add once, near ImGui::CreateContext()
 
   ImFont *mainFont = io.Fonts->AddFontFromFileTTF("assets/fonts/Rubik-Regular.ttf", 16.0f, nullptr, io.Fonts->GetGlyphRangesDefault());
 #include "3rdparty/IconsFontAwesome7.h"

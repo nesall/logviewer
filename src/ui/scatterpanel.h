@@ -17,7 +17,7 @@ namespace ui {
   // at that moment in the log.
   class ScatterPanel : public PlotPanel {
   public:
-    ScatterPanel(std::string title, std::string initialXChannel, std::string initialYChannel);
+    ScatterPanel(std::string title = {}, std::string initialXChannel = {}, std::string initialYChannel = {});
 
     void render(PlotCursor &cursor) override;
     bool wantsClose() const override { return !open_; }
@@ -27,6 +27,9 @@ namespace ui {
     std::string panelTypeId() const override { return "ScatterPanel"; }
     nlohmann::json saveState() const override;
     void loadState(const nlohmann::json &state) override;
+
+  protected:
+    bool allowTitleEdit() const override { return false; }
 
   private:
     void generatePlaceholderData();

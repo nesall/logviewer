@@ -25,7 +25,7 @@ namespace ui {
 
   class TableOverlayPanel : public PlotPanel {
   public:
-    explicit TableOverlayPanel(std::string title);
+    explicit TableOverlayPanel(std::string title = "Table Overlay");
 
     void render(PlotCursor &cursor) override;
     bool wantsClose() const override { return !open_; }
