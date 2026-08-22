@@ -1,3 +1,8 @@
+#ifdef LOGVIEWER_WINDOWS_SUBSYSTEM
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 #include <cstdio>
 
 #include <GLFW/glfw3.h>
@@ -20,7 +25,11 @@ namespace {
 
 } // namespace
 
+#ifdef LOGVIEWER_WINDOWS_SUBSYSTEM
+int WINAPI WinMain(_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ LPSTR, _In_ int) {
+#else
 int main() {
+#endif
   glfwSetErrorCallback(GlfwErrorCallback);
   if (!glfwInit()) {
     return 1;

@@ -164,11 +164,11 @@ target_link_libraries(logviewer PRIVATE
   imgui
   implot
   glfw
-  
   OpenGL::GL
 )
 
-
 if (MSVC)
   target_compile_options(logviewer PRIVATE /bigobj)
+  set_target_properties(logviewer PROPERTIES WIN32_EXECUTABLE "$<CONFIG:Release>")
+  target_compile_definitions(logviewer PRIVATE $<$<CONFIG:Release>:LOGVIEWER_WINDOWS_SUBSYSTEM>)
 endif()
