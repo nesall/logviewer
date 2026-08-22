@@ -24,14 +24,14 @@ namespace ui {
 
   private:
     void computeObservedAfr();
+    void computeAfrDelta();
     void computeSuggestedVe();
-    void renderObservedAfrTab();
+    void renderObservedAfrTab(PlotCursor &);
     void renderTargetAfrTab();
     void renderBaselineVeTab();
     void renderSuggestedVeTab();
     void selectUnvisitedCellsOnSuggestedVe();
 
-    void computeAfrDelta();
     void renderAfrDeltaTab();
 
     bool hasBaselineVe() const;
@@ -58,7 +58,7 @@ namespace ui {
     bool hasAfrDelta_ = false;
     bool alignAfrDeltaToVeTable_ = true;
     bool scaleDeltaIntensityByHitCount_ = false;
-    std::vector<std::vector<size_t>> afrDeltaSampleCounts_;
+    engine::ObservedAfrData observedAfrData_;
 
     // Editing buffers for popups
     core::Table2D targetAfrEditBuffer_;
@@ -78,6 +78,7 @@ namespace ui {
     int hoveredCol_ = -1;
 
     std::string regimeFilterText_;
+    TableEditorPanel lambdaDelayEditor_;
   };
 
 } // namespace ui

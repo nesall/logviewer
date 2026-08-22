@@ -10,6 +10,11 @@ namespace engine {
   VeAnalysisConfig::VeAnalysisConfig()
   {
     excludedRegimeIds.insert(std::string(core::RegimeDef::Ids::overrun_fuel_cut));
+    // MLVHD Defaults: RPM [700, 2910, 9000], Load [30, 101, 260]
+    lambdaDelayTable = core::Table2D({ 700.0, 2910.0, 9000.0 }, { 30.0, 101.0, 260.0 });
+    lambdaDelayTable.setValue(0, 0, 350.0); lambdaDelayTable.setValue(0, 1, 300.0); lambdaDelayTable.setValue(0, 2, 200.0);
+    lambdaDelayTable.setValue(1, 0, 250.0); lambdaDelayTable.setValue(1, 1, 150.0); lambdaDelayTable.setValue(1, 2, 100.0);
+    lambdaDelayTable.setValue(2, 0, 200.0); lambdaDelayTable.setValue(2, 1, 70.0);  lambdaDelayTable.setValue(2, 2, 40.0);
   }
 
 
@@ -75,53 +80,77 @@ namespace engine {
     return false;
   }
 
-  core::Table2D VeAnalyzer::computeCorrectedVe(
-    const core::LogSession &session,
-    const core::Table2D &baselineVe,
-    const core::Table2D &targetAfr,
+  ObservedAfrData VeAnalyzer::computeObservedAfr(
+    const core::LogSession &session, 
+    const std::vector<double> &xBp, 
+    const std::vector<double> &yBp, 
     const VeAnalysisConfig &config)
   {
-    core::Table2D correctedVe = baselineVe;
-
+    ObservedAfrData res;
     const core::Channel *rpmCh = session.findChannel(session.channelMapping().rpm);
     const core::Channel *loadCh = session.findChannel(session.channelMapping().load);
     const core::Channel *afrCh = session.findChannel(session.channelMapping().afr);
     const auto *timeSec = session.timeSec();
-
     if (!rpmCh || !loadCh || !afrCh || !timeSec) {
-      return correctedVe;
+      return res;
     }
-
-    VeTransientFilter filter(session, config);
-
-    const size_t rows = baselineVe.rowCount();
-    const size_t cols = baselineVe.columnCount();
-
+    auto rows = yBp.size();
+    auto cols = xBp.size();
     std::vector<std::vector<double>> sumAfr(rows, std::vector<double>(cols, 0.0));
     std::vector<std::vector<size_t>> countAfr(rows, std::vector<size_t>(cols, 0));
-
+    VeTransientFilter filter(session, config);
     const size_t numSamples = session.rowCount();
-
     for (size_t i = 0; i < numSamples; ++i) {
       if (!session.isRowInCropRange(i)) continue;
-
       double rpm = rpmCh->values()[i];
       double load = loadCh->values()[i];
       double afr = afrCh->values()[i];
       double t = (*timeSec)[i];
-
-      if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
+      if (std::isnan(rpm) || std::isnan(load)) continue;
       if (filter.shouldIgnoreSample(i, rpm, load, t)) continue;
-
+      //if (config.enableLambdaDelay) {
+      //  double delayMs = config.lambdaDelayTable.sample(rpm, load);
+      //  double targetTime = t + (delayMs / 1000.0);
+      //  auto it = std::lower_bound(timeSec->begin(), timeSec->end(), targetTime);
+      //  if (it != timeSec->end()) {
+      //    size_t targetIdx = std::distance(timeSec->begin(), it);
+      //    if (targetIdx < afrCh->values().size()) {
+      //      afr = afrCh->values()[targetIdx];
+      //    }
+      //  }
+      //}
+      if (config.enableLambdaDelay) {
+        double delayMs = config.lambdaDelayTable.sample(rpm, load);
+        double targetTime = t + (delayMs / 1000.0);
+        auto it = std::lower_bound(timeSec->begin(), timeSec->end(), targetTime);
+        if (it != timeSec->end()) {
+          size_t targetIdx = std::distance(timeSec->begin(), it);
+          // Snap to the genuinely closest sample, not just the next one
+          if (0 < targetIdx) {
+            double distNext = std::abs((*timeSec)[targetIdx] - targetTime);
+            double distPrev = std::abs((*timeSec)[targetIdx - 1] - targetTime);
+            if (distPrev < distNext) {
+              targetIdx--;
+            }
+          }
+          if (targetIdx < afrCh->values().size()) {
+            afr = afrCh->values()[targetIdx];
+          } else {
+            continue; // Out of bounds, discard sample
+          }
+        } else {
+          continue; // Target time is beyond the end of the log, discard sample
+        }
+        // If the future AFR is somehow invalid, skip this binning event
+        if (std::isnan(afr)) continue;
+      }
       size_t bestR = 0, bestC = 0;
       double minDist = std::numeric_limits<double>::max();
-
       for (size_t r = 0; r < rows; ++r) {
         for (size_t c = 0; c < cols; ++c) {
-          double dRpm = (rpm - baselineVe.xBreakpoints()[c]) / 1000.0;
-          double dLoad = (load - baselineVe.yBreakpoints()[r]) / 10.0;
+          double dRpm = (rpm - xBp[c]) / 1000.0;
+          double dLoad = (load - yBp[r]) / 10.0;
           double dist = (dRpm * dRpm) + (dLoad * dLoad);
-
           if (dist < minDist) {
             minDist = dist;
             bestR = r;
@@ -129,11 +158,28 @@ namespace engine {
           }
         }
       }
-
       sumAfr[bestR][bestC] += afr;
       countAfr[bestR][bestC]++;
     }
+    res.sumAfr = std::move(sumAfr);
+    res.hitCount = std::move(countAfr);
+    return res;
+  }
 
+  core::Table2D VeAnalyzer::computeCorrectedVe(
+    const ObservedAfrData &obsAfrData,
+    const core::Table2D &baselineVe,
+    const core::Table2D &targetAfr,
+    const VeAnalysisConfig &config)
+  {
+    core::Table2D correctedVe = baselineVe;
+    if (obsAfrData.sumAfr.empty()) {
+      return correctedVe;
+    }
+    const auto &sumAfr = obsAfrData.sumAfr;
+    const auto &countAfr = obsAfrData.hitCount;
+    const size_t rows = baselineVe.rowCount();
+    const size_t cols = baselineVe.columnCount();
     for (size_t r = 0; r < rows; ++r) {
       for (size_t c = 0; c < cols; ++c) {
         if (countAfr[r][c] >= config.minSamplesPerBin) {
@@ -141,7 +187,6 @@ namespace engine {
           double rpmBp = baselineVe.xBreakpoints()[c];
           double loadBp = baselineVe.yBreakpoints()[r];
           double tgtAfr = targetAfr.sample(rpmBp, loadBp);
-
           if (0.0 < tgtAfr) {
             double oldVe = baselineVe.value(r, c);
             double rawRatio = avgObservedAfr / tgtAfr;
@@ -149,13 +194,11 @@ namespace engine {
             double minAllowedRatio = 1.0 - config.maxPercentChange;
             double maxAllowedRatio = 1.0 + config.maxPercentChange;
             double finalRatio = std::clamp(weightedRatio, minAllowedRatio, maxAllowedRatio);
-
             correctedVe.setValue(r, c, oldVe * finalRatio);
           }
         }
       }
     }
-
     return correctedVe;
   }
 
@@ -176,7 +219,7 @@ namespace engine {
       return suggestedVe;
     }
 
-    // 1. Bin sample counts across the grid to determine statistical density
+    // Bin sample counts across the grid to determine statistical density
     std::vector<std::vector<size_t>> sampleCounts(rows, std::vector<size_t>(cols, 0));
     const core::Channel *rpmCh = session.findChannel(session.channelMapping().rpm);
     const core::Channel *loadCh = session.findChannel(session.channelMapping().load);
@@ -214,7 +257,7 @@ namespace engine {
       }
     }
 
-    // 2. Compute confidence weight matrix w_{r,c} \in [0.0, 1.0]
+    // Compute confidence weight matrix w_{r,c} \in [0.0, 1.0]
     const double minSamplesThreshold = static_cast<double>(std::max<size_t>(1, config.minSamplesPerBin));
     core::Table2D confidenceWeights(suggestedVe.xBreakpoints(), suggestedVe.yBreakpoints());
     for (size_t r = 0; r < rows; ++r) {
@@ -230,7 +273,7 @@ namespace engine {
       }
     }
 
-    // 3. Perform weighted Laplacian/Bilateral smoothing update
+    // Perform weighted Laplacian/Bilateral smoothing update
     core::Table2D smoothedVe = suggestedVe;
     bool hasSelection = 1 < selectedCells.size();
     for (size_t r = 0; r < rows; ++r) {

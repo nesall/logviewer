@@ -2141,6 +2141,11 @@ namespace engine {
   VeAnalysisConfig::VeAnalysisConfig()
   {
     excludedRegimeIds.insert(std::string(core::RegimeDef::Ids::overrun_fuel_cut));
+    // MLVHD Defaults: RPM [700, 2910, 9000], Load [30, 101, 260]
+    lambdaDelayTable = core::Table2D({ 700.0, 2910.0, 9000.0 }, { 30.0, 101.0, 260.0 });
+    lambdaDelayTable.setValue(0, 0, 350.0); lambdaDelayTable.setValue(0, 1, 300.0); lambdaDelayTable.setValue(0, 2, 200.0);
+    lambdaDelayTable.setValue(1, 0, 250.0); lambdaDelayTable.setValue(1, 1, 150.0); lambdaDelayTable.setValue(1, 2, 100.0);
+    lambdaDelayTable.setValue(2, 0, 200.0); lambdaDelayTable.setValue(2, 1, 70.0);  lambdaDelayTable.setValue(2, 2, 40.0);
   }
 
 
@@ -2243,6 +2248,18 @@ namespace engine {
 
       if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
       if (filter.shouldIgnoreSample(i, rpm, load, t)) continue;
+
+      //if (config.enableLambdaDelay) {
+      //  double delayMs = config.lambdaDelayTable.sample(rpm, load);
+      //  double targetTime = t + (delayMs / 1000.0);
+      //  auto it = std::lower_bound(timeSec->begin(), timeSec->end(), targetTime);
+      //  if (it != timeSec->end()) {
+      //    size_t targetIdx = std::distance(timeSec->begin(), it);
+      //    if (targetIdx < afrCh->values().size()) {
+      //      afr = afrCh->values()[targetIdx];
+      //    }
+      //  }
+      //}
 
       size_t bestR = 0, bestC = 0;
       double minDist = std::numeric_limits<double>::max();
@@ -2446,6 +2463,9 @@ namespace engine {
     bool enableOverrunFilter = true; // Governs minMap check
 
     std::set<std::string> excludedRegimeIds;
+
+    bool enableLambdaDelay = true;
+    core::Table2D lambdaDelayTable;
   };
 
   class VeTransientFilter {
@@ -3883,9 +3903,12 @@ int main() {
   ImGui::CreateContext();
   ImPlot::CreateContext();
 
+
   ImGuiIO &io = ImGui::GetIO();
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+
+  io.IniFilename = nullptr; // add once, near ImGui::CreateContext()
 
   ImFont *mainFont = io.Fonts->AddFontFromFileTTF("assets/fonts/Rubik-Regular.ttf", 16.0f, nullptr, io.Fonts->GetGlyphRangesDefault());
 #include "3rdparty/IconsFontAwesome7.h"
@@ -4006,6 +4029,20 @@ namespace ui {
     // a dev-testing tool. Move to a proper per-user config directory
     // (%AppData% / ~/.config) if this ever ships beyond your own machine.
     const char *kSettingsFilePath = "logviewer_settings.json";
+
+    const char *kDockSpaceHost = "DockSpaceHost";
+    const char *kMainDockSpace = "MainDockSpace";
+
+    ImGuiID getDockspaceId() {
+      ImGuiID hostId = ImHashStr(kDockSpaceHost);
+      return ImHashStr(kMainDockSpace, 0, hostId);
+    }
+
+    bool isActiveTabPanel(const std::string &windowLabel) {
+      ImGuiWindow *w = ImGui::FindWindowByName(windowLabel.c_str());
+      if (!w || !w->DockNode || !w->DockNode->TabBar) return false;
+      return w->DockNode->TabBar->SelectedTabId == w->TabId;
+    }
 
   } // namespace
 
@@ -4167,7 +4204,12 @@ namespace ui {
 
     nlohmann::json panelsJson = nlohmann::json::array();
     for (const auto &panel : panels_) {
-      panelsJson.push_back({ {"type", panel->panelTypeId()}, {"state", panel->saveState()} });
+      bool isActive = isActiveTabPanel(panel->lastWindowLabel());
+      panelsJson.push_back({
+        {"type", panel->panelTypeId()},
+        {"state", panel->saveState()},
+        {"active", isActive}
+        });
 #ifdef _DEBUG2
       std::cout << "Saving panel: " << panel->panelTypeId() << " state: " << panel->saveState().dump() << std::endl;
 #endif
@@ -4250,8 +4292,7 @@ namespace ui {
     if (root.contains("imguiLayout") && root["imguiLayout"].is_string()) {
       std::string iniData = root["imguiLayout"].get<std::string>();
       ImGui::LoadIniSettingsFromMemory(iniData.c_str(), iniData.size());
-      ImGuiID hostId = ImHashStr("DockSpaceHost");
-      ImGuiID dockspaceId = ImHashStr("MainDockSpace", 0, hostId);
+      ImGuiID dockspaceId = getDockspaceId();
       if (ImGuiDockNode *node = ImGui::DockBuilderGetNode(dockspaceId)) {
         ImGui::DockBuilderSetNodePos(dockspaceId, ImGui::GetMainViewport()->WorkPos);
         ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->WorkSize);
@@ -4281,6 +4322,10 @@ namespace ui {
 
         if (panel) {
           panel->loadState(state);
+          panel->setLoadedFromWorkspace();
+          if (panelJson.value("active", false)) {
+            panel->setActivateOnLoad();
+          }
           if (panel->panelTypeId() == "DriveRegimePanel") {
             auto regimePanel = static_cast<DriveRegimePanel *>(panel.get());
             regimePanel->setOnDataChangedCallback([this] { notifyRegimesUpdated(); });
@@ -4295,6 +4340,7 @@ namespace ui {
       if (panel->panelTypeId() != "DriveRegimePanel") {
         panel->setOnDataChangedCallback([this, p = panel.get()]() { markDirty(); });
         panel->setSession(&session_);
+        break;
       }
     }
 
@@ -4303,6 +4349,11 @@ namespace ui {
       cursor_.timeSec = cursorJson.value("timeSec", 0.0);
       cursor_.active = cursorJson.value("active", false);
     }
+
+    //if (!firstWorkspaceLoadDone_) {
+    //  firstWorkspaceLoadDone_ = true;
+    //  pendingSelfReloadPath_ = path; // force a silent automatic reload next frame
+    //}
 
     isDirty_ = false;
   }
@@ -4995,6 +5046,7 @@ namespace ui {
       currentWorkspacePath_.clear();
       isDirty_ = false;
       welcomeFadeTimer_ = 0.0f;
+      ImGui::DockBuilderRemoveNode(getDockspaceId());
       updateWindowTitle();
       break;
 
@@ -5212,12 +5264,12 @@ namespace ui {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
 
-    ImGui::Begin("DockSpaceHost", nullptr, hostFlags);
+    ImGui::Begin(kDockSpaceHost, nullptr, hostFlags);
     ImGui::PopStyleVar(3);
 
     renderMenuBar();
 
-    ImGuiID dockspaceId = ImGui::GetID("MainDockSpace");
+    ImGuiID dockspaceId = ImGui::GetID(kMainDockSpace);
     ImGui::DockSpace(dockspaceId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
 
     if (session_.rowCount() == 0 && panels_.empty()) {
@@ -5822,6 +5874,8 @@ namespace ui {
 
     PlotCursor cursor_;
     std::vector<std::unique_ptr<PlotPanel>> panels_;
+    bool firstWorkspaceLoadDone_ = false;
+    std::string pendingSelfReloadPath_;
 
     io::MegasquirtCsvParser mslParser_;
     io::HaltechDlParser haltechParser_;
@@ -5959,11 +6013,11 @@ namespace ui {
   void Curve2DPanel::render(PlotCursor &cursor)
   {
     std::string windowLabel = makeWindowLabel(ICON_FA_CHART_LINE);
-    if (!ImGui::Begin(windowLabel.c_str(), &open_)) {
+    if (!ImGui::Begin(windowLabel.c_str(), &open_, getAppearanceFlags())) {
       ImGui::End();
       return;
     }
-    renderContextMenu();
+    renderCommonOps();
     // Left Sidebar: Curve list & point table
     ImGui::BeginChild("CurveSidebar", ImVec2(280.0f, 0.0f), true);
     renderSidebar();
@@ -6657,7 +6711,7 @@ namespace ui {
   void DriveRegimePanel::render(PlotCursor &cursor)
   {
     std::string windowLabel = makeWindowLabel(ICON_FA_FLAG);
-    ImGui::Begin(windowLabel.c_str(), &open_);
+    ImGui::Begin(windowLabel.c_str(), &open_, getAppearanceFlags());
 
     if (!session_) {
       ImGui::TextDisabled("No log session loaded.");
@@ -6878,6 +6932,9 @@ namespace ui {
     const std::vector<core::RegimeSummary> &regimes() const;
     std::vector<core::RegimeSummary> &regimes();
 
+  protected:
+    bool allowTitleEdit() const override { return false; }
+
   private:
     void reanalyze();
     void renderConfigModal();
@@ -6926,7 +6983,7 @@ namespace ui {
 
   std::string PlotPanel::makeWindowLabel(const char *icon) const
   {
-    return std::string(icon) + " " + title_ + "###" + panelInstanceId_;
+    return const_cast<PlotPanel *>(this)->lastWindowLabel_ = std::string(icon) + " " + title_ + "###" + panelInstanceId_;
   }
 
   void PlotPanel::renderContextMenu()
@@ -6976,6 +7033,17 @@ namespace ui {
     }
   }
 
+  void PlotPanel::renderCommonOps()
+  {
+    if (allowTitleEdit()) {
+      renderContextMenu();
+    }
+    if (activateOnLoad_) {
+      ImGui::SetWindowFocus();   // no args = current window; sets it as the selected tab
+      activateOnLoad_ = false;
+    }
+  }
+
 } // namespace ui
 
 
@@ -6983,10 +7051,10 @@ namespace ui {
 
 #pragma once
 
+#include "3rdparty/nlohmann/json_fwd.hpp"
 #include <string>
 #include <functional>
-
-#include "3rdparty/nlohmann/json_fwd.hpp"
+#include "imgui.h"
 
 namespace core {
   class LogSession;
@@ -7030,19 +7098,31 @@ namespace ui {
     void setOnDataChangedCallback(std::function<void()> callback) { onDataChanged_ = std::move(callback); }
 
     const std::string &title() const { return title_; }
+    std::string panelInstanceId() const { return panelInstanceId_; }
+    std::string lastWindowLabel() const { return lastWindowLabel_; }
+    void setLoadedFromWorkspace() { justLoaded_ = true; }
+    void setActivateOnLoad() { activateOnLoad_ = true; }
 
   protected:
-    std::string panelInstanceId() const { return panelInstanceId_; }
     virtual void notifyDataChanged() { if (onDataChanged_) onDataChanged_(); }
     std::string makeWindowLabel(const char *icon) const;
     void renderContextMenu();
+    void renderCommonOps();
+    ImGuiWindowFlags getAppearanceFlags() {
+      ImGuiWindowFlags flags = justLoaded_ ? ImGuiWindowFlags_NoFocusOnAppearing : 0;
+      justLoaded_ = false; // Consume the flag so it only applies to the first frame
+      return flags;
+    }
+    virtual bool allowTitleEdit() const { return true; }
 
   private:
     std::string panelInstanceId_;
     std::string title_;
+    std::string lastWindowLabel_;
     std::function<void()> onDataChanged_;
-    //bool isEditingTitle_ = false;
     bool showRenameModal_ = false;
+    bool justLoaded_ = false;    
+    bool activateOnLoad_ = false;
   };
 
 } // namespace ui
@@ -7397,7 +7477,7 @@ namespace ui {
       legendLabel += " vs " + selectedColorChannel_;
     }
     std::string windowLabel = legendLabel + "###" + panelInstanceId();
-    ImGui::Begin(windowLabel.c_str(), &open_);
+    ImGui::Begin(windowLabel.c_str(), &open_, getAppearanceFlags());
 
     const bool haveSession = (session_ != nullptr && !session_->channels().empty());
 
@@ -7689,6 +7769,9 @@ namespace ui {
     std::string panelTypeId() const override { return "ScatterPanel"; }
     nlohmann::json saveState() const override;
     void loadState(const nlohmann::json &state) override;
+
+  protected:
+    bool allowTitleEdit() const override { return false; }
 
   private:
     void generatePlaceholderData();
@@ -7988,8 +8071,8 @@ namespace ui {
   void StatusPanel::render(PlotCursor &cursor)
   {
     std::string windowLabel = makeWindowLabel(ICON_FA_GAUGE_SIMPLE);
-    ImGui::Begin(windowLabel.c_str(), &open_);
-    renderContextMenu();
+    ImGui::Begin(windowLabel.c_str(), &open_, getAppearanceFlags());
+    renderCommonOps();
     renderChannelPickerPopup();
     ImGui::Separator();
     renderCellGrid(cursor);
@@ -9913,8 +9996,8 @@ namespace ui {
   void TableOverlayPanel::render(PlotCursor &cursor)
   {
     std::string windowLabel = makeWindowLabel(ICON_FA_LAYER_GROUP);
-    ImGui::Begin(windowLabel.c_str(), &open_);    
-    renderContextMenu();
+    ImGui::Begin(windowLabel.c_str(), &open_, getAppearanceFlags());
+    renderCommonOps();
     if (session_ == nullptr) {
       ImGui::TextDisabled("No log session loaded.");
       ImGui::End();
@@ -11661,8 +11744,8 @@ namespace ui {
   void TimeSeriesPanel::render(PlotCursor &cursor)
   {
     std::string windowLabel = makeWindowLabel(ICON_FA_CHART_GANTT);
-    ImGui::Begin(windowLabel.c_str(), &open_);
-    renderContextMenu();
+    ImGui::Begin(windowLabel.c_str(), &open_, getAppearanceFlags());
+    renderCommonOps();
     renderHeaderControls(cursor);
     renderTimelineActionPopup(cursor);
     renderExportCsvModal();
@@ -12045,14 +12128,12 @@ namespace ui {
   VeAnalysisPanel::VeAnalysisPanel(std::string title)
     : PlotPanel(std::move(title))
     , targetAfrPanel_("Target AFR Editor", "TargetAfrTable", "Target AFR",
-      core::Table2D(core::generateEvenBreakpoints(500, 7000, 16),
-        core::generateEvenBreakpoints(20, 100, 16)))
+      core::Table2D(core::generateEvenBreakpoints(500, 7000, 16), core::generateEvenBreakpoints(20, 100, 16)))
     , baselineVePanel_("Baseline VE Editor", "VeTable", "Baseline VE",
-      core::Table2D(core::generateEvenBreakpoints(500, 7000, 16),
-        core::generateEvenBreakpoints(20, 100, 16)))
+      core::Table2D(core::generateEvenBreakpoints(500, 7000, 16), core::generateEvenBreakpoints(20, 100, 16)))
     , suggestedVePanel_("Suggested VE", "SuggestedVeTable", "Suggested VE",
-      core::Table2D(core::generateEvenBreakpoints(500, 7000, 16),
-        core::generateEvenBreakpoints(20, 100, 16)))
+      core::Table2D(core::generateEvenBreakpoints(500, 7000, 16), core::generateEvenBreakpoints(20, 100, 16)))
+    , lambdaDelayEditor_("Lambda Delay", "LambdaDelay", "Lambda Delay", config_.lambdaDelayTable)
   {
     observedAfrTable_ = core::Table2D(core::generateEvenBreakpoints(500, 7000, 16), core::generateEvenBreakpoints(20, 100, 16));
 
@@ -12076,6 +12157,9 @@ namespace ui {
         recalcCallback();
       }
       ImGui::EndDisabled();
+      });
+    lambdaDelayEditor_.setOnDataChangedCallback([this] {
+      config_.lambdaDelayTable = lambdaDelayEditor_.table();
       });
   }
 
@@ -12163,6 +12247,18 @@ namespace ui {
       if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
 
       if (filter.shouldIgnoreSample(i, rpm, load, t)) continue;
+
+      if (config_.enableLambdaDelay) {
+        double delayMs = config_.lambdaDelayTable.sample(rpm, load);
+        double targetTime = t + (delayMs / 1000.0);
+        auto it = std::lower_bound(timeSec->begin(), timeSec->end(), targetTime);
+        if (it != timeSec->end()) {
+          size_t targetIdx = std::distance(timeSec->begin(), it);
+          if (targetIdx < afrCh->values().size()) {
+            afr = afrCh->values()[targetIdx];
+          }
+        }
+      }
 
       size_t bestR = 0, bestC = 0;
       double minDist = std::numeric_limits<double>::max();
@@ -12410,7 +12506,7 @@ namespace ui {
     suggestedVePanel_.setSelection(unvisited);
   }
 
-  void VeAnalysisPanel::renderObservedAfrTab()
+  void VeAnalysisPanel::renderObservedAfrTab(PlotCursor &cursor)
   {
     if (session_ == nullptr) {
       ImGui::TextDisabled("No log file loaded.");
@@ -12535,6 +12631,15 @@ namespace ui {
           ImGui::EndTabItem();
         }
 
+        if (ImGui::BeginTabItem("Lambda Delay")) {
+          ImGui::Checkbox("Enable Transport Delay Compensation", &config_.enableLambdaDelay);
+          if (config_.enableLambdaDelay) {
+            ImGui::Separator();
+            lambdaDelayEditor_.render(cursor);
+          }
+          ImGui::EndTabItem();
+        }
+
         ImGui::EndTabBar();
       }
 
@@ -12610,11 +12715,6 @@ namespace ui {
           for (size_t c = minObservedCol_; c <= maxObservedCol_; ++c) {
             ImGui::TableSetColumnIndex(static_cast<int>(c - minObservedCol_ + 1));
             double val = observedAfrTable_.value(r, c);
-            //if (val > 0.0) {
-            //  ImGui::Text("%.2f", val);
-            //} else {
-            //  ImGui::TextDisabled(" - ");
-            //}
             const std::string idSuffix = "##cell_" + std::to_string(r) + "_" + std::to_string(c);
             char cellText[64];
             if (0 < val) {
@@ -13029,8 +13129,8 @@ namespace ui {
   void VeAnalysisPanel::render(PlotCursor &cursor)
   {
     std::string windowLabel = makeWindowLabel(ICON_FA_SLIDERS);
-    ImGui::Begin(windowLabel.c_str(), &open_);
-    renderContextMenu();
+    ImGui::Begin(windowLabel.c_str(), &open_, getAppearanceFlags());
+    renderCommonOps();
     if (ImGui::BeginTabBar("VeAnalyzerTabBar")) {
 
       ImGui::PushStyleColor(ImGuiCol_Tab, ImVec4(0.50f, 0.20f, 0.70f, 1.0f));
@@ -13038,7 +13138,7 @@ namespace ui {
       ImGui::PushStyleColor(ImGuiCol_TabActive, ImVec4(0.58f, 0.25f, 0.78f, 1.0f));
       if (ImGui::BeginTabItem("Observed AFR")) {
         ImGui::PopStyleColor(3);
-        renderObservedAfrTab();
+        renderObservedAfrTab(cursor);
         ImGui::EndTabItem();
       } else {
         ImGui::PopStyleColor(3);
@@ -13176,7 +13276,7 @@ namespace ui {
   private:
     void computeObservedAfr();
     void computeSuggestedVe();
-    void renderObservedAfrTab();
+    void renderObservedAfrTab(PlotCursor &);
     void renderTargetAfrTab();
     void renderBaselineVeTab();
     void renderSuggestedVeTab();
@@ -13229,6 +13329,7 @@ namespace ui {
     int hoveredCol_ = -1;
 
     std::string regimeFilterText_;
+    TableEditorPanel lambdaDelayEditor_;
   };
 
 } // namespace ui
@@ -13306,11 +13407,11 @@ namespace ui {
   void VirtualDynoPanel::render(PlotCursor &cursor)
   {
     std::string windowLabel = makeWindowLabel(ICON_FA_GAUGE_HIGH);
-    if (!ImGui::Begin(windowLabel.c_str(), &open_)) {
+    if (!ImGui::Begin(windowLabel.c_str(), &open_, getAppearanceFlags())) {
       ImGui::End();
       return;
     }
-    renderContextMenu();
+    renderCommonOps();
     // Left Configuration Panel
     ImGui::BeginChild("DynoSidebar", ImVec2(320.0f, 0.0f), true);
     renderSidebar();

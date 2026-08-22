@@ -68,4 +68,4 @@ lcov.info
 benchmarks/results/
 *.prof
 
-combined_src.txt
+src/combined_src.txt

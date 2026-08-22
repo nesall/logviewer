@@ -19,14 +19,12 @@ namespace ui {
   VeAnalysisPanel::VeAnalysisPanel(std::string title)
     : PlotPanel(std::move(title))
     , targetAfrPanel_("Target AFR Editor", "TargetAfrTable", "Target AFR",
-      core::Table2D(core::generateEvenBreakpoints(500, 7000, 16),
-        core::generateEvenBreakpoints(20, 100, 16)))
+      core::Table2D(core::generateEvenBreakpoints(500, 7000, 16), core::generateEvenBreakpoints(20, 100, 16)))
     , baselineVePanel_("Baseline VE Editor", "VeTable", "Baseline VE",
-      core::Table2D(core::generateEvenBreakpoints(500, 7000, 16),
-        core::generateEvenBreakpoints(20, 100, 16)))
+      core::Table2D(core::generateEvenBreakpoints(500, 7000, 16), core::generateEvenBreakpoints(20, 100, 16)))
     , suggestedVePanel_("Suggested VE", "SuggestedVeTable", "Suggested VE",
-      core::Table2D(core::generateEvenBreakpoints(500, 7000, 16),
-        core::generateEvenBreakpoints(20, 100, 16)))
+      core::Table2D(core::generateEvenBreakpoints(500, 7000, 16), core::generateEvenBreakpoints(20, 100, 16)))
+    , lambdaDelayEditor_("Lambda Delay", "LambdaDelay", "Lambda Delay", config_.lambdaDelayTable)
   {
     observedAfrTable_ = core::Table2D(core::generateEvenBreakpoints(500, 7000, 16), core::generateEvenBreakpoints(20, 100, 16));
 
@@ -50,6 +48,9 @@ namespace ui {
         recalcCallback();
       }
       ImGui::EndDisabled();
+      });
+    lambdaDelayEditor_.setOnDataChangedCallback([this] {
+      config_.lambdaDelayTable = lambdaDelayEditor_.table();
       });
   }
 
@@ -118,53 +119,15 @@ namespace ui {
     const size_t cols = xBp.size();
     if (rows == 0 || cols == 0) return;
 
-    std::vector<std::vector<double>> sumAfr(rows, std::vector<double>(cols, 0.0));
-    std::vector<std::vector<size_t>> countAfr(rows, std::vector<size_t>(cols, 0));
-
-    const size_t numSamples = session_->rowCount();
-    engine::VeTransientFilter filter(*session_, config_);
-
-    const auto *timeSec = session_->timeSec();
-    for (size_t i = 0; i < numSamples; ++i) {
-      
-      if (!session_->isRowInCropRange(i)) continue; // Respect active crop range
-
-      double rpm = rpmCh->values()[i];
-      double load = loadCh->values()[i];
-      double afr = afrCh->values()[i];
-      double t = (timeSec && i < timeSec->size()) ? (*timeSec)[i] : 0.0;
-
-      if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
-
-      if (filter.shouldIgnoreSample(i, rpm, load, t)) continue;
-
-      size_t bestR = 0, bestC = 0;
-      double minDist = std::numeric_limits<double>::max();
-
-      for (size_t r = 0; r < rows; ++r) {
-        for (size_t c = 0; c < cols; ++c) {
-          double dRpm = (rpm - xBp[c]) / 1000.0;
-          double dLoad = (load - yBp[r]) / 10.0;
-          double dist = (dRpm * dRpm) + (dLoad * dLoad);
-
-          if (dist < minDist) {
-            minDist = dist;
-            bestR = r;
-            bestC = c;
-          }
-        }
-      }
-
-      sumAfr[bestR][bestC] += afr;
-      countAfr[bestR][bestC]++;
-    }
+    observedAfrData_ = engine::VeAnalyzer::computeObservedAfr(*session_, xBp, yBp, config_);
 
     minObservedRow_ = rows;
     maxObservedRow_ = 0;
     minObservedCol_ = cols;
     maxObservedCol_ = 0;
     hasObservedData_ = false;
-
+    const auto &sumAfr = observedAfrData_.sumAfr;
+    const auto &countAfr = observedAfrData_.hitCount;
     for (size_t r = 0; r < rows; ++r) {
       for (size_t c = 0; c < cols; ++c) {
         if (countAfr[r][c] >= config_.minSamplesPerBin) {
@@ -182,6 +145,57 @@ namespace ui {
       }
     }
     observedTableUniqueId_ = utils::str::generateUniqueId();
+  }
+
+  void VeAnalysisPanel::computeAfrDelta()
+  {
+    if (!session_ || !hasTargetAfr()) {
+      hasAfrDelta_ = false;
+      return;
+    }
+
+    const core::Channel *rpmCh = session_->findChannel(session_->channelMapping().rpm);
+    const core::Channel *loadCh = session_->findChannel(session_->channelMapping().load);
+    const core::Channel *afrCh = session_->findChannel(session_->channelMapping().afr);
+
+    if (!rpmCh || !loadCh || !afrCh) {
+      hasAfrDelta_ = false;
+      return;
+    }
+
+    const bool useVeAxes = alignAfrDeltaToVeTable_ && hasBaselineVe();
+    const core::Table2D &refTable = useVeAxes ? baselineVePanel_.table() : targetAfrPanel_.table();
+
+    const auto &xBp = refTable.xBreakpoints();
+    const auto &yBp = refTable.yBreakpoints();
+    afrDeltaTable_.setXBreakpoints(xBp);
+    afrDeltaTable_.setYBreakpoints(yBp);
+
+    const size_t rows = yBp.size();
+    const size_t cols = xBp.size();
+
+    if (rows == 0 || cols == 0) return;
+
+    const auto &sumAfr = observedAfrData_.sumAfr;
+    const auto &hitCount = observedAfrData_.hitCount;
+    for (size_t r = 0; r < rows; ++r) {
+      for (size_t c = 0; c < cols; ++c) {
+        size_t count = hitCount[r][c];
+        if (count >= config_.minSamplesPerBin) {
+          double obsAfr = sumAfr[r][c] / static_cast<double>(count);
+          double tgtAfr = useVeAxes ? targetAfrPanel_.table().sample(xBp[c], yBp[r]) : targetAfrPanel_.table().value(r, c);
+          if (tgtAfr > 0.0) {
+            afrDeltaTable_.setValue(r, c, obsAfr - tgtAfr);
+          } else {
+            afrDeltaTable_.setValue(r, c, std::numeric_limits<double>::quiet_NaN());
+          }
+        } else {
+          afrDeltaTable_.setValue(r, c, std::numeric_limits<double>::quiet_NaN());
+        }
+      }
+    }
+
+    hasAfrDelta_ = true;
   }
 
   void VeAnalysisPanel::computeSuggestedVe()
@@ -311,7 +325,7 @@ namespace ui {
       }
       };
 
-    core::Table2D result = engine::VeAnalyzer::computeCorrectedVe(*session_, baselineVePanel_.table(), targetAfrPanel_.table(), config_);
+    core::Table2D result = engine::VeAnalyzer::computeCorrectedVe(observedAfrData_, baselineVePanel_.table(), targetAfrPanel_.table(), config_);
     suggestedVePanel_.setCustomHeatmapColoring(customHeatmap);
     suggestedVePanel_.setCustomHoverTooltip(customTooltip);
     suggestedVePanel_.setCustomTextColoring(customTextColor);
@@ -384,7 +398,7 @@ namespace ui {
     suggestedVePanel_.setSelection(unvisited);
   }
 
-  void VeAnalysisPanel::renderObservedAfrTab()
+  void VeAnalysisPanel::renderObservedAfrTab(PlotCursor &cursor)
   {
     if (session_ == nullptr) {
       ImGui::TextDisabled("No log file loaded.");
@@ -509,6 +523,15 @@ namespace ui {
           ImGui::EndTabItem();
         }
 
+        if (ImGui::BeginTabItem("Lambda Delay")) {
+          ImGui::Checkbox("Enable Transport Delay Compensation", &config_.enableLambdaDelay);
+          if (config_.enableLambdaDelay) {
+            ImGui::Separator();
+            lambdaDelayEditor_.render(cursor);
+          }
+          ImGui::EndTabItem();
+        }
+
         ImGui::EndTabBar();
       }
 
@@ -584,11 +607,6 @@ namespace ui {
           for (size_t c = minObservedCol_; c <= maxObservedCol_; ++c) {
             ImGui::TableSetColumnIndex(static_cast<int>(c - minObservedCol_ + 1));
             double val = observedAfrTable_.value(r, c);
-            //if (val > 0.0) {
-            //  ImGui::Text("%.2f", val);
-            //} else {
-            //  ImGui::TextDisabled(" - ");
-            //}
             const std::string idSuffix = "##cell_" + std::to_string(r) + "_" + std::to_string(c);
             char cellText[64];
             if (0 < val) {
@@ -611,93 +629,6 @@ namespace ui {
       hoveredRow_ = nextHoveredRow;
       hoveredCol_ = nextHoveredCol;
     }
-  }
-
-  void VeAnalysisPanel::computeAfrDelta()
-  {
-    if (!session_ || !hasTargetAfr()) {
-      hasAfrDelta_ = false;
-      return;
-    }
-
-    const core::Channel *rpmCh = session_->findChannel(session_->channelMapping().rpm);
-    const core::Channel *loadCh = session_->findChannel(session_->channelMapping().load);
-    const core::Channel *afrCh = session_->findChannel(session_->channelMapping().afr);
-
-    if (!rpmCh || !loadCh || !afrCh) {
-      hasAfrDelta_ = false;
-      return;
-    }
-
-    const bool useVeAxes = alignAfrDeltaToVeTable_ && hasBaselineVe();
-    const core::Table2D &refTable = useVeAxes ? baselineVePanel_.table() : targetAfrPanel_.table();
-
-    const auto &xBp = refTable.xBreakpoints();
-    const auto &yBp = refTable.yBreakpoints();
-    afrDeltaTable_.setXBreakpoints(xBp);
-    afrDeltaTable_.setYBreakpoints(yBp);
-
-    const size_t rows = yBp.size();
-    const size_t cols = xBp.size();
-
-    if (rows == 0 || cols == 0) return;
-
-    std::vector<std::vector<double>> sumAfr(rows, std::vector<double>(cols, 0.0));
-
-    // Resize sample count matrix to match grid dimensions
-    afrDeltaSampleCounts_.assign(rows, std::vector<size_t>(cols, 0));
-
-    const size_t numSamples = session_->rowCount();
-    engine::VeTransientFilter filter(*session_, config_);
-
-    const auto *timeSec = session_->timeSec();
-    for (size_t i = 0; i < numSamples; ++i) {
-      double rpm = rpmCh->values()[i];
-      double load = loadCh->values()[i];
-      double afr = afrCh->values()[i];
-      double t = (timeSec && i < timeSec->size()) ? (*timeSec)[i] : 0.0;
-      if (std::isnan(rpm) || std::isnan(load) || std::isnan(afr)) continue;
-      if (filter.shouldIgnoreSample(i, rpm, load, t)) continue;
-
-      size_t bestR = 0, bestC = 0;
-      double minDist = std::numeric_limits<double>::max();
-
-      for (size_t r = 0; r < rows; ++r) {
-        for (size_t c = 0; c < cols; ++c) {
-          double dRpm = (rpm - xBp[c]) / 1000.0;
-          double dLoad = (load - yBp[r]) / 10.0;
-          double dist = (dRpm * dRpm) + (dLoad * dLoad);
-
-          if (dist < minDist) {
-            minDist = dist;
-            bestR = r;
-            bestC = c;
-          }
-        }
-      }
-
-      sumAfr[bestR][bestC] += afr;
-      afrDeltaSampleCounts_[bestR][bestC]++;
-    }
-
-    for (size_t r = 0; r < rows; ++r) {
-      for (size_t c = 0; c < cols; ++c) {
-        size_t count = afrDeltaSampleCounts_[r][c];
-        if (count >= config_.minSamplesPerBin) {
-          double obsAfr = sumAfr[r][c] / static_cast<double>(count);
-          double tgtAfr = useVeAxes ? targetAfrPanel_.table().sample(xBp[c], yBp[r]) : targetAfrPanel_.table().value(r, c);
-          if (tgtAfr > 0.0) {
-            afrDeltaTable_.setValue(r, c, obsAfr - tgtAfr);
-          } else {
-            afrDeltaTable_.setValue(r, c, std::numeric_limits<double>::quiet_NaN());
-          }
-        } else {
-          afrDeltaTable_.setValue(r, c, std::numeric_limits<double>::quiet_NaN());
-        }
-      }
-    }
-
-    hasAfrDelta_ = true;
   }
 
   void VeAnalysisPanel::renderAfrDeltaTab()
@@ -814,12 +745,13 @@ namespace ui {
             ImGui::Text("%.1f", yBp[r]);
           }
 
+          const auto &afrHitCount = observedAfrData_.hitCount;
+
           for (size_t c = 0; c < cols; ++c) {
             ImGui::TableSetColumnIndex(static_cast<int>(c + 1));
 
             double delta = afrDeltaTable_.value(r, c);
-            size_t hitCount = (r < afrDeltaSampleCounts_.size() && c < afrDeltaSampleCounts_[r].size())
-              ? afrDeltaSampleCounts_[r][c] : 0;
+            size_t hitCount = (r < afrHitCount.size() && c < afrHitCount[r].size()) ? afrHitCount[r][c] : 0;
 
             if (!std::isnan(delta)) {
               ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, getDeltaHeatMapColor(delta, hitCount));
@@ -1012,7 +944,7 @@ namespace ui {
       ImGui::PushStyleColor(ImGuiCol_TabActive, ImVec4(0.58f, 0.25f, 0.78f, 1.0f));
       if (ImGui::BeginTabItem("Observed AFR")) {
         ImGui::PopStyleColor(3);
-        renderObservedAfrTab();
+        renderObservedAfrTab(cursor);
         ImGui::EndTabItem();
       } else {
         ImGui::PopStyleColor(3);

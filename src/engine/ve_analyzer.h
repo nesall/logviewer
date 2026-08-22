@@ -32,6 +32,9 @@ namespace engine {
     bool enableOverrunFilter = true; // Governs minMap check
 
     std::set<std::string> excludedRegimeIds;
+
+    bool enableLambdaDelay = true;
+    core::Table2D lambdaDelayTable;
   };
 
   class VeTransientFilter {
@@ -50,12 +53,22 @@ namespace engine {
     std::vector<core::TimeInterval> excludedIntervals_;
   };
 
+  struct ObservedAfrData {
+    std::vector<std::vector<double>> sumAfr;
+    std::vector<std::vector<size_t>> hitCount;
+  };
+
   class VeAnalyzer {
   public:
-    // Returns a new Table2D with corrected VE values where sample counts meet the threshold.
-    // Unchanged cells retain their original VE values.
-    static core::Table2D computeCorrectedVe(
+    static ObservedAfrData computeObservedAfr(
       const core::LogSession &session,
+      const std::vector<double> &xBp,
+      const std::vector<double> &yBp,
+      const VeAnalysisConfig &config
+    );
+
+    static core::Table2D computeCorrectedVe(
+      const ObservedAfrData &obsAfrData,
       const core::Table2D &baselineVe,
       const core::Table2D &targetAfr,
       const VeAnalysisConfig &config);

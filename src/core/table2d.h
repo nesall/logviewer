@@ -38,8 +38,7 @@ namespace core {
     // table's values onto them via sample(). Used both for "load channel
     // resolution is independent of the real VE table axes" and for
     // producing the final clipboard export sized to match a real tune.
-    Table2D resampledTo(const std::vector<double> &newXBreakpoints,
-      const std::vector<double> &newYBreakpoints) const;
+    Table2D resampledTo(const std::vector<double> &newXBreakpoints, const std::vector<double> &newYBreakpoints) const;
 
   private:
     void ensureValuesSized();

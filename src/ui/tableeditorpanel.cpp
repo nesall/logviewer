@@ -856,7 +856,14 @@ namespace ui {
     int nextHoveredRow = -1;
     int nextHoveredCol = -1;
 
-    if (ImGui::BeginTable(tableId.c_str(), static_cast<int>(cols + 1), flags, ImVec2(0.0f, 400.0f))) {
+    // Base row height (InputDouble) + top and bottom cell padding
+    float rowHeight = ImGui::GetFrameHeight() + (ImGui::GetStyle().CellPadding.y * 2.0f);
+    // +1 for the header row, +0.5 for horizontal scrollbar/border padding leeway
+    float desiredHeight = rowHeight * (static_cast<float>(rows) + 1.5f);
+
+    float actualHeight = (std::min)(desiredHeight, 450.0f);
+
+    if (ImGui::BeginTable(tableId.c_str(), static_cast<int>(cols + 1), flags, ImVec2(0.0f, actualHeight))) {
       ImGui::TableSetupScrollFreeze(1, 1);
       ImGui::TableSetupColumn("Load \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
 
