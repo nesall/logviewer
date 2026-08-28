@@ -478,7 +478,7 @@ namespace ui {
       // Dynamically compute preview while modal is active
       applyExtrapolationPreview();
 
-      if (ui::UI::Button("Apply", {}, ImVec2(100, 0)), "Commit the extrapolated values") {
+      if (ui::UI::Button("Apply", {}, ImVec2(100, 0), "Commit the extrapolated values")) {
         showPreview_ = false;
         showExtrapolateModal_ = false;
         wasExtrapolateModalOpen_ = false;
@@ -540,6 +540,14 @@ namespace ui {
     }
   }
 
+  void TableEditorPanel::setReadOnly(bool f)
+  {
+    setBatchToolbarVisible(false);
+    readOnly_ = f;
+    editingRow_ = -1;
+    editingCol_ = -1;
+  }
+
   void TableEditorPanel::copyToClipboard(bool includeHeaders) const
   {
     const auto &xBp = table_.xBreakpoints();
@@ -580,6 +588,8 @@ namespace ui {
 
   void TableEditorPanel::pasteFromClipboard()
   {
+    if (isReadOnly()) return;
+
     const char *text = ImGui::GetClipboardText();
     if (!text || *text == '\0') return;
 
@@ -809,7 +819,7 @@ namespace ui {
     if (cols == 0 || rows == 0) {
       ImGui::TextDisabled("No breakpoints defined yet.");
       return;
-    }       
+    }
     
     // --- 1. Compute Min/Max Heatmap Values ---
     double minVal = (std::numeric_limits<double>::max)();
@@ -818,6 +828,7 @@ namespace ui {
     for (size_t r = 0; r < rows; ++r) {
       for (size_t c = 0; c < cols; ++c) {
         double v = table_.value(r, c);
+        if (std::isnan(v)) continue;
         if (v < minVal) minVal = v;
         if (v > maxVal) maxVal = v;
       }
@@ -825,9 +836,9 @@ namespace ui {
     if (maxVal <= minVal) maxVal = minVal + 1.0;
 
     auto getHeatmapColor = [&](double value) -> ImU32 {
+      if (std::isnan(value)) return {};
       float t = static_cast<float>((value - minVal) / (maxVal - minVal));
       t = std::clamp(t, 0.0f, 1.0f);
-
       float r = 0.0f, g = 0.0f, b = 0.0f;
       if (t < 0.25f) {
         float f = t / 0.25f;
@@ -926,9 +937,6 @@ namespace ui {
               editingCol_ = -1;
             }
           } else {
-            char cellText[32];
-            std::snprintf(cellText, sizeof(cellText), "%.2f", v);
-
             bool hasCustomTextColor = false;
             if (customTextColorFunc_) {
               if (auto cclr = customTextColorFunc_(v, r, c)) {
@@ -937,8 +945,14 @@ namespace ui {
               }
             }
 
-            ImGuiSelectableFlags selFlags = ImGuiSelectableFlags_AllowDoubleClick;
-            ImGui::Selectable(cellText, selected, selFlags);
+            ImGuiSelectableFlags selFlags = isReadOnly() ? ImGuiSelectableFlags_None : ImGuiSelectableFlags_AllowDoubleClick;
+            if (std::isnan(v)) {
+              ImGui::Selectable(nanReplacement_.c_str(), selected, selFlags);
+            } else {
+              char cellText[32];
+              std::snprintf(cellText, sizeof(cellText), "%.2f", v);
+              ImGui::Selectable(cellText, selected, selFlags);
+            }
 
             // Render Semi-Transparent Regime Brush Overlay on top of Cell Heatmap
             if (r < regimeCoverageMatrix_.size() && c < regimeCoverageMatrix_[r].size()) {
@@ -976,13 +990,15 @@ namespace ui {
               nextHoveredCol = static_cast<int>(c);
 
               // Selection Logic
-              if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && anchorRow_ >= 0 && !io.KeyCtrl && !io.KeyShift) {
+              std::pair<int, int> cellKey = { static_cast<int>(r), static_cast<int>(c) };
+              // Drag Selection (Only when genuinely dragging, not just holding down)
+              if (ImGui::IsMouseDragging(ImGuiMouseButton_Left, 4.0f) && anchorRow_ >= 0 && !io.KeyCtrl && !io.KeyShift) {
                 selectRectangularRegion(anchorRow_, anchorCol_, static_cast<int>(r), static_cast<int>(c));
               }
 
+              // Click Logic
               if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                 if (io.KeyCtrl) {
-                  std::pair<int, int> cellKey = { static_cast<int>(r), static_cast<int>(c) };
                   if (selectedCells_.count(cellKey)) {
                     selectedCells_.erase(cellKey);
                   } else {
@@ -993,13 +1009,20 @@ namespace ui {
                 } else if (io.KeyShift && anchorRow_ >= 0) {
                   selectRectangularRegion(anchorRow_, anchorCol_, static_cast<int>(r), static_cast<int>(c));
                 } else {
-                  clearSelection();
-                  anchorRow_ = static_cast<int>(r);
-                  anchorCol_ = static_cast<int>(c);
-                  selectedCells_.insert({ anchorRow_, anchorCol_ });
+                  // If clicking the only already-selected cell, clear selection (toggle off)
+                  if (selectedCells_.size() == 1 && selectedCells_.count(cellKey)) {
+                    clearSelection();
+                    anchorRow_ = -1;
+                    anchorCol_ = -1;
+                  } else {
+                    clearSelection();
+                    anchorRow_ = static_cast<int>(r);
+                    anchorCol_ = static_cast<int>(c);
+                    selectedCells_.insert(cellKey);
+                  }
                 }
 
-                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                if (!isReadOnly() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                   editingRow_ = static_cast<int>(r);
                   editingCol_ = static_cast<int>(c);
                 }
@@ -1291,32 +1314,35 @@ namespace ui {
   void TableEditorPanel::render(PlotCursor & /*cursor*/)
   {
     ImGuiIO &io = ImGui::GetIO();
-    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows)) {
-      if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z)) {
-        if (io.KeyShift) redo();
-        else undo();
-      } else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y)) {
-        redo();
+    if (!isReadOnly()) {
+
+      if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows)) {
+        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z)) {
+          if (io.KeyShift) redo();
+          else undo();
+        } else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y)) {
+          redo();
+        }
       }
+
+      if (ui::UI::Button(ICON_FA_ARROWS_UP_DOWN " Edit Y Axis")) {
+        axisEditorValues_ = table_.yBreakpoints();
+        axisEditorBinCount_ = static_cast<int>(axisEditorValues_.size());
+        editingAxis_ = AxisEditing::Y;
+        ImGui::OpenPopup(ui::popups::AxisEditor);
+      }
+
+      ImGui::SameLine();
+
+      if (ui::UI::Button(ICON_FA_ARROWS_LEFT_RIGHT " Edit X Axis")) {
+        axisEditorValues_ = table_.xBreakpoints();
+        axisEditorBinCount_ = static_cast<int>(axisEditorValues_.size());
+        editingAxis_ = AxisEditing::X;
+        ImGui::OpenPopup(ui::popups::AxisEditor);
+      }
+
+      ImGui::SameLine();
     }
-
-    if (ui::UI::Button(ICON_FA_ARROWS_UP_DOWN " Edit Y Axis")) {
-      axisEditorValues_ = table_.yBreakpoints();
-      axisEditorBinCount_ = static_cast<int>(axisEditorValues_.size());
-      editingAxis_ = AxisEditing::Y;
-      ImGui::OpenPopup(ui::popups::AxisEditor);
-    }
-
-    ImGui::SameLine();
-
-    if (ui::UI::Button(ICON_FA_ARROWS_LEFT_RIGHT " Edit X Axis")) {
-      axisEditorValues_ = table_.xBreakpoints();
-      axisEditorBinCount_ = static_cast<int>(axisEditorValues_.size());
-      editingAxis_ = AxisEditing::X;
-      ImGui::OpenPopup(ui::popups::AxisEditor);
-    }
-
-    ImGui::SameLine();
 
     if (ui::UI::Button(ICON_FA_FILE_IMPORT " Import / Export...")) {
       ImGui::OpenPopup(ui::popups::TableImportExportMenu);
@@ -1328,20 +1354,22 @@ namespace ui {
       show3DView_ = !show3DView_;
     }
 
-    ImGui::SameLine();
-    ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!canUndo());
-    if (ui::UI::Button(ICON_FA_ROTATE_LEFT, {}, {}, "Undo last change")) {
-      undo();
+    if (!isReadOnly()) {
+      ImGui::SameLine();
+      ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+      ImGui::SameLine();
+      ImGui::BeginDisabled(!canUndo());
+      if (ui::UI::Button(ICON_FA_ROTATE_LEFT, {}, {}, "Undo last change")) {
+        undo();
+      }
+      ImGui::EndDisabled();
+      ImGui::SameLine();
+      ImGui::BeginDisabled(!canRedo());
+      if (ui::UI::Button(ICON_FA_ROTATE_RIGHT, {}, {}, "Redo last undone change")) {
+        redo();
+      }
+      ImGui::EndDisabled();
     }
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!canRedo());
-    if (ui::UI::Button(ICON_FA_ROTATE_RIGHT, {}, {}, "Redo last undone change")) {
-      redo();
-    }
-    ImGui::EndDisabled();
 
     if (ImGui::BeginPopup(ui::popups::TableImportExportMenu)) {
       if (ImGui::MenuItem("Copy Table / Selection")) {
@@ -1352,20 +1380,22 @@ namespace ui {
         copyToClipboard(true);
         showCopyToast();
       }
-      if (ImGui::MenuItem("Paste Grid (Clipboard)")) {
-        pasteFromClipboard();
-      }
-      ImGui::Separator();
-      if (ImGui::MenuItem("Import TunerStudio (.table)...")) {
-        auto openDlg = std::make_shared<pfd::open_file>(
-          "Import TunerStudio Table", ".",
-          std::vector<std::string>{"TunerStudio Table (*.table)", "*.table", "All Files", "*"});
-        auto result = openDlg->result();
-        if (!result.empty()) {
-          std::ifstream f(result.front());
-          if (f.is_open()) {
-            std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-            importTunerStudioXml(content);
+      if (!isReadOnly()) {
+        if (ImGui::MenuItem("Paste Grid (Clipboard)")) {
+          pasteFromClipboard();
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Import TunerStudio (.table)...")) {
+          auto openDlg = std::make_shared<pfd::open_file>(
+            "Import TunerStudio Table", ".",
+            std::vector<std::string>{"TunerStudio Table (*.table)", "*.table", "All Files", "*"});
+          auto result = openDlg->result();
+          if (!result.empty()) {
+            std::ifstream f(result.front());
+            if (f.is_open()) {
+              std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+              importTunerStudioXml(content);
+            }
           }
         }
       }

@@ -52,6 +52,8 @@ namespace ui {
     void applyExtrapolationPreview();
     void setBatchToolbarVisible(bool visible) { batchToolbarVisible_ = visible; }
     bool isBatchToolbarVisible() const { return batchToolbarVisible_; }
+    void setReadOnly(bool f);
+    bool isReadOnly() const { return readOnly_; }
 
     void setSelection(const std::set<std::pair<int, int>> &cells);
     const std::set<std::pair<int, int>> &selectedCells() const { return selectedCells_; }
@@ -62,6 +64,8 @@ namespace ui {
     void setCustomHoverTooltip(std::function<std::string(double, size_t, size_t)> tooltipFunc) { customHoverTooltipFunc_ = std::move(tooltipFunc); }
     void setCustomToolbar1Callback(std::function<void()> callback) { customToolbar1Callback_ = std::move(callback); }
     void setCustomToolbar2Callback(std::function<void()> callback) { customToolbar2Callback_ = std::move(callback); }
+
+    void setReplaceNanWith(std::string str) { nanReplacement_ = std::move(str); }
 
     void pushUndoState();
 
@@ -120,6 +124,7 @@ namespace ui {
     double batchValue_ = 1.05;
 
     core::Table2D tableBackup_;
+    bool readOnly_ = false;
     bool batchToolbarVisible_ = true;
     bool showExtrapolateModal_ = false;
     bool wasExtrapolateModalOpen_ = false;
@@ -153,6 +158,7 @@ namespace ui {
     std::function<std::string(double, size_t, size_t)> customHoverTooltipFunc_;
     std::function<void()> customToolbar1Callback_;
     std::function<void()> customToolbar2Callback_;
+    std::string nanReplacement_{ "-" };
 
     const core::LogSession *session_ = nullptr;
     std::optional<std::string> customXAxisChannel_;

@@ -108,17 +108,6 @@ namespace engine {
       double t = (*timeSec)[i];
       if (std::isnan(rpm) || std::isnan(load)) continue;
       if (filter.shouldIgnoreSample(i, rpm, load, t)) continue;
-      //if (config.enableLambdaDelay) {
-      //  double delayMs = config.lambdaDelayTable.sample(rpm, load);
-      //  double targetTime = t + (delayMs / 1000.0);
-      //  auto it = std::lower_bound(timeSec->begin(), timeSec->end(), targetTime);
-      //  if (it != timeSec->end()) {
-      //    size_t targetIdx = std::distance(timeSec->begin(), it);
-      //    if (targetIdx < afrCh->values().size()) {
-      //      afr = afrCh->values()[targetIdx];
-      //    }
-      //  }
-      //}
       if (config.enableLambdaDelay) {
         double delayMs = config.lambdaDelayTable.sample(rpm, load);
         double targetTime = t + (delayMs / 1000.0);

@@ -529,7 +529,15 @@ namespace ui {
   void App::refreshPanelsFromSession()
   {
     for (auto &panel : panels_) {
-      panel->setSession(&session_);
+      if (panel->panelTypeId() == "DriveRegimePanel") {
+        panel->setSession(&session_);
+        break;
+      }
+    }
+    for (auto &panel : panels_) {
+      if (panel->panelTypeId() != "DriveRegimePanel") {
+        panel->setSession(&session_);
+      }
     }
   }
 

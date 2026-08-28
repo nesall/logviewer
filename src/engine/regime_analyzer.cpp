@@ -210,6 +210,7 @@ namespace engine {
 
     std::vector<bool> matches(numRegimes, false);
     std::vector<double> matchStartTimes(numRegimes, 0.0);
+    std::vector<double> matchLastTimes(numRegimes, 0.0);
     std::vector<bool> inInterval(numRegimes, false);
 
     // Process log row-by-row
@@ -226,6 +227,7 @@ namespace engine {
             inInterval[r] = true;
             matchStartTimes[r] = t;
           }
+          matchLastTimes[r] = t;
 
           allRegimes[r].sampleCount++;
 
@@ -250,9 +252,10 @@ namespace engine {
         } else {
           if (inInterval[r]) {
             inInterval[r] = false;
-            double duration = t - matchStartTimes[r];
+            double endT = matchLastTimes[r];
+            double duration = endT - matchStartTimes[r];
             if (duration >= 0.5) { // Filter micro-transients < 0.5s
-              allRegimes[r].intervals.push_back({ matchStartTimes[r], t });
+              allRegimes[r].intervals.push_back({ matchStartTimes[r], endT });
             }
           }
         }
@@ -262,9 +265,10 @@ namespace engine {
     // Handle trailing active intervals at end of log
     for (size_t r = 0; r < numRegimes; ++r) {
       if (inInterval[r]) {
-        double duration = timeSec->back() - matchStartTimes[r];
+        double endT = matchLastTimes[r];
+        double duration = endT - matchStartTimes[r];
         if (duration >= 0.5) {
-          allRegimes[r].intervals.push_back({ matchStartTimes[r], timeSec->back() });
+          allRegimes[r].intervals.push_back({ matchStartTimes[r], endT });
         }
       }
     }

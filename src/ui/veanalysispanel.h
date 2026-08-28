@@ -49,12 +49,12 @@ namespace ui {
     engine::VeAnalysisConfig config_;
 
     // Core tables
-    std::string observedTableUniqueId_;
-    core::Table2D observedAfrTable_;
+    TableEditorPanel observedAfrPanel_;
     TableEditorPanel targetAfrPanel_;
     TableEditorPanel baselineVePanel_;
     TableEditorPanel suggestedVePanel_;
-    core::Table2D afrDeltaTable_;
+    TableEditorPanel deltaAfrPanel_;
+
     bool hasAfrDelta_ = false;
     bool alignAfrDeltaToVeTable_ = true;
     bool scaleDeltaIntensityByHitCount_ = false;
@@ -67,15 +67,7 @@ namespace ui {
     bool hasSuggestedVe_ = false;
     int smoothIterations_ = 1;
 
-    // Cropped axis bounds for Observed AFR
-    size_t minObservedRow_ = 0;
-    size_t maxObservedRow_ = 0;
-    size_t minObservedCol_ = 0;
-    size_t maxObservedCol_ = 0;
     bool hasObservedData_ = false;
-
-    int hoveredRow_ = -1;
-    int hoveredCol_ = -1;
 
     std::string regimeFilterText_;
     TableEditorPanel lambdaDelayEditor_;

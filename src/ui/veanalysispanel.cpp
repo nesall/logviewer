@@ -14,19 +14,53 @@
 #include "imgui_internal.h"
 
 
+namespace {
+  ImU32 getDeltaHeatMapColor(double delta, size_t sampleCount, size_t minSamplesPerBin, bool scaleDeltaIntensityByHitCount) {
+    float norm = static_cast<float>(delta / 2.0); // Scale across +/- 2 AFR units
+    if (norm > 1.0f) norm = 1.0f;
+    if (norm < -1.0f) norm = -1.0f;
+    float baseAlpha = 0.35f;
+    if (scaleDeltaIntensityByHitCount) {
+      // Scale alpha from 0.10 (at min samples) up to 0.60 (at 50+ samples)
+      size_t minThreshold = minSamplesPerBin;
+      size_t maxThreshold = minThreshold + 40; // Full intensity saturates after 40 additional samples
+      float countFactor = 0.0f;
+      if (sampleCount > minThreshold) {
+        countFactor = static_cast<float>(sampleCount - minThreshold) / static_cast<float>(maxThreshold - minThreshold);
+        if (countFactor > 1.0f) countFactor = 1.0f;
+      }
+      baseAlpha = 0.10f + (0.50f * countFactor);
+    }
+    float r = 0.0f, g = 0.0f, b = 0.0f;
+    if (norm > 0.0f) {
+      r = norm;
+      g = 0.1f * (1.0f - norm);
+      b = 0.1f * (1.0f - norm);
+    } else {
+      float negNorm = -norm;
+      r = 0.1f * (1.0f - negNorm);
+      g = 0.1f * (1.0f - negNorm);
+      b = negNorm;
+    }
+    return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, baseAlpha));
+  };
+} // anonymous namespace
+
 namespace ui {
 
   VeAnalysisPanel::VeAnalysisPanel(std::string title)
     : PlotPanel(std::move(title))
+    , observedAfrPanel_("Observed AFR", "ObservedAfrTable", "Observed AFR", {})
     , targetAfrPanel_("Target AFR Editor", "TargetAfrTable", "Target AFR",
       core::Table2D(core::generateEvenBreakpoints(500, 7000, 16), core::generateEvenBreakpoints(20, 100, 16)))
     , baselineVePanel_("Baseline VE Editor", "VeTable", "Baseline VE",
       core::Table2D(core::generateEvenBreakpoints(500, 7000, 16), core::generateEvenBreakpoints(20, 100, 16)))
     , suggestedVePanel_("Suggested VE", "SuggestedVeTable", "Suggested VE",
       core::Table2D(core::generateEvenBreakpoints(500, 7000, 16), core::generateEvenBreakpoints(20, 100, 16)))
+    , deltaAfrPanel_("Delta AFR", "DeltaAfrTable", "Delta AFR", {})
     , lambdaDelayEditor_("Lambda Delay", "LambdaDelay", "Lambda Delay", config_.lambdaDelayTable)
   {
-    observedAfrTable_ = core::Table2D(core::generateEvenBreakpoints(500, 7000, 16), core::generateEvenBreakpoints(20, 100, 16));
+    //observedAfrTable_ = core::Table2D(core::generateEvenBreakpoints(500, 7000, 16), core::generateEvenBreakpoints(20, 100, 16));
 
     auto recalcCallback = [this]() {
       computeObservedAfr();
@@ -52,6 +86,78 @@ namespace ui {
     lambdaDelayEditor_.setOnDataChangedCallback([this] {
       config_.lambdaDelayTable = lambdaDelayEditor_.table();
       });
+
+    deltaAfrPanel_.setReadOnly(true);
+    deltaAfrPanel_.setCustomToolbar1Callback([this] {
+      ImGui::SameLine();
+      if (ui::UI::ButtonPrimary(ICON_FA_REPEAT " Recalculate AFR Delta")) {
+        computeAfrDelta();
+      }
+      ImGui::SameLine();
+      ImGui::BeginDisabled(!hasBaselineVe());
+      if (!hasBaselineVe()) alignAfrDeltaToVeTable_ = false;
+      if (ImGui::Checkbox("Align grid to Baseline VE Table", &alignAfrDeltaToVeTable_)) {
+        computeAfrDelta();
+      }
+      ImGui::EndDisabled();
+      ImGui::SameLine();
+      ImGui::Checkbox("Scale intensity by sample count", &scaleDeltaIntensityByHitCount_);
+      if (!hasBaselineVe()) {
+        ImGui::TextDisabled("(Target AFR axes used - load Baseline VE to enable VE alignment)");
+      }
+      });
+    deltaAfrPanel_.setCustomHeatmapColoring([this](double delta, size_t r, size_t c) -> ImU32 {
+      const auto &afrHitCount = observedAfrData_.hitCount;
+      size_t hitCount = (r < afrHitCount.size() && c < afrHitCount[r].size()) ? afrHitCount[r][c] : 0;
+      if (!std::isnan(delta)) {
+        return getDeltaHeatMapColor(delta, hitCount, config_.minSamplesPerBin, scaleDeltaIntensityByHitCount_);
+      }
+      return {};
+      });
+    deltaAfrPanel_.setCustomHoverTooltip([this](double delta, size_t r, size_t c) -> std::string {
+      const auto &afrHitCount = observedAfrData_.hitCount;
+      size_t hitCount = (r < afrHitCount.size() && c < afrHitCount[r].size()) ? afrHitCount[r][c] : 0;
+      const bool useVeAxes = alignAfrDeltaToVeTable_ && hasBaselineVe();
+      const auto &ref = useVeAxes ? baselineVePanel_.table() : targetAfrPanel_.table();
+      double tgt = targetAfrPanel_.table().sample(ref.xBreakpoints()[c], ref.yBreakpoints()[r]);
+      if (config_.minSamplesPerBin <= hitCount) {
+        char buffer[96]{ 0 };
+        snprintf(buffer, sizeof(buffer), "Samples: %zu\nTarget AFR: %.2f\nDelta: %+.2f AFR", hitCount, tgt, delta);
+        return std::string(buffer);
+      } else if (0 < hitCount) {
+        char buffer[80]{ 0 };
+        snprintf(buffer, sizeof(buffer), "Samples: %zu (below min threshold %zu)", hitCount, config_.minSamplesPerBin);
+        return std::string(buffer);
+      }
+      return {};
+      });
+    deltaAfrPanel_.setCustomTextColoring([this](double delta, size_t, size_t) -> std::optional<ImU32> {
+      std::optional<ImU32> clr;
+      if (delta > 0.3) {
+        clr = ImGui::ColorConvertFloat4ToU32({ 1.0f, 0.4f, 0.4f, 1.0f }); // Lean
+      } else if (delta < -0.3) {
+        clr = ImGui::ColorConvertFloat4ToU32({ 0.4f, 0.7f, 1.0f, 1.0f }); // Rich
+      }
+      return clr;
+    });
+
+    observedAfrPanel_.setReadOnly(true);
+    observedAfrPanel_.setCustomToolbar1Callback([this] {
+      ImGui::SameLine();
+      if (ui::UI::ButtonPrimary(ICON_FA_REPEAT " Recalculate Observed AFR")) {
+        computeObservedAfr();
+      }
+      });
+    observedAfrPanel_.setCustomHoverTooltip([this] (double v, size_t r, size_t c) {
+      const auto &afrHitCount = observedAfrData_.hitCount;
+      size_t hitCount = (r < afrHitCount.size() && c < afrHitCount[r].size()) ? afrHitCount[r][c] : 0;
+      if (config_.minSamplesPerBin <= hitCount) {
+        char buffer[64]{ 0 };
+        snprintf(buffer, sizeof(buffer), "Samples: %zu", hitCount);
+        return std::string(buffer);
+      }
+      return std::string();
+      });
   }
 
   void VeAnalysisPanel::setSession(const core::LogSession *session)
@@ -60,6 +166,7 @@ namespace ui {
     targetAfrPanel_.setSession(session);
     baselineVePanel_.setSession(session);
     suggestedVePanel_.setSession(session);
+    deltaAfrPanel_.setSession(session);
     computeObservedAfr();
     computeAfrDelta();
     computeSuggestedVe();
@@ -112,8 +219,9 @@ namespace ui {
       yBp = core::generateEvenBreakpoints(minLoad, maxLoad, 16);
     }
 
-    observedAfrTable_.setXBreakpoints(xBp);
-    observedAfrTable_.setYBreakpoints(yBp);
+    core::Table2D observedAfrTable;
+    observedAfrTable.setXBreakpoints(xBp);
+    observedAfrTable.setYBreakpoints(yBp);
 
     const size_t rows = yBp.size();
     const size_t cols = xBp.size();
@@ -121,10 +229,6 @@ namespace ui {
 
     observedAfrData_ = engine::VeAnalyzer::computeObservedAfr(*session_, xBp, yBp, config_);
 
-    minObservedRow_ = rows;
-    maxObservedRow_ = 0;
-    minObservedCol_ = cols;
-    maxObservedCol_ = 0;
     hasObservedData_ = false;
     const auto &sumAfr = observedAfrData_.sumAfr;
     const auto &countAfr = observedAfrData_.hitCount;
@@ -132,19 +236,15 @@ namespace ui {
       for (size_t c = 0; c < cols; ++c) {
         if (countAfr[r][c] >= config_.minSamplesPerBin) {
           double avgAfr = sumAfr[r][c] / static_cast<double>(countAfr[r][c]);
-          observedAfrTable_.setValue(r, c, avgAfr);
-
-          if (r < minObservedRow_) minObservedRow_ = r;
-          if (r > maxObservedRow_) maxObservedRow_ = r;
-          if (c < minObservedCol_) minObservedCol_ = c;
-          if (c > maxObservedCol_) maxObservedCol_ = c;
+          observedAfrTable.setValue(r, c, avgAfr);
           hasObservedData_ = true;
         } else {
-          observedAfrTable_.setValue(r, c, 0.0);
+          observedAfrTable.setValue(r, c, std::numeric_limits<double>::quiet_NaN());
         }
       }
     }
-    observedTableUniqueId_ = utils::str::generateUniqueId();
+    observedAfrPanel_.setTable(observedAfrTable);
+    observedAfrPanel_.triggerUpdated();
   }
 
   void VeAnalysisPanel::computeAfrDelta()
@@ -168,8 +268,9 @@ namespace ui {
 
     const auto &xBp = refTable.xBreakpoints();
     const auto &yBp = refTable.yBreakpoints();
-    afrDeltaTable_.setXBreakpoints(xBp);
-    afrDeltaTable_.setYBreakpoints(yBp);
+    core::Table2D afrDeltaTable;
+    afrDeltaTable.setXBreakpoints(xBp);
+    afrDeltaTable.setYBreakpoints(yBp);
 
     const size_t rows = yBp.size();
     const size_t cols = xBp.size();
@@ -185,16 +286,18 @@ namespace ui {
           double obsAfr = sumAfr[r][c] / static_cast<double>(count);
           double tgtAfr = useVeAxes ? targetAfrPanel_.table().sample(xBp[c], yBp[r]) : targetAfrPanel_.table().value(r, c);
           if (tgtAfr > 0.0) {
-            afrDeltaTable_.setValue(r, c, obsAfr - tgtAfr);
+            afrDeltaTable.setValue(r, c, obsAfr - tgtAfr);
           } else {
-            afrDeltaTable_.setValue(r, c, std::numeric_limits<double>::quiet_NaN());
+            afrDeltaTable.setValue(r, c, std::numeric_limits<double>::quiet_NaN());
           }
         } else {
-          afrDeltaTable_.setValue(r, c, std::numeric_limits<double>::quiet_NaN());
+          afrDeltaTable.setValue(r, c, std::numeric_limits<double>::quiet_NaN());
         }
       }
     }
-
+    
+    deltaAfrPanel_.setTable(afrDeltaTable);
+    deltaAfrPanel_.triggerUpdated();
     hasAfrDelta_ = true;
   }
 
@@ -235,8 +338,8 @@ namespace ui {
       double diff = value - curVe;
       if (std::abs(diff) < 1e-5) return {};
       double percentChange = (curVe != 0.0) ? (diff / curVe) * 100.0 : 0.0;
-      char buffer[64];
-      snprintf(buffer, sizeof(buffer), "Baseline: %.2f\nChange: %+0.2f (%+0.2f%%)\nObs AFR: %.2f", curVe, diff, percentChange, observedAfrTable_.value(row, col));
+      char buffer[64]{ 0 };
+      snprintf(buffer, sizeof(buffer), "Baseline: %.2f\nChange: %+0.2f (%+0.2f%%)\nObs AFR: %.2f", curVe, diff, percentChange, observedAfrPanel_.table().value(row, col));
       return std::string(buffer);
       };
 
@@ -278,7 +381,7 @@ namespace ui {
         if (session_)
           for (int i = 0; i < smoothIterations_; ++i) {
             auto currentVe = suggestedVePanel_.table();
-            auto smoothed = engine::VeAnalyzer::computeSmartSmoothedVe(*session_, currentVe, afrDeltaTable_, config_, suggestedVePanel_.selectedCells());
+            auto smoothed = engine::VeAnalyzer::computeSmartSmoothedVe(*session_, currentVe, deltaAfrPanel_.table(), config_, suggestedVePanel_.selectedCells());
             suggestedVePanel_.pushUndoState();
             suggestedVePanel_.setTable(smoothed);
           }
@@ -543,91 +646,11 @@ namespace ui {
       ImGui::Separator();
     }
 
-    if (ui::UI::ButtonPrimary(ICON_FA_REPEAT " Recalculate Observed AFR")) {
-      computeObservedAfr();
-    }
-
-    ImGui::SameLine();
-    if (ui::UI::ButtonSecondary(ICON_FA_COPY " Copy Grid")) {
-      copyTableToClipboard(observedAfrTable_, false);
-    }
-
-    ImGui::SameLine();
-    if (ui::UI::ButtonSecondary("Copy + Headers")) {
-      copyTableToClipboard(observedAfrTable_, true);
-    }
-
-    if (!hasObservedData_) {
+    if (hasObservedData_) {
+      PlotCursor dummyCursor;
+      observedAfrPanel_.render(dummyCursor);
+    } else {
       ImGui::TextDisabled("No valid AFR log samples binned in current axes range.");
-      return;
-    }
-
-    const auto &xBp = observedAfrTable_.xBreakpoints();
-    const auto &yBp = observedAfrTable_.yBreakpoints();
-
-    const size_t visibleCols = (maxObservedCol_ >= minObservedCol_) ? (maxObservedCol_ - minObservedCol_ + 1) : 0;
-
-    const ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-      ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
-      ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
-
-    const ImU32 headerHighlightColor = IM_COL32(230, 160, 30, 220);
-    int nextHoveredRow = -1;
-    int nextHoveredCol = -1;
-
-    std::string tableId = "ObservedAfrGridCropped###" + observedTableUniqueId_;
-    if (ImGui::BeginTable(tableId.c_str(), static_cast<int>(visibleCols + 1), flags, ImVec2(0.0f, 400.0f))) {
-      ImGui::TableSetupScrollFreeze(1, 1);
-      ImGui::TableSetupColumn("MAP \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-
-      for (size_t c = minObservedCol_; c <= maxObservedCol_; ++c) {
-        std::string header = std::to_string(static_cast<int>(xBp[c])) + "##col" + std::to_string(c);
-        ImGui::TableSetupColumn(header.c_str(), ImGuiTableColumnFlags_WidthFixed, 65.0f);
-      }
-      ImGui::TableHeadersRow();
-
-      const size_t nofCols = maxObservedCol_ - minObservedCol_ + 1;
-      if (hoveredCol_ >= 0 && hoveredCol_ < static_cast<int>(nofCols)) {
-        ImGui::TableSetColumnIndex(hoveredCol_ + 1);
-        ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, headerHighlightColor);
-      }
-
-      // Render in descending order (highest MAP/load at top) to match Target AFR orientation
-      if (maxObservedRow_ >= minObservedRow_) {
-        for (size_t r = maxObservedRow_; ; --r) {
-          ImGui::TableNextRow();                  
-          ImGui::TableSetColumnIndex(0);
-          if (hoveredRow_ == static_cast<int>(r)) {
-            ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, headerHighlightColor);
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%.1f", yBp[r]);
-          } else {
-            ImGui::Text("%.1f", yBp[r]);
-          }
-
-          for (size_t c = minObservedCol_; c <= maxObservedCol_; ++c) {
-            ImGui::TableSetColumnIndex(static_cast<int>(c - minObservedCol_ + 1));
-            double val = observedAfrTable_.value(r, c);
-            const std::string idSuffix = "##cell_" + std::to_string(r) + "_" + std::to_string(c);
-            char cellText[64];
-            if (0 < val) {
-              snprintf(cellText, sizeof(cellText), "%.2f%s", val, idSuffix.c_str());
-            } else {
-              snprintf(cellText, sizeof(cellText), " - %s", idSuffix.c_str());
-            }
-            ImGui::Selectable(cellText, false, 0);
-
-            if (ImGui::IsItemHovered()) {
-              nextHoveredRow = static_cast<int>(r);
-              nextHoveredCol = static_cast<int>(c);
-            }
-          }
-
-          if (r == minObservedRow_) break;
-        }
-      }
-      ImGui::EndTable();
-      hoveredRow_ = nextHoveredRow;
-      hoveredCol_ = nextHoveredCol;
     }
   }
 
@@ -637,174 +660,9 @@ namespace ui {
       ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.2f, 1.0f), "Please set the 'Target AFR' table first.");
       return;
     }
-
-    if (ui::UI::ButtonPrimary(ICON_FA_REPEAT " Recalculate AFR Delta")) {
-      computeAfrDelta();
-    }
-
-    ImGui::SameLine();
-    if (ui::UI::ButtonSecondary(ICON_FA_COPY " Copy Grid")) {
-      copyTableToClipboard(afrDeltaTable_, false);
-    }
-
-    ImGui::SameLine();
-    if (ui::UI::ButtonSecondary("Copy + Headers")) {
-      copyTableToClipboard(afrDeltaTable_, true);
-    }
-
-    ImGui::SameLine();
-
-    ImGui::BeginDisabled(!hasBaselineVe());
-    if (!hasBaselineVe()) alignAfrDeltaToVeTable_ = false;
-    if (ImGui::Checkbox("Align grid to Baseline VE Table", &alignAfrDeltaToVeTable_)) {
-      computeAfrDelta();
-    }
-    ImGui::EndDisabled();
-
-    ImGui::SameLine();
-    ImGui::Checkbox("Scale intensity by sample count", &scaleDeltaIntensityByHitCount_);
-
-    if (!hasBaselineVe()) {
-      ImGui::TextDisabled("(Target AFR axes used - load Baseline VE to enable VE alignment)");
-    }
-
     if (hasAfrDelta_) {
-      const auto &xBp = afrDeltaTable_.xBreakpoints();
-      const auto &yBp = afrDeltaTable_.yBreakpoints();
-      const size_t cols = xBp.size();
-      const size_t rows = yBp.size();
-
-      if (cols == 0 || rows == 0) return;
-
-      const ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-        ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
-        ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
-
-      // Heat map generator with optional sample-density alpha scaling
-      auto getDeltaHeatMapColor = [this](double delta, size_t sampleCount) -> ImU32 {
-        float norm = static_cast<float>(delta / 2.0); // Scale across +/- 2 AFR units
-        if (norm > 1.0f) norm = 1.0f;
-        if (norm < -1.0f) norm = -1.0f;
-
-        float baseAlpha = 0.35f;
-
-        if (scaleDeltaIntensityByHitCount_) {
-          // Scale alpha from 0.10 (at min samples) up to 0.60 (at 50+ samples)
-          size_t minThreshold = config_.minSamplesPerBin;
-          size_t maxThreshold = minThreshold + 40; // Full intensity saturates after 40 additional samples
-          float countFactor = 0.0f;
-          if (sampleCount > minThreshold) {
-            countFactor = static_cast<float>(sampleCount - minThreshold) / static_cast<float>(maxThreshold - minThreshold);
-            if (countFactor > 1.0f) countFactor = 1.0f;
-          }
-          baseAlpha = 0.10f + (0.50f * countFactor);
-        }
-
-        float r = 0.0f, g = 0.0f, b = 0.0f;
-        if (norm > 0.0f) {
-          r = norm;
-          g = 0.1f * (1.0f - norm);
-          b = 0.1f * (1.0f - norm);
-        } else {
-          float negNorm = -norm;
-          r = 0.1f * (1.0f - negNorm);
-          g = 0.1f * (1.0f - negNorm);
-          b = negNorm;
-        }
-        return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, baseAlpha));
-        };
-
-      const ImU32 headerHighlightColor = IM_COL32(230, 160, 30, 220);
-      int nextHoveredRow = -1;
-      int nextHoveredCol = -1;
-
-      if (ImGui::BeginTable("AfrDeltaGrid", static_cast<int>(cols + 1), flags, ImVec2(0.0f, 380.0f))) {
-        ImGui::TableSetupScrollFreeze(1, 1);
-        ImGui::TableSetupColumn("MAP \\ RPM", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-
-        for (size_t c = 0; c < cols; ++c) {
-          std::string header = std::to_string(static_cast<int>(xBp[c])) + "##col" + std::to_string(c);
-          ImGui::TableSetupColumn(header.c_str(), ImGuiTableColumnFlags_WidthFixed, 65.0f);
-        }
-        ImGui::TableHeadersRow();
-
-        if (hoveredCol_ >= 0 && hoveredCol_ < static_cast<int>(cols)) {
-          ImGui::TableSetColumnIndex(hoveredCol_ + 1);
-          ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, headerHighlightColor);
-        }
-
-        for (size_t r = rows; r-- > 0; ) {
-          ImGui::TableNextRow();
-          ImGui::TableSetColumnIndex(0);
-
-          ImGui::TableSetColumnIndex(0);
-          if (hoveredRow_ == static_cast<int>(r)) {
-            ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, headerHighlightColor);
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%.1f", yBp[r]);
-          } else {
-            ImGui::Text("%.1f", yBp[r]);
-          }
-
-          const auto &afrHitCount = observedAfrData_.hitCount;
-
-          for (size_t c = 0; c < cols; ++c) {
-            ImGui::TableSetColumnIndex(static_cast<int>(c + 1));
-
-            double delta = afrDeltaTable_.value(r, c);
-            size_t hitCount = (r < afrHitCount.size() && c < afrHitCount[r].size()) ? afrHitCount[r][c] : 0;
-
-            if (!std::isnan(delta)) {
-              ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, getDeltaHeatMapColor(delta, hitCount));
-
-              // 1. Build the unique ID suffix (hidden)
-              const std::string idSuffix = "##cell_" + std::to_string(r) + "_" + std::to_string(c);
-
-              char cellText[64];
-              std::optional<ImVec4> textColor;
-
-              // 2. Format: [Visible Text]##[Unique ID]
-              if (delta > 0.3) {
-                std::snprintf(cellText, sizeof(cellText), "+%.2f%s", delta, idSuffix.c_str());
-                textColor = ImVec4(1.0f, 0.4f, 0.4f, 1.0f); // Lean
-              } else if (delta < -0.3) {
-                std::snprintf(cellText, sizeof(cellText), "%.2f%s", delta, idSuffix.c_str());
-                textColor = ImVec4(0.4f, 0.7f, 1.0f, 1.0f); // Rich
-              } else {
-                std::snprintf(cellText, sizeof(cellText), "%.2f%s", delta, idSuffix.c_str());
-              }
-
-              // 3. Render Selectable filling the table cell
-              if (textColor.has_value()) {
-                ImGui::PushStyleColor(ImGuiCol_Text, textColor.value());
-              }
-
-              ImGui::Selectable(cellText, false, 0);
-
-              if (textColor.has_value()) {
-                ImGui::PopStyleColor();
-              }
-
-              // Hit count tooltip on cell hover
-              if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Samples: %zu\nDelta: %+.2f AFR", hitCount, delta);
-              }
-            } else {
-              ImGui::TextDisabled(" - ");
-              if (ImGui::IsItemHovered() && hitCount > 0) {
-                ImGui::SetTooltip("Samples: %zu (Below min threshold %zu)", hitCount, config_.minSamplesPerBin);
-              }
-            }
-
-            if (ImGui::IsItemHovered()) {
-              nextHoveredRow = static_cast<int>(r);
-              nextHoveredCol = static_cast<int>(c);
-            }
-          }
-        }
-        ImGui::EndTable();
-        hoveredRow_ = nextHoveredRow;
-        hoveredCol_ = nextHoveredCol;
-      }
+      PlotCursor dummyCursor;
+      deltaAfrPanel_.render(dummyCursor);
     } else {
       ImGui::TextDisabled("No AFR Delta available. Ensure a log is loaded and Target AFR is set.");
     }
@@ -827,6 +685,7 @@ namespace ui {
     targetAfrPanel_.recomputeRegimeCoverage();
     baselineVePanel_.recomputeRegimeCoverage();
     suggestedVePanel_.recomputeRegimeCoverage();
+    deltaAfrPanel_.recomputeRegimeCoverage();
   }
 
   void VeAnalysisPanel::copyTableToClipboard(const core::Table2D &table, bool includeHeaders, int decimalPlaces)
