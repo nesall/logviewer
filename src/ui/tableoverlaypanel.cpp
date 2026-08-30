@@ -39,7 +39,7 @@ namespace ui {
         }
       }
       });
-    innerTable_.setBatchToolbarVisible(false);
+    //innerTable_.setBatchToolbarVisible(false);
   }
 
   void TableOverlayPanel::setSession(const core::LogSession *session)
@@ -218,8 +218,9 @@ namespace ui {
     innerTable_.setCustomTextColoring([this](double /*val*/, size_t row, size_t col) -> ImU32 {
       if (row >= binnedSampleCounts_.size() || col >= binnedSampleCounts_[row].size()) return {};
       size_t hits = binnedSampleCounts_[row][col];
-      if (hits == 0) return ImGui::ColorConvertFloat4ToU32(ImVec4{ 0.6f, 0.6f, 0.6f, 1.0f });
-      return ImGui::ColorConvertFloat4ToU32(ImVec4{ 0.2f, 0.8f, 1.0f, 1.0f });
+      bool selected = innerTable_.isCellSelected(row, col);
+      if (hits == 0) return selected ? ImGui::ColorConvertFloat4ToU32(ImVec4{ 0.8f, 0.8f, 0.8f, 1.0f }) : ImGui::ColorConvertFloat4ToU32(ImVec4{ 0.6f, 0.6f, 0.6f, 1.0f });
+      return selected ? ImGui::ColorConvertFloat4ToU32(ImVec4{ 1.0f, 1.0f, 1.0f, 1.0f }) : ImGui::ColorConvertFloat4ToU32(ImVec4{ 0.2f, 0.8f, 1.0f, 1.0f });
       });
   }
 

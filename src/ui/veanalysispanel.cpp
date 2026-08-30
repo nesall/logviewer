@@ -67,11 +67,13 @@ namespace ui {
       computeAfrDelta();
       computeSuggestedVe();
       };
-    targetAfrPanel_.setOnDataChangedCallback(recalcCallback);
+    targetAfrPanel_.setOnDataChangedCallback([this] {targetAfrDataModified_ = true; });
     baselineVePanel_.setOnDataChangedCallback(recalcCallback);
     targetAfrPanel_.setCustomToolbar2Callback([this, recalcCallback] {
       ImGui::BeginDisabled(!hasBaselineVe() || session_ == nullptr);
-      if (ui::UI::ButtonPrimary(ICON_FA_CHECK " Apply Changes", {}, "Recomputes AFR Delta and Suggested VE.")) {
+      std::string s {ICON_FA_CHECK " Apply Changes"};
+      if (targetAfrDataModified_) s += "*";
+      if (ui::UI::ButtonPrimary(s.c_str(), {}, "Recomputes AFR Delta and Suggested VE.")) {
         recalcCallback();
       }
       ImGui::EndDisabled();
@@ -131,12 +133,13 @@ namespace ui {
       }
       return {};
       });
-    deltaAfrPanel_.setCustomTextColoring([this](double delta, size_t, size_t) -> std::optional<ImU32> {
+    deltaAfrPanel_.setCustomTextColoring([this](double delta, size_t r, size_t c) -> std::optional<ImU32> {
       std::optional<ImU32> clr;
+      bool selected = deltaAfrPanel_.isCellSelected(r, c);
       if (delta > 0.3) {
-        clr = ImGui::ColorConvertFloat4ToU32({ 1.0f, 0.4f, 0.4f, 1.0f }); // Lean
+        clr = selected ? ImGui::ColorConvertFloat4ToU32({ 1.0f, 0.6f, 0.6f, 1.0f }) : ImGui::ColorConvertFloat4ToU32({ 1.0f, 0.4f, 0.4f, 1.0f }); // Lean
       } else if (delta < -0.3) {
-        clr = ImGui::ColorConvertFloat4ToU32({ 0.4f, 0.7f, 1.0f, 1.0f }); // Rich
+        clr = selected ? ImGui::ColorConvertFloat4ToU32({ 0.6f, 0.8f, 1.0f, 1.0f }) : ImGui::ColorConvertFloat4ToU32({ 0.4f, 0.7f, 1.0f, 1.0f }); // Rich
       }
       return clr;
     });
@@ -262,6 +265,8 @@ namespace ui {
       hasAfrDelta_ = false;
       return;
     }
+
+    targetAfrDataModified_ = false;
 
     const bool useVeAxes = alignAfrDeltaToVeTable_ && hasBaselineVe();
     const core::Table2D &refTable = useVeAxes ? baselineVePanel_.table() : targetAfrPanel_.table();

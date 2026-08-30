@@ -68,6 +68,7 @@ namespace ui {
     int smoothIterations_ = 1;
 
     bool hasObservedData_ = false;
+    bool targetAfrDataModified_ = false;
 
     std::string regimeFilterText_;
     TableEditorPanel lambdaDelayEditor_;

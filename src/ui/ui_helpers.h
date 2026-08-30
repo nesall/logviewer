@@ -23,6 +23,7 @@ namespace ui {
     inline constexpr const char *TimelineAction = "Timeline Action###TimelineActionPopup";
     inline constexpr const char *ExportCsv = "Export CSV###ExportCsvModal";
     inline constexpr const char *ExportCsvProgress = "Exporting CSV###ExportCsvProgressModal";
+    inline constexpr const char *QuickBatchEdit= "Batch Edit###QuickBatchEdit";
   } // namespace popups
 
 

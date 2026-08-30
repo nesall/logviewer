@@ -12,6 +12,7 @@
 #include "3rdparty/portable-file-dialogs.h"
 #include "3rdparty/WinDarkTitlebarImpl.h"
 #include "3rdparty/IconsFontAwesome7.h"
+#include "3rdparty/utils_log/logger.hpp"
 #include "core/table2d.h"
 #include "core/formula_evaluator.h"
 #include "ui/ui_helpers.h"
@@ -421,6 +422,7 @@ namespace ui {
 
   void App::loadSettings()
   {
+    LOG_START;
     std::ifstream file(kSettingsFilePath);
     if (!file.is_open()) {
       return; // no settings file yet -- fine, just start empty
@@ -474,6 +476,7 @@ namespace ui {
 
   void App::saveSettings() const
   {
+    LOG_START;
     if (window_ == nullptr) return;
 
     int width = 0, height = 0;

@@ -3,6 +3,7 @@
 #include <windows.h>
 #endif
 
+
 #include <cstdio>
 
 #include <GLFW/glfw3.h>
@@ -12,10 +13,12 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 #include "implot.h"
+
 #define STB_IMAGE_IMPLEMENTATION
 #include "3rdparty/stb_image.h"
 
 #include "ui/app.h"
+#include "3rdparty/utils_log/logger.hpp"
 
 namespace {
 
@@ -30,6 +33,11 @@ int WINAPI WinMain(_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ LPSTR, _In_ int) {
 #else
 int main() {
 #endif
+  SET_LOG_TO_FILE(true);
+  SET_LOG_TO_CONSOLE(true);
+  SET_LOG_OUTPUT_FILE_PATH("phenixlogview.log");
+  SET_LOG_DIAGNOSTICS_FILE_PATH("phenixlogview-d.log");
+  LOG_START;
   glfwSetErrorCallback(GlfwErrorCallback);
   if (!glfwInit()) {
     return 1;
@@ -41,9 +49,12 @@ int main() {
 
   GLFWwindow *window = glfwCreateWindow(1280, 800, ui::App::appBaseTitle(), nullptr, nullptr);
   if (window == nullptr) {
+    LOG_HERE("Unable to create window with glfwCreateWindow");
     glfwTerminate();
     return 1;
   }
+
+  LOG_HERE("Window created");
 
   GLFWimage images[1]{};
   images[0].pixels = stbi_load("assets/icon.png", &images[0].width, &images[0].height, 0, 4); // RGBA 4 channels
@@ -59,6 +70,7 @@ int main() {
   ImGui::CreateContext();
   ImPlot::CreateContext();
 
+  LOG_HERE("ImGui context created");
 
   ImGuiIO &io = ImGui::GetIO();
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
@@ -81,6 +93,8 @@ int main() {
 
   ImGui_ImplGlfw_InitForOpenGL(window, true);
   ImGui_ImplOpenGL3_Init(glsl_version);
+
+  LOG_HERE("ImGui initialized");
 
   ui::App app(window);
 
@@ -120,6 +134,8 @@ int main() {
   ImGui_ImplGlfw_Shutdown();
   ImPlot::DestroyContext();
   ImGui::DestroyContext();
+
+  LOG_HERE("ImGui shutdown");
 
   glfwDestroyWindow(window);
   glfwTerminate();

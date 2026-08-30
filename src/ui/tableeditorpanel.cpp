@@ -18,6 +18,32 @@
 #include "imgui.h"
 #include "imgui_internal.h"
 
+namespace {
+  std::optional<char> getTriggeredEditChar() {
+    ImGuiIO &io = ImGui::GetIO();
+    for (int i = 0; i < io.InputQueueCharacters.Size; ++i) {
+      const ImWchar c = io.InputQueueCharacters[i];
+      if ((c >= '0' && c <= '9') ||
+        c == '.' ||
+        c == '*' ||
+        c == '/') {
+        return static_cast<char>(c);
+      }
+    }
+    return std::nullopt;
+  }
+
+  bool isPlusKeyPressed() {
+    return ImGui::IsKeyPressed(ImGuiKey_KeypadAdd) ||
+      (ImGui::IsKeyPressed(ImGuiKey_Equal) && ImGui::GetIO().KeyShift);
+  }
+
+  bool isMinusKeyPressed() {
+    return ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract) ||
+      (!ImGui::GetIO().KeyShift && ImGui::IsKeyPressed(ImGuiKey_Minus));
+  }
+} // anonymous namespace
+
 namespace ui {
 
   TableEditorPanel::TableEditorPanel(std::string title, std::string panelTypeIdValue,
@@ -288,8 +314,30 @@ namespace ui {
     selectedCells_ = cells;
   }
 
+  void TableEditorPanel::syncSelection()
+  {
+    if (selectedCells_.size() > 1) {
+      return;
+    }
+    if (hoveredGridRow_ >= 0 && hoveredGridRow_ < static_cast<int>(table_.rowCount()) &&
+      hoveredGridCol_ >= 0 && hoveredGridCol_ < static_cast<int>(table_.columnCount())) {
+      selectedCells_.clear();
+      selectedCells_.insert({ hoveredGridRow_, hoveredGridCol_ });
+      anchorRow_ = hoveredGridRow_;
+      anchorCol_ = hoveredGridCol_;
+      return;
+    }
+    if (selectedCells_.empty() &&
+      anchorRow_ >= 0 && anchorRow_ < static_cast<int>(table_.rowCount()) &&
+      anchorCol_ >= 0 && anchorCol_ < static_cast<int>(table_.columnCount())) {
+      selectedCells_.insert({ anchorRow_, anchorCol_ });
+    }
+  }
+
   void TableEditorPanel::applyBatchMultiply(double factor)
   {
+    syncSelection();
+    if (selectedCells_.empty()) return;
     pushUndoState();
     for (const auto &[r, c] : selectedCells_) {
       double v = table_.value(r, c);
@@ -300,6 +348,8 @@ namespace ui {
 
   void TableEditorPanel::applyBatchOffset(double delta)
   {
+    syncSelection();
+    if (selectedCells_.empty()) return;
     pushUndoState();
     for (const auto &[r, c] : selectedCells_) {
       double v = table_.value(r, c);
@@ -310,6 +360,8 @@ namespace ui {
 
   void TableEditorPanel::applyBatchSetValue(double value)
   {
+    syncSelection();
+    if (selectedCells_.empty()) return;
     pushUndoState();
     for (const auto &[r, c] : selectedCells_) {
       table_.setValue(r, c, value);
@@ -552,17 +604,23 @@ namespace ui {
   {
     const auto &xBp = table_.xBreakpoints();
     const auto &yBp = table_.yBreakpoints();
-    std::string result;
+    if (xBp.empty() || yBp.empty()) return;
 
     int minR, maxR, minC, maxC;
     getSelectionBounds(minR, maxR, minC, maxC);
 
-    bool filterSelection = (minR >= 0);
-    if (!filterSelection) {
-      minR = 0; maxR = static_cast<int>(yBp.size()) - 1;
-      minC = 0; maxC = static_cast<int>(xBp.size()) - 1;
+    const bool hasSelection = !selectedCells_.empty() && (minR >= 0);
+
+    if (!hasSelection) {
+      minR = 0;
+      maxR = static_cast<int>(yBp.size()) - 1;
+      minC = 0;
+      maxC = static_cast<int>(xBp.size()) - 1;
     }
 
+    std::string result;
+
+    // Column Breakpoints Header
     if (includeHeaders) {
       result += "\t";
       for (int c = minC; c <= maxC; ++c) {
@@ -572,12 +630,18 @@ namespace ui {
       result += "\n";
     }
 
+    // Data Rows (rendered top-to-bottom, maxLoad down to minLoad)
     for (int r = maxR; r >= minR; --r) {
       if (includeHeaders) {
         result += formatValue(yBp[r], yDecimalPlaces_) + "\t";
       }
+
       for (int c = minC; c <= maxC; ++c) {
-        result += formatValue(table_.value(r, c), 2);
+        // If a selection is active, only write values for genuinely selected cells
+        if (!hasSelection || isCellSelected(r, c)) {
+
+          result += formatValue(table_.value(r, c), 2);
+        }
         if (c < maxC) result += "\t";
       }
       result += "\n";
@@ -593,64 +657,89 @@ namespace ui {
     const char *text = ImGui::GetClipboardText();
     if (!text || *text == '\0') return;
 
+    // Detect whether clipboard starts with leading whitespace (tab / space before first entry),
+    // indicating an empty top-left header cell exported from TunerStudio or spreadsheets.
+    bool hasHeaders = (text[0] == '\t' || text[0] == ' ' || text[0] == ',');
+
     std::string clip(text);
+    std::replace(clip.begin(), clip.end(), ',', ' '); // Normalize commas to spaces
+
     std::stringstream ss(clip);
-    std::string line;
 
-    std::vector<std::vector<std::string>> grid;
-    while (std::getline(ss, line)) {
-      if (line.empty() || line == "\r") continue;
-      std::stringstream lineStream(line);
-      std::string cell;
-      std::vector<std::string> row;
-      while (std::getline(lineStream, cell, '\t')) {
-        cell.erase(std::remove(cell.begin(), cell.end(), '\r'), cell.end());
-        row.push_back(cell);
-      }
-      if (!row.empty()) grid.push_back(row);
-    }
-
-    if (grid.empty()) return;
-
-    pushUndoState();
-
-    bool hasHeaders = grid[0][0].empty();
-
-    if (hasHeaders && grid.size() > 1) {
+    if (hasHeaders) {
+      std::string line;
       std::vector<double> newXBp;
-      for (size_t c = 1; c < grid[0].size(); ++c) {
-        try { newXBp.push_back(std::stod(grid[0][c])); } catch (...) {}
-      }
-
       std::vector<double> newYBp;
       std::vector<std::vector<double>> newValues;
 
-      for (size_t r = 1; r < grid.size(); ++r) {
-        try {
-          newYBp.push_back(std::stod(grid[r][0]));
-          std::vector<double> valRow;
-          for (size_t c = 1; c < grid[r].size(); ++c) {
-            valRow.push_back(std::stod(grid[r][c]));
-          }
-          newValues.push_back(valRow);
-        } catch (...) {}
-      }
-
-      std::reverse(newYBp.begin(), newYBp.end());
-      std::reverse(newValues.begin(), newValues.end());
-
-      table_.setXBreakpoints(newXBp);
-      table_.setYBreakpoints(newYBp);
-      for (size_t r = 0; r < newValues.size() && r < table_.rowCount(); ++r) {
-        for (size_t c = 0; c < newValues[r].size() && c < table_.columnCount(); ++c) {
-          table_.setValue(r, c, newValues[r][c]);
+      // Line 1: Column breakpoints (X axis)
+      if (std::getline(ss, line)) {
+        std::stringstream lineStream(line);
+        double val;
+        while (lineStream >> val) {
+          newXBp.push_back(val);
         }
       }
-      triggerUpdated();
+
+      // Subsequent lines: Row breakpoint (Y axis) followed by cell values
+      while (std::getline(ss, line)) {
+        if (line.empty() || line.find_first_not_of(" \t\r\n") == std::string::npos) continue;
+        std::stringstream lineStream(line);
+        double yVal;
+        if (lineStream >> yVal) {
+          newYBp.push_back(yVal);
+          std::vector<double> rowValues;
+          double cellVal;
+          while (lineStream >> cellVal) {
+            rowValues.push_back(cellVal);
+          }
+          if (!rowValues.empty()) {
+            newValues.push_back(std::move(rowValues));
+          }
+        }
+      }
+
+      if (!newXBp.empty() && !newYBp.empty() && !newValues.empty()) {
+        pushUndoState();
+        std::reverse(newYBp.begin(), newYBp.end());
+        std::reverse(newValues.begin(), newValues.end());
+        table_.setXBreakpoints(newXBp);
+        table_.setYBreakpoints(newYBp);
+        for (size_t r = 0; r < newValues.size() && r < table_.rowCount(); ++r) {
+          for (size_t c = 0; c < newValues[r].size() && c < table_.columnCount(); ++c) {
+            table_.setValue(r, c, newValues[r][c]);
+          }
+        }
+        triggerUpdated();
+        notifyDataChanged();
+      }
     } else {
+      // Pure numeric stream: determine line-by-line shape to preserve target row/col bounds
+      std::vector<std::vector<double>> grid;
+      std::string line;
+
+      while (std::getline(ss, line)) {
+        if (line.empty() || line.find_first_not_of(" \t\r\n") == std::string::npos) continue;
+
+        std::stringstream lineStream(line);
+        std::vector<double> row;
+        double val;
+        while (lineStream >> val) {
+          row.push_back(val);
+        }
+        if (!row.empty()) {
+          grid.push_back(std::move(row));
+        }
+      }
+
+      if (grid.empty()) return;
+
+      pushUndoState();
+
       int startR = static_cast<int>(table_.rowCount()) - 1;
       int startC = 0;
       if (!selectedCells_.empty()) {
+
         int minR, maxR, minC, maxC;
         getSelectionBounds(minR, maxR, minC, maxC);
         startR = maxR;
@@ -658,18 +747,20 @@ namespace ui {
       }
 
       for (size_t r = 0; r < grid.size(); ++r) {
+
         int targetRow = startR - static_cast<int>(r);
         if (targetRow < 0 || targetRow >= static_cast<int>(table_.rowCount())) continue;
 
         for (size_t c = 0; c < grid[r].size(); ++c) {
+
           int targetCol = startC + static_cast<int>(c);
           if (targetCol >= static_cast<int>(table_.columnCount())) break;
 
-          try { table_.setValue(targetRow, targetCol, std::stod(grid[r][c])); } catch (...) {}
+          table_.setValue(targetRow, targetCol, grid[r][c]);
         }
       }
+      notifyDataChanged();
     }
-    notifyDataChanged();
   }
 
   bool TableEditorPanel::importTunerStudioXml(const std::string &xmlContent)
@@ -1314,17 +1405,60 @@ namespace ui {
   void TableEditorPanel::render(PlotCursor & /*cursor*/)
   {
     ImGuiIO &io = ImGui::GetIO();
-    if (!isReadOnly()) {
 
-      if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows)) {
+    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows)) {
+
+      if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_C)) {
+        copyToClipboard(false);
+        showCopyToast();
+      }
+
+      if (!isReadOnly() && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V)) {
+        pasteFromClipboard();
+      }
+
+      if (!isReadOnly() && !ImGui::IsAnyItemActive()) {
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z)) {
           if (io.KeyShift) redo();
           else undo();
         } else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y)) {
           redo();
         }
-      }
 
+        if (!selectedCells_.empty() && editingRow_ < 0) {
+          if (!ImGui::IsPopupOpen(ui::popups::QuickBatchEdit)) {
+            if (ImGui::IsKeyPressed(ImGuiKey_F2)) {
+              syncSelection();
+              int targetR = anchorRow_ >= 0 ? anchorRow_ : selectedCells_.begin()->first;
+              int targetC = anchorCol_ >= 0 ? anchorCol_ : selectedCells_.begin()->second;
+              double currentVal = table_.value(targetR, targetC);
+              std::snprintf(quickEditBuf_, sizeof(quickEditBuf_), "%.2f", currentVal);
+              quickEditSelectAll_ = true;
+              ImGui::OpenPopup(ui::popups::QuickBatchEdit);
+            } else if (auto editChar = getTriggeredEditChar()) {
+              if (editChar != '\0') {
+                syncSelection();
+                quickEditBuf_[0] = *editChar;
+                quickEditBuf_[1] = '\0';
+                quickEditSelectAll_ = false;
+                ImGui::OpenPopup(ui::popups::QuickBatchEdit);
+              } else if (isMinusKeyPressed()) {
+                if (io.KeyCtrl) applyBatchOffset(-0.05);
+                else if (io.KeyShift) applyBatchOffset(-1.00);
+                else applyBatchOffset(-0.10);
+              } else if (isPlusKeyPressed()) {
+                if (io.KeyCtrl) applyBatchOffset(+0.05);
+                else if (io.KeyShift) applyBatchOffset(+1.00);
+                else applyBatchOffset(+0.10);
+              }
+            }
+          }
+        }
+      }
+    }
+
+
+    if (!isReadOnly()) {
       if (ui::UI::Button(ICON_FA_ARROWS_UP_DOWN " Edit Y Axis")) {
         axisEditorValues_ = table_.yBreakpoints();
         axisEditorBinCount_ = static_cast<int>(axisEditorValues_.size());
@@ -1410,6 +1544,98 @@ namespace ui {
           table_.setYBreakpoints(axisEditorValues_);
 
         editingAxis_ = AxisEditing::None;
+      }
+      ImGui::EndPopup();
+    }
+
+    if (ImGui::IsPopupOpen(ui::popups::QuickBatchEdit)) {
+      ImVec2 panelCenter = ImVec2(
+        ImGui::GetWindowPos().x + ImGui::GetWindowSize().x * 0.5f,
+        ImGui::GetWindowPos().y + ImGui::GetWindowSize().y * 0.5f
+      );
+      ImGui::SetNextWindowPos(panelCenter, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    }
+
+    if (ImGui::BeginPopup(ui::popups::QuickBatchEdit, ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::TextDisabled("Quick Edit (%zu cells)", selectedCells_.size());
+      ImGui::Spacing();
+
+      if (ImGui::IsWindowAppearing()) {
+        ImGui::SetKeyboardFocusHere();
+      }
+
+      ImGui::SetNextItemWidth(160.0f);
+
+      ImGuiInputTextFlags inputFlags = ImGuiInputTextFlags_EnterReturnsTrue;
+      if (quickEditSelectAll_) {
+        inputFlags |= ImGuiInputTextFlags_AutoSelectAll;
+      }
+
+      auto callback = [](ImGuiInputTextCallbackData *data) -> int {
+        if (data->EventFlag == ImGuiInputTextFlags_CallbackAlways) {
+          bool *isSelectAll = static_cast<bool *>(data->UserData);
+          if (!(*isSelectAll)) {
+            // Force cursor to the end and clear any selection range
+            data->CursorPos = data->BufTextLen;
+            data->SelectionStart = data->BufTextLen;
+            data->SelectionEnd = data->BufTextLen;
+          }
+        }
+        return 0;
+        };
+
+      bool enterPressed = ImGui::InputText(
+        "##quick_val",
+        quickEditBuf_,
+        sizeof(quickEditBuf_),
+        inputFlags | ImGuiInputTextFlags_CallbackAlways,
+        callback,
+        &quickEditSelectAll_
+      );
+
+      if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        ImGui::CloseCurrentPopup();
+      }
+
+      auto commitQuickEdit = [this]() {
+        std::string text(quickEditBuf_);
+        size_t first = text.find_first_not_of(" \t");
+        if (first != std::string::npos) {
+          char op = text[first];
+          std::string valStr = (op == '*' || op == '/' || op == '+' || op == '-')
+            ? text.substr(first + 1)
+            : text.substr(first);
+
+          char *end = nullptr;
+          double val = std::strtod(valStr.c_str(), &end);
+          if (end != valStr.c_str()) {
+            if (op == '*') {
+              applyBatchMultiply(val);
+            } else if (op == '/') {
+              if (std::abs(val) > 1e-9) applyBatchMultiply(1.0 / val);
+            } else if (op == '+') {
+              applyBatchOffset(val);
+            } else if (op == '-') {
+              applyBatchOffset(-val);
+            } else {
+              applyBatchSetValue(val);
+            }
+          }
+        }
+        ImGui::CloseCurrentPopup();
+        };
+      if (enterPressed) {
+        commitQuickEdit();
+      }
+      ImGui::Spacing();
+      ImGui::Separator();
+      ImGui::Spacing();
+      if (ui::UI::ButtonPrimary("OK", ImVec2(75, 0))) {
+        commitQuickEdit();
+      }
+      ImGui::SameLine();
+      if (ui::UI::Button("Cancel", {}, ImVec2(75, 0))) {
+        ImGui::CloseCurrentPopup();
       }
       ImGui::EndPopup();
     }

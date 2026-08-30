@@ -85,6 +85,7 @@ namespace ui {
     void clearSelection();
     void selectRectangularRegion(int r1, int c1, int r2, int c2, bool keepExisting = false);
     void getSelectionBounds(int &minR, int &maxR, int &minC, int &maxC) const;
+    void syncSelection();
 
     void undo();
     void redo();
@@ -170,6 +171,9 @@ namespace ui {
     };
     // Matrix matching grid [rows][cols]
     std::vector<std::vector<CellRegimeInfo>> regimeCoverageMatrix_;
+
+    char quickEditBuf_[64] = "";
+    bool quickEditSelectAll_ = false;
   };
 
 } // namespace ui

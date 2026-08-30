@@ -118,9 +118,13 @@ namespace io {
 
     std::vector<core::Channel> channels;
     channels.reserve(columnCount);
+    int timeChannelIndex = -1;
     for (size_t i = 0; i < columnCount; ++i) {
       std::string unit = (i < unitTokens.size()) ? std::string(unitTokens[i]) : std::string();
       channels.emplace_back(std::string(headerTokens[i]), unit);
+      if (channels.back().name() == "Time") {
+        timeChannelIndex = static_cast<int>(i);
+      }
     }
     bool channelRowsEstimated = false;
 
@@ -128,6 +132,7 @@ namespace io {
     std::vector<uint8_t> sawNumericToken(columnCount, 0);
     std::vector<uint8_t> sawBooleanToken(columnCount, 0);
     std::vector<std::string_view> tokens;
+    std::vector<core::Annotation> annotations;
 
     while (pos < buffer.size()) {
       size_t nl = buffer.find('\n', pos);
@@ -140,6 +145,22 @@ namespace io {
 
       bytesRead += line.size() + 1;
       if (line.empty()) {
+        continue;
+      }
+
+      if (line.rfind("MARK", 0) == 0) {
+        double markTime = 0.0;
+        if (timeChannelIndex >= 0 && !channels[timeChannelIndex].values().empty()) {
+          markTime = channels[timeChannelIndex].values().back();
+        }
+        if (!annotations.empty() && annotations.back().timeSec == markTime) {
+          continue;
+        }
+        core::Annotation ann;
+        ann.timeSec = markTime;
+        ann.label = std::string(line);
+        ann.color = ImVec4(1.0f, 0.7f, 0.2f, 1.0f);
+        annotations.push_back(std::move(ann));
         continue;
       }
 
@@ -203,13 +224,10 @@ namespace io {
 
     if (progress) progress->store(1.0f);
 
-    int timeChannelIndex = -1;
     for (size_t i = 0; i < channels.size(); ++i) {
       channels[i].setIsBoolean(sawBooleanToken[i] && !sawNumericToken[i]);
-      if (channels[i].name() == "Time") {
-        timeChannelIndex = static_cast<int>(i);
-      }
     }
+
     if (timeChannelIndex >= 0) {
       fixFirstRowTimeAnomaly(channels[static_cast<size_t>(timeChannelIndex)].values());
     }
@@ -225,6 +243,7 @@ namespace io {
     if (timeChannelIndex >= 0) {
       outSession.setTimeChannelIndex(static_cast<size_t>(timeChannelIndex));
     }
+    outSession.setAnnotations(std::move(annotations));
     outSession.scanIntegrityAndBuildDiscontinuities();
     return true;
   }
