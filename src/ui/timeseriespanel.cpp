@@ -459,7 +459,12 @@ namespace ui {
         exportCancelRequested_.store(false);
         isExporting_ = true;
 
-        activeExportTask_ = std::async(std::launch::async, [this, path, opts, sessionSnapshot = *session_]() {
+        activeExportTask_ = std::async(std::launch::async, [this, path, opts, sessionSnapshot = *session_]() mutable {
+          if (opts.cropOnly) {
+            sessionSnapshot.setCropRange(xAxisMin_, xAxisMax_);
+          } else {
+            sessionSnapshot.resetCropRange();
+          }
           ExportResult res;
           res.success = io::CsvExporter::write(
             path,
@@ -782,28 +787,16 @@ namespace ui {
       ImGui::Separator();
       ImGui::Spacing();
 
-      // 1. Data Span Selection
-      bool hasCrop = session_ && session_->cropRange().active;
-      if (!hasCrop) {
-        exportRangeMode_ = 1; // Force Full Session if no crop active
-      }
-
+      // Data Span Selection
       ImGui::Text("Data Range:");
-      ImGui::BeginDisabled(!hasCrop);
-      ImGui::RadioButton("Active Crop Range Only", &exportRangeMode_, 0);
-      ImGui::EndDisabled();
-
+      ImGui::RadioButton("Visible Plot Range Only", &exportRangeMode_, 0);
       ImGui::RadioButton("Full Log Session", &exportRangeMode_, 1);
-      if (!hasCrop) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("(No crop active)");
-      }
 
       ImGui::Spacing();
       ImGui::Separator();
       ImGui::Spacing();
 
-      // 2. Channel Subset Selection
+      // Channel Subset Selection
       ImGui::Text("Channels:");
       ImGui::RadioButton("Active / Plotted Channels Only", &exportChannelMode_, 0);
       ImGui::RadioButton("All Available Log Channels", &exportChannelMode_, 1);
@@ -812,7 +805,7 @@ namespace ui {
       ImGui::Separator();
       ImGui::Spacing();
 
-      // 3. Format Options
+      // Format Options
       ImGui::Checkbox("Include Units Row", &exportIncludeUnits_);
       ImGui::SetNextItemWidth(140.0f);
       const char *delimiters[] = { "Comma (,)", "Tab (\\t)" };
