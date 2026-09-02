@@ -22,4 +22,9 @@ namespace utils {
     std::string fileNameOnly(const std::string &path);
     std::string fileNameWithoutExtension(const std::string &path);
   }
+
+  namespace time {
+    bool tryParseIso8601ToEpoch(std::string_view token, double &outEpochSec);
+    std::string formatEpochToIso8601(double epochSec);
+  }
 }

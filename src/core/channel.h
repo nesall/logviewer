@@ -37,6 +37,9 @@ namespace core {
     bool isCustom() const { return isCustom_; }
     void setIsCustom(bool value) { isCustom_ = value; }
 
+    bool isTimestamp() const { return isTimestamp_; }
+    void setIsTimestamp(bool value) { isTimestamp_ = value; }
+
     const std::string &formula() const { return formula_; }
     void setFormula(std::string formula) { formula_ = std::move(formula); }
 
@@ -47,6 +50,7 @@ namespace core {
     bool isNumeric_ = true;
     bool isBoolean_ = false;
     bool isCustom_ = false;
+    bool isTimestamp_ = false;
     std::string formula_; // Stores original formula text e.g. "[MAP] - 101.3"
   };
 

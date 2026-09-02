@@ -1,4 +1,5 @@
 #include "csvexporter.h"
+#include "utils/utils.h"
 
 bool io::CsvExporter::write(
   const std::string &path, 
@@ -89,7 +90,10 @@ bool io::CsvExporter::write(
       const auto &vals = exportChannels[i]->values();
       if (r < vals.size()) {
         double v = vals[r];
-        if (!std::isnan(v)) {
+        if (exportChannels[i]->isTimestamp()) {
+          std::string isoStr = utils::time::formatEpochToIso8601(v);
+          lineBuf.append(isoStr);
+        } else {
           int len = std::snprintf(valBuf, sizeof(valBuf), "%.4f", v);
           lineBuf.append(valBuf, len);
         }

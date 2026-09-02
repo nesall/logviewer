@@ -5,6 +5,33 @@
 #include <filesystem>
 #include <random>
 
+
+namespace {
+  // Days before the start of each month in non-leap years
+  constexpr int kDaysBeforeMonth[12] = {
+    0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334
+  };
+
+  bool parseFixed2(const char *p, int &out) {
+    uint8_t d0 = static_cast<uint8_t>(p[0] - '0');
+    uint8_t d1 = static_cast<uint8_t>(p[1] - '0');
+    if (d0 > 9 || d1 > 9) return false;
+    out = d0 * 10 + d1;
+    return true;
+  }
+
+  bool parseFixed4(const char *p, int &out) {
+    uint8_t d0 = static_cast<uint8_t>(p[0] - '0');
+    uint8_t d1 = static_cast<uint8_t>(p[1] - '0');
+    uint8_t d2 = static_cast<uint8_t>(p[2] - '0');
+    uint8_t d3 = static_cast<uint8_t>(p[3] - '0');
+    if (d0 > 9 || d1 > 9 || d2 > 9 || d3 > 9) return false;
+    out = d0 * 1000 + d1 * 100 + d2 * 10 + d3;
+    return true;
+  }
+} // anonymous namespace
+
+
 std::vector<std::string> utils::str::splitCsvLine(const std::string &line)
 {
   std::vector<std::string> tokens;
@@ -186,4 +213,71 @@ std::string utils::path::fileNameWithoutExtension(const std::string &path)
   std::string name = fileNameOnly(path);
   size_t dot = name.find_last_of('.');
   return (dot == std::string::npos) ? name : name.substr(0, dot);
+}
+
+bool utils::time::tryParseIso8601ToEpoch(std::string_view token, double &outEpochSec)
+{
+  // Expected minimal format: "YYYY-MM-DDTHH:MM:SS" (19 chars)
+  if (token.size() < 19) return false;
+  const char *p = token.data();
+
+  if (p[4] != '-' || p[7] != '-' || (p[10] != 'T' && p[10] != ' ') ||
+    p[13] != ':' || p[16] != ':') {
+    return false;
+  }
+
+  int year = 0, month = 0, day = 0, hour = 0, min = 0, sec = 0;
+  if (!parseFixed4(p, year)) return false;
+  if (!parseFixed2(p + 5, month) || month < 1 || month > 12) return false;
+  if (!parseFixed2(p + 8, day) || day < 1 || day > 31) return false;
+  if (!parseFixed2(p + 11, hour) || hour > 23) return false;
+  if (!parseFixed2(p + 14, min) || min > 59) return false;
+  if (!parseFixed2(p + 17, sec) || sec > 60) return false;
+
+  // Fast calendar math (Civil date to Days since 1970-01-01)
+  int y = year - (month <= 2 ? 1 : 0);
+  int era = (y >= 0 ? y : y - 399) / 400;
+  unsigned yoe = static_cast<unsigned>(y - era * 400);
+  unsigned m = static_cast<unsigned>(month + (month > 2 ? -3 : 9));
+  unsigned doy = (153 * m + 2) / 5 + day - 1;
+  unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  int64_t daysSinceEpoch = static_cast<int64_t>(era) * 146097 + static_cast<int64_t>(doe) - 719468;
+
+  int64_t totalSeconds = daysSinceEpoch * 86400LL + hour * 3600LL + min * 60LL + sec;
+
+  // Parse fractional seconds if present (.sss)
+  double fracSec = 0.0;
+  if (token.size() > 20 && p[19] == '.') {
+    double div = 10.0;
+    size_t idx = 20;
+    while (idx < token.size() && p[idx] >= '0' && p[idx] <= '9') {
+      fracSec += (p[idx] - '0') / div;
+      div *= 10.0;
+      ++idx;
+    }
+  }
+
+  outEpochSec = static_cast<double>(totalSeconds) + fracSec;
+  return true;
+}
+
+std::string utils::time::formatEpochToIso8601(double epochSec)
+{
+  if (std::isnan(epochSec)) return "";
+  time_t fullSec = static_cast<time_t>(std::floor(epochSec));
+  int ms = static_cast<int>(std::round((epochSec - static_cast<double>(fullSec)) * 1000.0));
+  if (ms >= 1000) { fullSec += 1; ms -= 1000; }
+
+  std::tm tm{};
+#ifdef _WIN32
+  gmtime_s(&tm, &fullSec);
+#else
+  gmtime_r(&fullSec, &tm);
+#endif
+
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",
+    tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+    tm.tm_hour, tm.tm_min, tm.tm_sec, ms);
+  return std::string(buf);
 }

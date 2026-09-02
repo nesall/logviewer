@@ -123,6 +123,7 @@ namespace io {
       ch.setIsNumeric((metas[i].flags & 1) != 0);
       ch.setIsBoolean((metas[i].flags & 2) != 0);
       ch.setIsCustom((metas[i].flags & 4) != 0);
+      ch.setIsTimestamp((metas[i].flags & 8) != 0);
       ch.setFormula(metas[i].formula);
 
       ch.values().resize(rowCount);
@@ -216,6 +217,7 @@ namespace io {
       if (ch.isNumeric()) flags |= 1;
       if (ch.isBoolean()) flags |= 2;
       if (ch.isCustom())  flags |= 4;
+      if (ch.isTimestamp()) flags |= 8;
 
       out.write(reinterpret_cast<const char *>(&flags), sizeof(flags));
       writeString(ch.formula());

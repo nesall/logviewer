@@ -125,6 +125,9 @@ namespace io {
       if (channels.back().name() == "Time") {
         timeChannelIndex = static_cast<int>(i);
       }
+      if (channels.back().name() == "DateTime" || channels.back().name() == "Timestamp") {
+        channels.back().setIsTimestamp(true);
+      }
     }
     bool channelRowsEstimated = false;
 
@@ -192,7 +195,15 @@ namespace io {
         char c = token.empty() ? '\0' : token.front();
         bool looksNumeric = (c == '-' || c == '+' || c == '.' || (c >= '0' && c <= '9'));
 
-        if (looksNumeric) {
+        if (channels[columnIndex].isTimestamp()) {
+          double epochSec = 0.0;
+          if (utils::time::tryParseIso8601ToEpoch(token, epochSec)) {
+            value = epochSec;
+            sawNumericToken[columnIndex] = 1;
+          } else {
+            channels[columnIndex].setIsNumeric(false);
+          }
+        } else if (looksNumeric) {
           if (utils::parse::parseNumericTokenFast(token, parsed) || utils::parse::parseNumericToken(token, parsed)) {
             value = parsed; sawNumericToken[columnIndex] = 1;
           } else if (!token.empty()) {
