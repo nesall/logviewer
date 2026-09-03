@@ -35,6 +35,7 @@
 #include "ui/curve2dpanel.h"
 #include "ui/virtualdynopanel.h"
 #include "utils/utils.h"
+#include "version.h"
 
 namespace ui {
 
@@ -512,7 +513,7 @@ namespace ui {
   void App::updateWindowTitle()
   {
     if (!window_) return;
-    std::string title{ App::appBaseTitle() };
+    std::string title = std::string(App::appBaseTitle()) + " v" + app::version::kVersion;
     if (!currentWorkspacePath_.empty()) {
       title += " - " + utils::path::fileNameWithoutExtension(currentWorkspacePath_);
     }

@@ -1,0 +1,16 @@
+#pragma once
+
+namespace app::version {
+  inline constexpr const char *kProjectName = "@PROJECT_NAME@";
+  inline constexpr const char *kVersion     = "@PROJECT_VERSION@";
+  inline constexpr const char *kGitHash     = "@APP_GIT_HASH@";
+  inline constexpr int kMajor               = @PROJECT_VERSION_MAJOR@;
+  inline constexpr int kMinor               = @PROJECT_VERSION_MINOR@;
+  inline constexpr int kPatch               = @PROJECT_VERSION_PATCH@;
+
+  // e.g. "PhenixLogView v0.5.0 (a1b2c3d)"
+  inline const char *displayString() {
+    static const char str[] = "@PROJECT_NAME@ v@PROJECT_VERSION@ (@APP_GIT_HASH@)";
+    return str;
+  }
+}

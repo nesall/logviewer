@@ -1,8 +1,9 @@
 # =============================================================================
 #  1. Project Configuration
 # =============================================================================
-cmake_minimum_required(VERSION 3.16)
-project(logviewer LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.20)
+project(PhenixLogView VERSION 0.5.0 LANGUAGES CXX)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -81,7 +82,7 @@ target_link_libraries(implot PUBLIC imgui)
 # =============================================================================
 #  5. Executable & Sources
 # =============================================================================
-add_executable(logviewer
+add_executable(${PROJECT_NAME}
   include/3rdparty/zstd/zstd.c
   app.rc
   src/main.cpp
@@ -141,26 +142,26 @@ add_executable(logviewer
   src/core/formula_evaluator.cpp
 )
 
-add_custom_command(TARGET logviewer POST_BUILD
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
     "${CMAKE_CURRENT_SOURCE_DIR}/assets"
     "${CMAKE_BINARY_DIR}/assets"
   COMMAND ${CMAKE_COMMAND} -E copy_directory
     "${CMAKE_CURRENT_SOURCE_DIR}/assets"
-    "$<TARGET_FILE_DIR:logviewer>/assets"
+    "$<TARGET_FILE_DIR:${PROJECT_NAME}>/assets"
   COMMENT "Copying assets to both top-level build directory and target output folder"
 )
 
 # =============================================================================
 #  6. Includes & Linking
 # =============================================================================
-target_include_directories(logviewer PRIVATE
+target_include_directories(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
 find_package(OpenGL REQUIRED)
 
-target_link_libraries(logviewer PRIVATE
+target_link_libraries(${PROJECT_NAME} PRIVATE
   imgui
   implot
   glfw
@@ -168,7 +169,32 @@ target_link_libraries(logviewer PRIVATE
 )
 
 if (MSVC)
-  target_compile_options(logviewer PRIVATE /bigobj)
-  set_target_properties(logviewer PROPERTIES WIN32_EXECUTABLE "$<CONFIG:Release>")
-  target_compile_definitions(logviewer PRIVATE $<$<CONFIG:Release>:LOGVIEWER_WINDOWS_SUBSYSTEM>)
+  target_compile_options(${PROJECT_NAME} PRIVATE /bigobj)
+  set_target_properties(${PROJECT_NAME} PROPERTIES WIN32_EXECUTABLE "$<CONFIG:Release>")
+  target_compile_definitions(${PROJECT_NAME} PRIVATE $<$<CONFIG:Release>:LOGVIEWER_WINDOWS_SUBSYSTEM>)
 endif()
+
+
+#  7. Versioning
+
+# Attempt to retrieve the short git commit hash
+find_package(Git QUIET)
+set(APP_GIT_HASH "unknown")
+if(GIT_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
+  execute_process(
+    COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE APP_GIT_HASH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+  )
+endif()
+
+# Generate build-time version header
+configure_file(
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/version.h.in
+  ${CMAKE_CURRENT_BINARY_DIR}/generated/version.h
+  @ONLY
+)
+
+target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated) 

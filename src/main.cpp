@@ -16,7 +16,6 @@
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "3rdparty/stb_image.h"
-
 #include "ui/app.h"
 #include "3rdparty/utils_log/logger.hpp"
 
